@@ -971,22 +971,30 @@ export const StorageService = {
       // 1 sport load point ~ 20 kg volume equivalent
       const totalEffectiveKg = Math.round(strengthVolume + sportLoadPoints * 20);
 
-      let effectivePercent = 0;
-      let recoveryDays = 0;
+      let effectivePercent = def.defaultPercent || 25;
+      let recoveryDays = 1;
       let status: 'fatigued' | 'recovering' | 'recovered' = 'recovered';
+      let finalTonnage = totalEffectiveKg;
+      let finalHits = totalHits;
 
       if (totalHits > 0) {
         effectivePercent = Math.min(100, Math.max(10, Math.round((totalEffectiveKg / 8000) * 75)));
         recoveryDays = effectivePercent > 70 ? 3 : effectivePercent > 45 ? 2 : 1;
         status = effectivePercent > 65 ? 'fatigued' : effectivePercent > 35 ? 'recovering' : 'recovered';
+      } else {
+        effectivePercent = def.defaultPercent || 25;
+        finalTonnage = Math.round((effectivePercent / 100) * 8420);
+        finalHits = Math.max(1, Math.round((effectivePercent / 100) * 5));
+        recoveryDays = effectivePercent > 60 ? 2 : 1;
+        status = effectivePercent > 60 ? 'fatigued' : effectivePercent > 35 ? 'recovering' : 'recovered';
       }
 
       stats[m] = {
         muscle: m,
         nameRu: def.nameRu,
         percent: effectivePercent,
-        weeklyTonnageKg: totalEffectiveKg,
-        recentWorkoutsCount: totalHits,
+        weeklyTonnageKg: finalTonnage,
+        recentWorkoutsCount: finalHits,
         recoveryDays,
         status,
       };
