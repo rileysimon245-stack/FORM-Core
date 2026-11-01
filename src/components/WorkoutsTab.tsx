@@ -4,6 +4,7 @@ import {
   WorkoutSession,
   ProgramWorkoutDay,
 } from '../types/workout';
+import { StorageService, CATALOG_PRESET_PROGRAMS } from '../services/storage';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import {
   Plus,
@@ -25,9 +26,11 @@ import {
   AlertCircle,
   Sliders,
   RotateCcw,
+  X,
+  Layers,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { tabContentVariants, androidTapFeedback, androidCardTap } from '../utils/animations';
+import { tabContentVariants, modalBackdropVariants, modalDialogVariants } from '../utils/animations';
 
 interface WorkoutsTabProps {
   programs: WorkoutProgram[];
@@ -69,6 +72,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
     programs[0]?.id || ''
   );
   const [expandedDayId, setExpandedDayId] = useState<string | null>(null);
+  const [showCatalogModal, setShowCatalogModal] = useState<boolean>(false);
 
   const selectedProgram =
     programs.find((p) => p.id === selectedProgramId) || programs[0] || null;
@@ -77,7 +81,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
   const lastSession = sessions.length > 0 ? sessions[0] : null;
 
   return (
-    <div className="w-full flex flex-col pb-24">
+    <div className="w-full flex flex-col pb-4">
       {/* Title & Quick Start */}
       <div className="flex items-center justify-between pt-2 mb-3 px-1">
         <h1 className="text-2xl font-bold tracking-tight text-[#E8E9E7]">
@@ -284,27 +288,29 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
             </div>
           )}
 
-          {/* Programs selector carousel pills */}
-          <div className="space-y-1.5">
-            <span className="text-xs font-bold text-[#92999A] uppercase tracking-wider block px-1">
-              Мои программы ({programs.length})
-            </span>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {programs.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => setSelectedProgramId(p.id)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border ${
-                    selectedProgram?.id === p.id
-                      ? 'border-[#58C995] bg-[#14231b] text-[#58C995]'
-                      : 'border-[#252D2F] bg-[#101719] text-[#92999A] hover:text-[#E8E9E7]'
-                  }`}
-                >
-                  {p.name}
-                </button>
-              ))}
+          {/* Programs selector carousel pills (only if programs exist) */}
+          {programs.length > 0 ? (
+            <div className="space-y-1.5">
+              <span className="text-xs font-bold text-[#92999A] uppercase tracking-wider block px-1">
+                Мои программы ({programs.length})
+              </span>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {programs.map((p) => (
+                  <button
+                    key={p.id}
+                    onClick={() => setSelectedProgramId(p.id)}
+                    className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border cursor-pointer ${
+                      selectedProgram?.id === p.id
+                        ? 'border-[#58C995] bg-[#14231b] text-[#58C995]'
+                        : 'border-[#252D2F] bg-[#101719] text-[#92999A] hover:text-[#E8E9E7]'
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          ) : null}
 
           {/* Selected Program Details with Full Actions: Open, Start, Edit, Duplicate, Delete */}
           {selectedProgram ? (
@@ -327,7 +333,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     onClick={() => onEditProgram(selectedProgram)}
-                    className="p-2 text-[#92999A] hover:text-[#E8E9E7] rounded-lg hover:bg-[#1c2426] transition-colors"
+                    className="p-2 text-[#92999A] hover:text-[#E8E9E7] rounded-lg hover:bg-[#1c2426] transition-colors cursor-pointer"
                     title="Редактировать программу"
                   >
                     <Edit3 className="w-4 h-4" />
@@ -335,7 +341,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
 
                   <button
                     onClick={() => onDuplicateProgram(selectedProgram.id)}
-                    className="p-2 text-[#92999A] hover:text-[#58C995] rounded-lg hover:bg-[#1c2426] transition-colors"
+                    className="p-2 text-[#92999A] hover:text-[#58C995] rounded-lg hover:bg-[#1c2426] transition-colors cursor-pointer"
                     title="Дублировать программу"
                   >
                     <Copy className="w-4 h-4" />
@@ -344,7 +350,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                   {programs.length > 1 && (
                     <button
                       onClick={() => onDeleteProgram(selectedProgram.id)}
-                      className="p-2 text-[#92999A] hover:text-[#C83232] rounded-lg hover:bg-[#1c2426] transition-colors"
+                      className="p-2 text-[#92999A] hover:text-[#C83232] rounded-lg hover:bg-[#1c2426] transition-colors cursor-pointer"
                       title="Удалить программу"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -441,8 +447,37 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
               </div>
             </div>
           ) : (
-            <div className="p-8 text-center text-[#92999A] text-xs bg-[#101719] rounded-2xl border border-[#252D2F]">
-              Нет созданных программ. Нажмите «Создать программу» или «Сгенерировать».
+            /* Clean Empty State when user has no active programs */
+            <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-6 text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#14231b] text-[#58C995] flex items-center justify-center mx-auto">
+                <Dumbbell className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-[#E8E9E7]">Нет созданных программ</h3>
+                <p className="text-xs text-[#92999A] mt-1 max-w-xs mx-auto">
+                  Создайте персональный сплит с нуля, сгенерируйте программу с ИИ или выберите готовый шаблон.
+                </p>
+              </div>
+              <div className="flex flex-col gap-2 pt-2 max-w-xs mx-auto">
+                <button
+                  onClick={onCreateProgram}
+                  className="w-full py-2.5 bg-[#58C995] text-black font-extrabold text-xs rounded-xl hover:bg-[#68d7a4] transition-colors cursor-pointer"
+                >
+                  + Создать программу
+                </button>
+                <button
+                  onClick={onGenerateProgram}
+                  className="w-full py-2.5 bg-[#14231b] border border-[#2f553f] text-[#58C995] font-bold text-xs rounded-xl hover:bg-[#1e3c30] transition-colors cursor-pointer"
+                >
+                  Сгенерировать программу
+                </button>
+                <button
+                  onClick={() => setShowCatalogModal(true)}
+                  className="w-full py-2.5 bg-[#101719] border border-[#252D2F] text-[#E8E9E7] font-bold text-xs rounded-xl hover:border-[#58C995] transition-colors cursor-pointer"
+                >
+                  Выбрать из каталога шаблонов
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -455,41 +490,73 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
         </div>
       )}
 
-      {/* SUB-TAB 3: WORKOUT HISTORY & PRs */}
+      {/* SUB-TAB 3: WORKOUT HISTORY & REAL PRs */}
       {activeSubTab === 'history' && (
         <div className="space-y-4">
-          {/* Key PRs Overview */}
-          <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Award className="w-4 h-4 text-[#58C995]" />
-              <span className="text-sm font-bold text-[#E8E9E7]">
-                Личные рекорды в упражнениях
-              </span>
-            </div>
+          {/* Key PRs Overview (Strictly from real user sessions) */}
+          {(() => {
+            const benchPR = StorageService.getPersonalRecord('Жим штанги лежа');
+            const squatPR = StorageService.getPersonalRecord('Приседания со штангой');
+            const deadliftPR = StorageService.getPersonalRecord('Становая тяга');
+            const pullupPR = StorageService.getPersonalRecord('Подтягивания широким хватом');
+            const hasAnyPR = Boolean(benchPR || squatPR || deadliftPR || pullupPR);
 
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
-                <span className="text-[10px] text-[#92999A] block">Жим штанги лежа</span>
-                <span className="text-sm font-bold text-[#58C995] tabular-nums">105 кг</span>
-                <span className="text-[10px] text-[#92999A] block">на 5 повторений</span>
+            return (
+              <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Award className="w-4 h-4 text-[#58C995]" />
+                  <span className="text-sm font-bold text-[#E8E9E7]">
+                    Личные рекорды в упражнениях
+                  </span>
+                </div>
+
+                {hasAnyPR ? (
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
+                      <span className="text-[10px] text-[#92999A] block">Жим штанги лежа</span>
+                      <span className="text-sm font-bold text-[#58C995] tabular-nums">
+                        {benchPR ? `${benchPR.maxWeight} кг` : '—'}
+                      </span>
+                      <span className="text-[10px] text-[#92999A] block">
+                        {benchPR ? `на ${benchPR.maxRepsAtMax} повт.` : 'нет данных'}
+                      </span>
+                    </div>
+                    <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
+                      <span className="text-[10px] text-[#92999A] block">Приседания со штангой</span>
+                      <span className="text-sm font-bold text-[#58C995] tabular-nums">
+                        {squatPR ? `${squatPR.maxWeight} кг` : '—'}
+                      </span>
+                      <span className="text-[10px] text-[#92999A] block">
+                        {squatPR ? `на ${squatPR.maxRepsAtMax} повт.` : 'нет данных'}
+                      </span>
+                    </div>
+                    <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
+                      <span className="text-[10px] text-[#92999A] block">Становая тяга</span>
+                      <span className="text-sm font-bold text-[#58C995] tabular-nums">
+                        {deadliftPR ? `${deadliftPR.maxWeight} кг` : '—'}
+                      </span>
+                      <span className="text-[10px] text-[#92999A] block">
+                        {deadliftPR ? `на ${deadliftPR.maxRepsAtMax} повт.` : 'нет данных'}
+                      </span>
+                    </div>
+                    <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
+                      <span className="text-[10px] text-[#92999A] block">Подтягивания</span>
+                      <span className="text-sm font-bold text-[#58C995] tabular-nums">
+                        {pullupPR ? `${pullupPR.maxWeight > 0 ? `+${pullupPR.maxWeight} кг` : 'свой вес'}` : '—'}
+                      </span>
+                      <span className="text-[10px] text-[#92999A] block">
+                        {pullupPR ? `на ${pullupPR.maxRepsAtMax} повт.` : 'нет данных'}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-2 text-xs text-[#92999A]">
+                    Рекорды пока не зафиксированы. Записывайте веса во время тренировок, и они появятся здесь.
+                  </div>
+                )}
               </div>
-              <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
-                <span className="text-[10px] text-[#92999A] block">Приседания со штангой</span>
-                <span className="text-sm font-bold text-[#58C995] tabular-nums">135 кг</span>
-                <span className="text-[10px] text-[#92999A] block">на 5 повторений</span>
-              </div>
-              <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
-                <span className="text-[10px] text-[#92999A] block">Становая тяга</span>
-                <span className="text-sm font-bold text-[#58C995] tabular-nums">155 кг</span>
-                <span className="text-[10px] text-[#92999A] block">на 4 повторения</span>
-              </div>
-              <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
-                <span className="text-[10px] text-[#92999A] block">Подтягивания с весом</span>
-                <span className="text-sm font-bold text-[#58C995] tabular-nums">+30 кг</span>
-                <span className="text-[10px] text-[#92999A] block">на 6 повторений</span>
-              </div>
-            </div>
-          </div>
+            );
+          })()}
 
           {/* Past Sessions List */}
           {sessions.length === 0 ? (
@@ -520,7 +587,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
 
                   <button
                     onClick={() => onDeleteSession(sess.id)}
-                    className="p-1.5 text-[#92999A] hover:text-[#C83232] transition-colors"
+                    className="p-1.5 text-[#92999A] hover:text-[#C83232] transition-colors cursor-pointer"
                     title="Удалить запись"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -576,6 +643,88 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
           )}
         </div>
       )}
+
+      {/* Catalog of Preset Programs Modal */}
+      <AnimatePresence>
+        {showCatalogModal && (
+          <motion.div
+            variants={modalBackdropVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3"
+          >
+            <motion.div
+              variants={modalDialogVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="w-full max-w-md bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-4 max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
+            >
+              <div className="flex items-center justify-between pb-2 border-b border-[#252D2F]">
+                <div className="flex items-center gap-2">
+                  <Layers className="w-5 h-5 text-[#58C995]" />
+                  <h3 className="text-base font-bold text-[#E8E9E7]">Каталог готовых программ</h3>
+                </div>
+                <button
+                  onClick={() => setShowCatalogModal(false)}
+                  className="p-1 text-[#92999A] hover:text-[#E8E9E7] cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                {CATALOG_PRESET_PROGRAMS.map((prog) => (
+                  <div
+                    key={prog.id}
+                    className="bg-[#080D0E] border border-[#202729] rounded-xl p-3.5 space-y-2.5"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-[#58C995] bg-[#14231b] border border-[#2f553f] px-2 py-0.5 rounded-md">
+                        {prog.goal}
+                      </span>
+                      <span className="text-xs text-[#92999A]">{prog.daysPerWeek} дня/нед</span>
+                    </div>
+
+                    <div>
+                      <h4 className="text-sm font-bold text-[#E8E9E7]">{prog.name}</h4>
+                      <p className="text-xs text-[#92999A] mt-1">{prog.description}</p>
+                    </div>
+
+                    <div className="space-y-1 text-xs text-[#c7c9c7]">
+                      {prog.workouts.map((w) => (
+                        <div key={w.id} className="flex items-center justify-between py-1 border-t border-[#1b2224]">
+                          <span>{w.dayName}</span>
+                          <span className="text-[#92999A] text-[11px]">{w.exercises.length} упр.</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        const imported: WorkoutProgram = {
+                          ...prog,
+                          id: `prog_imported_${Date.now()}`,
+                          isCustom: true,
+                          createdAt: new Date().toISOString().split('T')[0],
+                        };
+                        StorageService.saveProgram(imported);
+                        setSelectedProgramId(imported.id);
+                        setShowCatalogModal(false);
+                      }}
+                      className="w-full py-2 bg-[#172d24] hover:bg-[#1e3c30] border border-[#2d5843] text-[#58C995] font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Импортировать в мои программы</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

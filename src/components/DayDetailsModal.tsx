@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Check, AlertCircle, Dumbbell, Play, Plus, Swords, Trophy, Zap, Bike, Waves, Activity, Moon, Trash2, Edit3, Calendar } from 'lucide-react';
-import { WorkoutSession, SportSession, SPORT_DEFINITIONS, SportType } from '../types/workout';
+import { WorkoutSession, SportSession, SPORT_DEFINITIONS, SportType, WeeklyScheduleDay } from '../types/workout';
 import { motion } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
 
@@ -9,6 +9,7 @@ interface DayDetailsModalProps {
   currentStatus: 'completed' | 'skipped' | 'none';
   strengthSessions?: WorkoutSession[];
   sportSessions?: SportSession[];
+  weeklySchedule?: WeeklyScheduleDay[];
   onSetStatus: (newStatus: 'completed' | 'skipped' | 'none') => void;
   onStartWorkoutForDay: () => void;
   onAddSportSession: (date: string) => void;
@@ -23,6 +24,7 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
   currentStatus,
   strengthSessions = [],
   sportSessions = [],
+  weeklySchedule = [],
   onSetStatus,
   onStartWorkoutForDay,
   onAddSportSession,
@@ -67,6 +69,16 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
         return <Activity className="w-4 h-4 text-[#A06CD5]" />;
     }
   };
+
+  const dayOfWeek = (() => {
+    try {
+      const [y, m, d] = dateStr.split('-');
+      return (new Date(Number(y), Number(m) - 1, Number(d)).getDay() + 6) % 7;
+    } catch {
+      return 0;
+    }
+  })();
+  const scheduledActivities = weeklySchedule[dayOfWeek]?.activities || [];
 
   const totalSessionsCount = strengthSessions.length + sportSessions.length;
 
@@ -159,11 +171,55 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
             </div>
           </div>
 
+          {/* Scheduled in weekly plan */}
+          {scheduledActivities.length > 0 && (
+            <div className="p-3 bg-[#111c18] border border-[#234234] rounded-xl space-y-2">
+              <span className="text-[10px] font-bold text-[#58C995] uppercase tracking-wider flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Запланировано по расписанию ({scheduledActivities.length})</span>
+              </span>
+              {scheduledActivities.map((act) => (
+                <div key={act.id} className="flex items-center justify-between bg-[#0b1411] p-2 rounded-lg border border-[#1b3026]">
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-md bg-[#162a20] flex items-center justify-center text-[#58C995]">
+                      {getSportIcon(act.sportType)}
+                    </div>
+                    <div>
+                      <span className="font-semibold text-xs text-[#E8E9E7] block">{act.title}</span>
+                      <span className="text-[10px] text-[#92999A]">{act.startTime} • ~{act.durationMinutes} мин</span>
+                    </div>
+                  </div>
+                  {act.sportType === 'strength' ? (
+                    <button
+                      onClick={() => {
+                        onStartWorkoutForDay();
+                        onClose();
+                      }}
+                      className="px-2 py-1 bg-[#58C995] text-black text-[10px] font-bold rounded-lg hover:bg-[#68d7a4] cursor-pointer"
+                    >
+                      Начать
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        onAddSportSession(dateStr);
+                        onClose();
+                      }}
+                      className="px-2 py-1 bg-[#233f33] text-[#58C995] text-[10px] font-bold rounded-lg hover:bg-[#2d5041] cursor-pointer"
+                    >
+                      Записать
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Strength Sessions Section */}
           {strengthSessions.length > 0 && (
             <div className="space-y-2">
               <span className="text-[10px] font-bold text-[#92999A] uppercase tracking-wider block">
-                Силовые тренировки ({strengthSessions.length})
+                Выполненные силовые ({strengthSessions.length})
               </span>
               {strengthSessions.map((sess) => (
                 <div
@@ -186,7 +242,7 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
                     {onDeleteStrengthSession && (
                       <button
                         onClick={() => onDeleteStrengthSession(sess.id)}
-                        className="p-1 text-[#92999A] hover:text-[#C83232]"
+                        className="p-1 text-[#92999A] hover:text-[#C83232] cursor-pointer"
                         title="Удалить запись"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -210,6 +266,13 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
                       <span className="font-bold text-[#E8E9E7]">{sess.completedSets}</span>
                     </div>
                   </div>
+
+                  {sess.exercises && sess.exercises.length > 0 && (
+                    <div className="text-[10px] text-[#92999A] bg-[#0c1214] p-1.5 rounded-lg border border-[#1a2224]">
+                      <span className="text-[#C5CBCD] font-semibold">Упражнения: </span>
+                      {sess.exercises.map((e) => e.name).join(', ')}
+                    </div>
+                  )}
 
                   {sess.notes && (
                     <p className="text-[10px] text-[#92999A] italic">«{sess.notes}»</p>

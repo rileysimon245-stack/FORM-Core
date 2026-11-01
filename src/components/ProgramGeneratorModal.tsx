@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { WorkoutProgram } from '../types/workout';
 import { generateWorkoutProgram, GeneratorParams } from '../services/programGenerator';
 import { StorageService } from '../services/storage';
+import { FormSelect } from './common/FormSelect';
 import { X, Sparkles, Loader2, Check, AlertCircle, Sliders, Dumbbell, ShieldCheck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
@@ -24,13 +25,6 @@ export const ProgramGeneratorModal: React.FC<ProgramGeneratorModalProps> = ({
   const activeEquipCount = equipmentList.filter((e) => e.selected || e.owned).length;
 
   const [goal, setGoal] = useState<string>(savedParams.goal || 'Развитие мышц');
-  const [equipment, setEquipment] = useState(
-    savedParams.location === 'В зале'
-      ? 'Полный тренажерный зал'
-      : savedParams.location === 'На улице'
-      ? 'Турник и брусья (Street Workout)'
-      : 'Гантели и скамья дома'
-  );
   const [daysPerWeek, setDaysPerWeek] = useState(savedParams.daysPerWeek || 3);
   const [duration, setDuration] = useState(savedParams.durationMinutes || 60);
   const [experience, setExperience] = useState(
@@ -94,7 +88,6 @@ export const ProgramGeneratorModal: React.FC<ProgramGeneratorModalProps> = ({
 
     const params: GeneratorParams = {
       goal,
-      equipment,
       daysPerWeek,
       duration,
       experience,
@@ -153,7 +146,7 @@ export const ProgramGeneratorModal: React.FC<ProgramGeneratorModalProps> = ({
 
         {/* Content */}
         {!previewProgram ? (
-          <form onSubmit={handleGenerate} className="flex-1 overflow-y-auto p-4 space-y-3.5">
+          <form onSubmit={handleGenerate} className="flex-1 overflow-y-auto p-4 space-y-3.5 [overscroll-behavior:contain] min-h-0">
             {/* Sync bar */}
             <div className="flex items-center justify-between p-2.5 bg-[#080D0E] border border-[#202729] rounded-xl text-xs">
               <div className="flex items-center gap-2 text-[#92999A]">
@@ -171,99 +164,64 @@ export const ProgramGeneratorModal: React.FC<ProgramGeneratorModalProps> = ({
 
             {/* Goal */}
             <div>
-              <label className="block text-xs font-semibold text-[#92999A] mb-1">
-                Цель тренировок
-              </label>
-              <select
+              <FormSelect
+                label="Цель тренировок"
                 value={goal}
-                onChange={(e) => setGoal(e.target.value)}
-                className="w-full bg-[#080D0E] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995]"
-              >
-                <option value="Развитие мышц">Развитие мышц (гипертрофия)</option>
-                <option value="Сила">Развитие максимальной силы</option>
-                <option value="Выносливость">Выносливость и рельеф</option>
-                <option value="Общая физическая подготовка">Общая физическая подготовка (ОФП)</option>
-                <option value="Улучшение физической формы">Улучшение физической формы</option>
-              </select>
+                onChange={(val) => setGoal(String(val))}
+                options={[
+                  { value: 'Развитие мышц', label: 'Развитие мышц (гипертрофия)' },
+                  { value: 'Сила', label: 'Развитие максимальной силы' },
+                  { value: 'Выносливость', label: 'Выносливость и рельеф' },
+                  { value: 'Общая физическая подготовка', label: 'Общая физическая подготовка (ОФП)' },
+                  { value: 'Улучшение физической формы', label: 'Улучшение физической формы' },
+                ]}
+              />
             </div>
 
-            {/* Equipment Category */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs font-semibold text-[#92999A]">
-                  Основное оборудование
-                </label>
-                {onOpenEquipment && (
-                  <button
-                    type="button"
-                    onClick={onOpenEquipment}
-                    className="text-[11px] text-[#58C995] hover:underline flex items-center gap-1"
-                  >
-                    <Dumbbell className="w-3 h-3" />
-                    <span>Настроить инвентарь</span>
-                  </button>
-                )}
-              </div>
-              <select
-                value={equipment}
-                onChange={(e) => setEquipment(e.target.value)}
-                className="w-full bg-[#080D0E] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995]"
-              >
-                <option value="Полный тренажерный зал">Полный тренажерный зал</option>
-                <option value="Гантели и скамья дома">Гантели и скамья дома</option>
-                <option value="Турник и брусья (Street Workout)">Турник и брусья (Street Workout)</option>
-                <option value="Собственный вес без инвентаря">Собственный вес без инвентаря</option>
-              </select>
-            </div>
+
 
             {/* Days per week & duration */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-semibold text-[#92999A] mb-1">
-                  Тренировок в неделю
-                </label>
-                <select
+                <FormSelect
+                  label="Тренировок в неделю"
                   value={daysPerWeek}
-                  onChange={(e) => setDaysPerWeek(Number(e.target.value))}
-                  className="w-full bg-[#080D0E] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995]"
-                >
-                  <option value={2}>2 дня</option>
-                  <option value={3}>3 дня</option>
-                  <option value={4}>4 дня</option>
-                  <option value={5}>5 дней</option>
-                </select>
+                  onChange={(val) => setDaysPerWeek(Number(val))}
+                  options={[
+                    { value: 2, label: '2 дня' },
+                    { value: 3, label: '3 дня' },
+                    { value: 4, label: '4 дня' },
+                    { value: 5, label: '5 дней' },
+                  ]}
+                />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-[#92999A] mb-1">
-                  Длительность
-                </label>
-                <select
+                <FormSelect
+                  label="Длительность"
                   value={duration}
-                  onChange={(e) => setDuration(Number(e.target.value))}
-                  className="w-full bg-[#080D0E] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995]"
-                >
-                  <option value={45}>45 минут</option>
-                  <option value={60}>60 минут</option>
-                  <option value={75}>75 минут</option>
-                  <option value={90}>90 минут</option>
-                </select>
+                  onChange={(val) => setDuration(Number(val))}
+                  options={[
+                    { value: 45, label: '45 минут' },
+                    { value: 60, label: '60 минут' },
+                    { value: 75, label: '75 минут' },
+                    { value: 90, label: '90 минут' },
+                  ]}
+                />
               </div>
             </div>
 
             {/* Experience level */}
             <div>
-              <label className="block text-xs font-semibold text-[#92999A] mb-1">
-                Уровень подготовки
-              </label>
-              <select
+              <FormSelect
+                label="Уровень подготовки"
                 value={experience}
-                onChange={(e) => setExperience(e.target.value)}
-                className="w-full bg-[#080D0E] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995]"
-              >
-                <option value="Новичок (до 6 месяцев)">Новичок (до 6 месяцев)</option>
-                <option value="Средний (1-3 года)">Средний (1-3 года)</option>
-                <option value="Опытный (3+ года)">Опытный (3+ года)</option>
-              </select>
+                onChange={(val) => setExperience(String(val))}
+                options={[
+                  { value: 'Новичок (до 6 месяцев)', label: 'Новичок (до 6 месяцев)' },
+                  { value: 'Средний (1-3 года)', label: 'Средний (1-3 года)' },
+                  { value: 'Опытный (3+ года)', label: 'Опытный (3+ года)' },
+                ]}
+              />
             </div>
 
             {/* Preferred days */}

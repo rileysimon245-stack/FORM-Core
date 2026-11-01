@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
-import { MuscleGroup, MuscleLoadStats } from '../types/workout';
-import { ChevronRight, Info, Settings, X, Dumbbell, ShieldCheck } from 'lucide-react';
+import { MuscleGroup, MuscleLoadStats, MUSCLE_DEFINITIONS, EXERCISE_CATALOG } from '../types/workout';
+import { Info, Dumbbell, BarChart3, Settings, Calendar, ShieldCheck } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { androidTapFeedback, modalBackdropVariants, modalDialogVariants } from '../utils/animations';
 
 interface MuscleMapProps {
   stats: Record<MuscleGroup, MuscleLoadStats>;
@@ -12,16 +11,21 @@ interface MuscleMapProps {
 
 export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onOpenSettings }) => {
   const [selectedMuscle, setSelectedMuscle] = useState<MuscleGroup>('chest');
-  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<'info' | 'exercises' | 'stats'>('info');
 
-  const currentStat = stats[selectedMuscle] || {
+  const currentDef = MUSCLE_DEFINITIONS[selectedMuscle];
+  const currentStat: MuscleLoadStats = stats[selectedMuscle] || {
     muscle: selectedMuscle,
-    nameRu: 'Грудные',
-    percent: 68,
-    weeklyTonnageKg: 8420,
-    recentWorkoutsCount: 3,
-    recoveryDays: 2,
-    status: 'fatigued',
+    nameRu: currentDef?.nameRu || 'Мышца',
+    percent: 0,
+    weeklyTonnageKg: 0,
+    recentWorkoutsCount: 0,
+    exerciseCount: 0,
+    setsCount: 0,
+    recoveryDays: 0,
+    status: 'recovered',
+    history: [],
+    hasData: false,
   };
 
   const handleSelect = (m: MuscleGroup) => {
@@ -29,75 +33,10 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
     if (onSelectMuscle) onSelectMuscle(m);
   };
 
-  const getFullMuscleTitle = (muscle: MuscleGroup): string => {
-    switch (muscle) {
-      case 'chest':
-        return 'Грудные мышцы';
-      case 'shoulders':
-        return 'Дельтовидные мышцы (плечи)';
-      case 'biceps':
-        return 'Двуглавая мышца (бицепс)';
-      case 'triceps':
-        return 'Трехглавая мышца (трицепс)';
-      case 'forearms':
-        return 'Мышцы предплечья';
-      case 'abs':
-        return 'Мышцы пресса и кора';
-      case 'quads':
-        return 'Четырехглавая мышца (квадрицепс)';
-      case 'hamstrings':
-        return 'Задняя поверхность бедра';
-      case 'calves':
-        return 'Икроножные мышцы';
-      case 'lats':
-        return 'Широчайшие мышцы спины';
-      case 'traps':
-        return 'Трапециевидные мышцы';
-      case 'rearDelts':
-        return 'Задние дельты';
-      case 'lowerback':
-        return 'Разгибатели спины (поясница)';
-      case 'glutes':
-        return 'Ягодичные мышцы';
-      default:
-        return 'Мышцы';
-    }
-  };
-
-  const getTopExercises = (muscle: MuscleGroup): string[] => {
-    switch (muscle) {
-      case 'chest':
-        return ['Жим штанги лежа', 'Отжимания на брусьях', 'Разведение гантелей'];
-      case 'shoulders':
-        return ['Армейский жим стоя', 'Махи гантелями в стороны', 'Жим гантелей сидя'];
-      case 'biceps':
-        return ['Подъем штанги на бицепс', 'Молотковые сгибания', 'Подтягивания обратным хватом'];
-      case 'triceps':
-        return ['Французский жим', 'Разгибания на блоке', 'Отжимания узким хватом'];
-      case 'forearms':
-        return ['Сгибания запястий со штангой', 'Вис на перекладине с весом'];
-      case 'abs':
-        return ['Подъем ног в висе', 'Скручивания на наклонной скамье', 'Планка'];
-      case 'quads':
-        return ['Приседания со штангой', 'Жим ногами в тренажере', 'Выпады с гантелями'];
-      case 'hamstrings':
-        return ['Румынская тяга', 'Сгибания ног лежа', 'Гиперэкстензия'];
-      case 'calves':
-        return ['Подъемы на носки стоя со штангой', 'Подъемы на носки сидя'];
-      case 'lats':
-        return ['Подтягивания широким хватом', 'Тяга верхнего блока', 'Тяга штанги в наклоне'];
-      case 'traps':
-        return ['Шраги с гантелями', 'Шраги со штангой', 'Тяга к подбородку'];
-      case 'rearDelts':
-        return ['Разведение гантелей в наклоне', 'Face Pull на блоке'];
-      case 'lowerback':
-        return ['Становая тяга классическая', 'Гиперэкстензия с блином'];
-      case 'glutes':
-        return ['Ягодичный мост со штангой', 'Глубокие приседания', 'Болгарские выпады'];
-      default:
-        return ['Базовые упражнения'];
-    }
-  };
+  // Find all exercises targeting this muscle from catalog
+  const exercisesForMuscle = EXERCISE_CATALOG.filter(
+    (ex) => ex.primaryMuscle === selectedMuscle || ex.secondaryMuscles?.includes(selectedMuscle)
+  );
 
   const isMuscleSelected = (m: MuscleGroup) => selectedMuscle === m;
 
@@ -108,17 +47,23 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
   };
 
   return (
-    <div className="w-full flex flex-col items-center select-none">
-      {/* Top Header: FORM logo + Settings icon */}
-      <div className="w-full flex items-center justify-between pt-1 mb-2">
-        <span className="font-serif text-lg font-bold tracking-widest text-[#E8E9E7]">
-          FORM
-        </span>
+    <div className="w-full flex flex-col items-center select-none pb-2">
+      {/* Top Header: FORM title + Settings icon (No fake status bar) */}
+      <div className="w-full flex items-center justify-between pt-1 mb-2 px-0.5">
+        <div>
+          <span className="font-serif text-xl font-bold tracking-widest text-[#E8E9E7]">
+            FORM
+          </span>
+          <span className="text-[11px] text-[#92999A] block font-medium">
+            Интерактивный атлас мышц
+          </span>
+        </div>
+
         {onOpenSettings && (
           <motion.button
             whileTap={{ scale: 0.9 }}
             onClick={onOpenSettings}
-            className="p-1.5 text-[#92999A] hover:text-[#E8E9E7] transition-colors rounded-lg cursor-pointer"
+            className="w-9 h-9 rounded-xl bg-[#101719] border border-[#252D2F] flex items-center justify-center text-[#92999A] hover:text-[#E8E9E7] transition-colors cursor-pointer"
             title="Настройки"
           >
             <Settings className="w-4 h-4" />
@@ -126,14 +71,14 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
         )}
       </div>
 
-      {/* Screen Title: Карта мышц */}
-      <div className="w-full text-left mb-2">
+      {/* Screen Title */}
+      <div className="w-full text-left mb-2 px-0.5">
         <h2 className="text-2xl font-serif tracking-tight text-[#E8E9E7]">
-          Карта мышц
+          Анатомия мышц
         </h2>
       </div>
 
-      {/* Central Anatomical Canvas: Both Front and Back figures displayed simultaneously */}
+      {/* Central Anatomical Canvas: Dual Models (Front & Back simultaneously, no switcher) */}
       <div className="relative w-full aspect-[1175/950] flex items-center justify-center overflow-hidden rounded-2xl bg-[#080D0E] my-1">
         <svg
           viewBox="-140 15 1175 950"
@@ -248,6 +193,24 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
               />
             </g>
 
+            {/* OBLIQUES (Косые мышцы живота) */}
+            <g
+              onClick={() => handleSelect('obliques')}
+              className="cursor-pointer"
+              filter={isMuscleSelected('obliques') ? 'url(#muscleGlow)' : undefined}
+            >
+              <path
+                d="M128,320 L160,320 L160,425 L132,425 Q125,370 128,320 Z"
+                fill={isMuscleSelected('obliques') ? '#58C995' : '#83CBA5'}
+                fillOpacity={isMuscleSelected('obliques') ? 0.95 : 0.65}
+              />
+              <path
+                d="M272,320 L240,320 L240,425 L268,425 Q275,370 272,320 Z"
+                fill={isMuscleSelected('obliques') ? '#58C995' : '#83CBA5'}
+                fillOpacity={isMuscleSelected('obliques') ? 0.95 : 0.65}
+              />
+            </g>
+
             {/* QUADS */}
             <g
               onClick={() => handleSelect('quads')}
@@ -266,6 +229,24 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
               />
             </g>
 
+            {/* TIBIALIS (Передняя большеберцовая мышца) */}
+            <g
+              onClick={() => handleSelect('tibialis')}
+              className="cursor-pointer"
+              filter={isMuscleSelected('tibialis') ? 'url(#muscleGlow)' : undefined}
+            >
+              <path
+                d="M138,745 Q130,810 142,885 L156,885 Q152,810 148,745 Z"
+                fill={isMuscleSelected('tibialis') ? '#58C995' : '#83CBA5'}
+                fillOpacity={isMuscleSelected('tibialis') ? 0.95 : 0.65}
+              />
+              <path
+                d="M262,745 Q270,810 258,885 L244,885 Q248,810 252,745 Z"
+                fill={isMuscleSelected('tibialis') ? '#58C995' : '#83CBA5'}
+                fillOpacity={isMuscleSelected('tibialis') ? 0.95 : 0.65}
+              />
+            </g>
+
             {/* CALVES (FRONT) */}
             <g
               onClick={() => handleSelect('calves')}
@@ -273,12 +254,12 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
               filter={isMuscleSelected('calves') ? 'url(#muscleGlow)' : undefined}
             >
               <path
-                d="M132,740 Q118,795 132,885 Q158,885 162,795 Q158,740 132,740 Z"
+                d="M124,740 Q114,795 126,865 L136,865 Q132,795 130,740 Z"
                 fill={isMuscleSelected('calves') ? '#58C995' : '#83CBA5'}
                 fillOpacity={isMuscleSelected('calves') ? 0.9 : 0.6}
               />
               <path
-                d="M268,740 Q282,795 268,885 Q242,885 238,795 Q242,740 268,740 Z"
+                d="M276,740 Q286,795 274,865 L264,865 Q268,795 270,740 Z"
                 fill={isMuscleSelected('calves') ? '#58C995' : '#83CBA5'}
                 fillOpacity={isMuscleSelected('calves') ? 0.9 : 0.6}
               />
@@ -406,31 +387,31 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
             </text>
           </g>
 
-          {/* Икры (Front) */}
-          <g onClick={() => handleSelect('calves')} className="cursor-pointer group">
-            <circle cx="145" cy="805" r={isMuscleSelected('calves') ? 5.5 : 4} fill={isMuscleSelected('calves') ? '#58C995' : '#556467'} />
+          {/* Тибиалис / Большеберцовая */}
+          <g onClick={() => handleSelect('tibialis')} className="cursor-pointer group">
+            <circle cx="145" cy="815" r={isMuscleSelected('tibialis') ? 5.5 : 4} fill={isMuscleSelected('tibialis') ? '#58C995' : '#556467'} />
             <polyline
-              points="145,805 15,795 -5,795"
+              points="145,815 15,805 -5,805"
               fill="none"
-              stroke={isMuscleSelected('calves') ? '#58C995' : '#384346'}
-              strokeWidth={isMuscleSelected('calves') ? '2.5' : '1.5'}
+              stroke={isMuscleSelected('tibialis') ? '#58C995' : '#384346'}
+              strokeWidth={isMuscleSelected('tibialis') ? '2.5' : '1.5'}
             />
-            <text x="-12" y="790" textAnchor="end" fill="#E8E9E7" fontSize="20" fontWeight="600">
-              Икры
+            <text x="-12" y="800" textAnchor="end" fill="#E8E9E7" fontSize="18" fontWeight="600">
+              Большеберцовая
             </text>
             <text
               x="-12"
-              y="816"
+              y="824"
               textAnchor="end"
-              fill={isMuscleSelected('calves') ? '#58C995' : '#E8E9E7'}
+              fill={isMuscleSelected('tibialis') ? '#58C995' : '#E8E9E7'}
               fontSize="24"
               fontWeight="700"
             >
-              {renderPercent('calves')}
+              {renderPercent('tibialis')}
             </text>
           </g>
 
-          {/* CENTER: Пресс */}
+          {/* CENTER: Пресс & Косые */}
           <g onClick={() => handleSelect('abs')} className="cursor-pointer group">
             <circle cx="205" cy="355" r={isMuscleSelected('abs') ? 5.5 : 4} fill={isMuscleSelected('abs') ? '#58C995' : '#556467'} />
             <polyline
@@ -803,16 +784,11 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
       </div>
 
       {/* ========================================================= */}
-      {/* BOTTOM SELECTED MUSCLE CARD (MATCHES REFERENCE EXACTLY)   */}
+      {/* DETAILED INTERACTIVE CARD WITH 3 TABS                     */}
       {/* ========================================================= */}
-      <motion.div
-        onClick={() => setShowDetailModal(true)}
-        whileTap={{ scale: 0.985 }}
-        transition={{ duration: 0.15 }}
-        className="w-full bg-[#101719] border border-[#252D2F] rounded-2xl p-4 mt-2 transition-colors hover:border-[#384346] cursor-pointer shadow-lg space-y-3"
-      >
-        {/* Top row: Muscle Icon + Muscle Name + Chevron */}
-        <div className="flex items-center justify-between">
+      <div className="w-full bg-[#101719] border border-[#252D2F] rounded-2xl p-4 mt-2 shadow-lg space-y-3">
+        {/* Header: Selected Muscle badge + Name */}
+        <div className="flex items-center justify-between pb-2 border-b border-[#1C2325]">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-[#14231b] border border-[#2f553f] flex items-center justify-center shrink-0">
               <svg
@@ -824,159 +800,211 @@ export const MuscleMap: React.FC<MuscleMapProps> = ({ stats, onSelectMuscle, onO
                 <path d="M7 6c-2 1-3 3-3 6s1 5 3 6" />
               </svg>
             </div>
-            <span className="text-base font-bold text-[#E8E9E7]">
-              {getFullMuscleTitle(selectedMuscle)}
-            </span>
-          </div>
-
-          <ChevronRight className="w-5 h-5 text-[#92999A]" />
-        </div>
-
-        {/* 3 Metric Columns */}
-        <div className="grid grid-cols-3 gap-2 pt-1 border-t border-[#1C2325]">
-          <div>
-            <span className="text-[11px] text-[#92999A] block mb-0.5">
-              Нагрузка за неделю
-            </span>
-            <span className="text-sm font-bold text-[#E8E9E7] tabular-nums">
-              {currentStat.weeklyTonnageKg.toLocaleString('ru-RU')} кг
-            </span>
-          </div>
-
-          <div>
-            <span className="text-[11px] text-[#92999A] block mb-0.5">
-              Прошлые тренировки
-            </span>
-            <span className="text-sm font-bold text-[#E8E9E7] tabular-nums">
-              {currentStat.recentWorkoutsCount}
-            </span>
-          </div>
-
-          <div>
-            <span className="text-[11px] text-[#92999A] block mb-0.5">
-              Восстановление
-            </span>
-            <span className="text-sm font-bold text-[#58C995] tabular-nums">
-              ~ {currentStat.recoveryDays} дня
-            </span>
+            <div>
+              <h3 className="text-base font-bold text-[#E8E9E7]">
+                {currentDef?.nameRu || 'Мышца'}
+              </h3>
+              <span className="text-[11px] text-[#58C995] font-semibold">
+                Нагрузка: {currentStat.percent}% • Восстановление: ~{currentStat.recoveryDays} дн.
+              </span>
+            </div>
           </div>
         </div>
 
-        {/* Fatigue / Recovery Progress Bar */}
-        <div className="pt-1">
-          <div className="flex items-center justify-between text-[11px] text-[#92999A] mb-1">
-            <span>Уровень нагрузки</span>
-            <span className="font-bold text-[#58C995] tabular-nums">{currentStat.percent}%</span>
-          </div>
-          <div className="w-full bg-[#1b2224] h-1.5 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-[#58C995] rounded-full transition-all duration-500 ease-out"
-              style={{ width: `${Math.min(100, Math.max(5, currentStat.percent))}%` }}
-            />
-          </div>
+        {/* 3 Tabs: [Информация] [Упражнения] [Статистика] */}
+        <div className="flex p-1 bg-[#141C1E] rounded-xl border border-[#202729]">
+          <button
+            type="button"
+            onClick={() => setActiveTab('info')}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+              activeTab === 'info'
+                ? 'bg-[#182821] text-[#58C995] border border-[#2f553f]'
+                : 'text-[#92999A] hover:text-[#E8E9E7]'
+            }`}
+          >
+            <Info className="w-3.5 h-3.5" />
+            <span>Информация</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('exercises')}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+              activeTab === 'exercises'
+                ? 'bg-[#182821] text-[#58C995] border border-[#2f553f]'
+                : 'text-[#92999A] hover:text-[#E8E9E7]'
+            }`}
+          >
+            <Dumbbell className="w-3.5 h-3.5" />
+            <span>Упражнения ({exercisesForMuscle.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('stats')}
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+              activeTab === 'stats'
+                ? 'bg-[#182821] text-[#58C995] border border-[#2f553f]'
+                : 'text-[#92999A] hover:text-[#E8E9E7]'
+            }`}
+          >
+            <BarChart3 className="w-3.5 h-3.5" />
+            <span>Статистика</span>
+          </button>
         </div>
 
-        {/* Medical / Estimation Disclaimer */}
-        <div className="flex items-center gap-1.5 pt-1 text-[10px] text-[#6E7678]">
-          <Info className="w-3.5 h-3.5 shrink-0 text-[#92999A]" />
-          <span>Восстановление — приблизительная оценка. Не является медицинским показателем.</span>
-        </div>
-      </motion.div>
+        {/* Tab 1: ИНФОРМАЦИЯ (Анатомия, расположение, функция) */}
+        {activeTab === 'info' && (
+          <div className="space-y-2.5 pt-1 text-xs">
+            {/* Location */}
+            <div className="p-3 bg-[#080D0E] rounded-xl border border-[#202729] space-y-1">
+              <span className="text-[11px] font-bold text-[#58C995] uppercase tracking-wider block">
+                Расположение
+              </span>
+              <p className="text-xs text-[#C5CBCD] leading-relaxed">
+                {currentDef?.locationRu}
+              </p>
+            </div>
 
-      {/* ========================================================= */}
-      {/* DETAILED MUSCLE MODAL                                     */}
-      {/* ========================================================= */}
-      <AnimatePresence>
-        {showDetailModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-            <motion.div
-              variants={modalBackdropVariants}
-              initial="hidden"
-              animate="visible"
-              exit="exit"
-              onClick={() => setShowDetailModal(false)}
-              className="fixed inset-0 bg-black/80 backdrop-blur-sm cursor-pointer"
-            />
+            {/* Function */}
+            <div className="p-3 bg-[#080D0E] rounded-xl border border-[#202729] space-y-1">
+              <span className="text-[11px] font-bold text-[#58C995] uppercase tracking-wider block">
+                Анатомическая функция
+              </span>
+              <p className="text-xs text-[#C5CBCD] leading-relaxed">
+                {currentDef?.functionRu}
+              </p>
+            </div>
 
-            <motion.div
-              variants={modalDialogVariants}
-              initial="hidden"
-              animate="visible"
-              exit="exit"
-              className="relative w-full max-w-sm bg-[#101719] border border-[#252D2F] rounded-3xl p-5 shadow-2xl z-10 space-y-4 max-h-[85vh] overflow-y-auto"
-            >
-              {/* Header */}
-              <div className="flex items-center justify-between border-b border-[#202729] pb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-[#14231b] border border-[#2f553f] flex items-center justify-center">
-                    <Dumbbell className="w-4 h-4 text-[#58C995]" />
+            {/* Recovery advice */}
+            <div className="p-3 bg-[#080D0E] rounded-xl border border-[#202729] flex items-start gap-2">
+              <ShieldCheck className="w-4 h-4 text-[#58C995] shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <span className="text-xs font-bold text-[#E8E9E7]">
+                  Время полного восстановления: ~{currentDef?.recoveryHours} часов
+                </span>
+                <p className="text-[11px] text-[#92999A]">
+                  Оценка основана на физиологическом времени синтеза белка и регенерации волокон.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Tab 2: УПРАЖНЕНИЯ (Из дневника) */}
+        {activeTab === 'exercises' && (
+          <div className="space-y-2 pt-1">
+            {exercisesForMuscle.length > 0 ? (
+              exercisesForMuscle.map((ex) => {
+                const isPrimary = ex.primaryMuscle === selectedMuscle;
+                return (
+                  <div
+                    key={ex.id}
+                    className="p-3 bg-[#080D0E] border border-[#202729] rounded-xl flex items-center justify-between text-xs"
+                  >
+                    <div className="space-y-0.5">
+                      <div className="font-semibold text-[#E8E9E7]">{ex.name}</div>
+                      <div className="text-[11px] text-[#92999A]">
+                        {ex.type} • {ex.difficulty}
+                      </div>
+                    </div>
+
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-md border shrink-0 ${
+                        isPrimary
+                          ? 'bg-[#14231b] text-[#58C995] border-[#2f553f]'
+                          : 'bg-[#161d20] text-[#92999A] border-[#252D2F]'
+                      }`}
+                    >
+                      {isPrimary ? 'Основная' : 'Второстепенная'}
+                    </span>
                   </div>
-                  <div>
-                    <h3 className="text-base font-bold text-[#E8E9E7]">
-                      {getFullMuscleTitle(selectedMuscle)}
-                    </h3>
-                    <span className="text-[11px] text-[#58C995] font-medium">
-                      Нагрузка: {currentStat.percent}% • Статус: {currentStat.status === 'fatigued' ? 'Утомлена' : currentStat.status === 'recovering' ? 'Восстановление' : 'Готова к нагрузкам'}
+                );
+              })
+            ) : (
+              <div className="py-6 text-center text-xs text-[#92999A]">
+                В каталоге пока нет упражнений для этой группы.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 3: СТАТИСТИКА (Реальные данные тренировок) */}
+        {activeTab === 'stats' && (
+          <div className="space-y-3 pt-1 text-xs">
+            {currentStat.hasData ? (
+              <>
+                {/* 3 Metric cards */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="p-2.5 bg-[#080D0E] border border-[#202729] rounded-xl text-center">
+                    <span className="text-[10px] text-[#92999A] block mb-0.5">Тренировочный объём</span>
+                    <span className="text-sm font-bold text-[#E8E9E7] tabular-nums">
+                      {currentStat.weeklyTonnageKg.toLocaleString('ru-RU')} кг
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[#080D0E] border border-[#202729] rounded-xl text-center">
+                    <span className="text-[10px] text-[#92999A] block mb-0.5">Подходов выполнено</span>
+                    <span className="text-sm font-bold text-[#58C995] tabular-nums">
+                      {currentStat.setsCount}
+                    </span>
+                  </div>
+
+                  <div className="p-2.5 bg-[#080D0E] border border-[#202729] rounded-xl text-center">
+                    <span className="text-[10px] text-[#92999A] block mb-0.5">Упражнений</span>
+                    <span className="text-sm font-bold text-[#E8E9E7] tabular-nums">
+                      {currentStat.exerciseCount}
                     </span>
                   </div>
                 </div>
 
-                <motion.button
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => setShowDetailModal(false)}
-                  className="p-1.5 text-[#92999A] hover:text-[#E8E9E7] rounded-xl hover:bg-[#1E2628] transition-colors cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </motion.button>
-              </div>
-
-              {/* Recovery Guidance */}
-              <div className="p-3 bg-[#080D0E] rounded-xl border border-[#202729] space-y-1.5">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-[#58C995]">
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>Рекомендация по восстановлению</span>
-                </div>
-                <p className="text-xs text-[#92999A] leading-relaxed">
-                  {currentStat.percent > 70
-                    ? 'Мышца получила высокую нагрузку за неделю. Рекомендуется дать минимум 48-72 часа отдыха перед следующей интенсивной силовой сессией.'
-                    : currentStat.percent > 35
-                    ? 'Оптимальный уровень нагрузки. Мышца готова к стандартному тренировочному объему.'
-                    : 'Низкая нагрузка за последние 7 дней. Можно безопасно включать в тренировочный план на сегодня.'}
-                </p>
-              </div>
-
-              {/* Top Exercises for this Muscle */}
-              <div className="space-y-2">
-                <span className="text-xs font-bold text-[#92999A] uppercase tracking-wider block">
-                  Лучшие упражнения из базы FORM:
-                </span>
+                {/* History list */}
                 <div className="space-y-1.5">
-                  {getTopExercises(selectedMuscle).map((exName, idx) => (
+                  <span className="text-[11px] font-bold text-[#92999A] uppercase tracking-wider block">
+                    История нагрузки по тренировкам:
+                  </span>
+                  {currentStat.history.slice(0, 5).map((h, idx) => (
                     <div
                       key={idx}
-                      className="p-2.5 bg-[#080D0E] border border-[#202729] rounded-xl flex items-center justify-between text-xs font-medium text-[#E8E9E7]"
+                      className="p-2.5 bg-[#080D0E] border border-[#202729] rounded-xl flex items-center justify-between text-xs"
                     >
-                      <span>{exName}</span>
-                      <span className="text-[10px] text-[#58C995] font-semibold px-2 py-0.5 bg-[#14231b] rounded-md border border-[#2f553f]">
-                        Базовое
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-3.5 h-3.5 text-[#58C995] shrink-0" />
+                        <div>
+                          <div className="font-semibold text-[#E8E9E7]">{h.exerciseName}</div>
+                          <div className="text-[10px] text-[#83CBA5]">{h.date}</div>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="font-bold text-[#E8E9E7] tabular-nums">
+                          {h.volumeKg.toLocaleString('ru-RU')} кг
+                        </span>
+                        <div className="text-[10px] text-[#92999A]">{h.sets} подх.</div>
+                      </div>
                     </div>
                   ))}
                 </div>
+              </>
+            ) : (
+              <div className="py-6 px-4 bg-[#080D0E] border border-[#202729] rounded-xl text-center space-y-1.5">
+                <BarChart3 className="w-8 h-8 text-[#58C995]/50 mx-auto mb-1" />
+                <h4 className="text-xs font-bold text-[#E8E9E7]">
+                  Нет данных о тренировках этой группы за выбранный период
+                </h4>
+                <p className="text-[11px] text-[#92999A] max-w-xs mx-auto">
+                  Запишите выполненную тренировку с упражнениями на {currentDef?.nameRu.toLowerCase() || 'эту мышцу'}, чтобы увидеть динамику нагрузки и объём.
+                </p>
               </div>
+            )}
 
-              {/* Close Button */}
-              <motion.button
-                whileTap={{ scale: 0.96 }}
-                onClick={() => setShowDetailModal(false)}
-                className="w-full py-2.5 bg-[#1E2628] hover:bg-[#283336] text-[#E8E9E7] text-xs font-bold rounded-xl transition-colors cursor-pointer"
-              >
-                Закрыть
-              </motion.button>
-            </motion.div>
+            <div className="flex items-center gap-1.5 pt-1 text-[10px] text-[#6E7678]">
+              <Info className="w-3.5 h-3.5 shrink-0 text-[#92999A]" />
+              <span>Расчётный тренировочный объём не является физиологическим измерением активации волокон.</span>
+            </div>
           </div>
         )}
-      </AnimatePresence>
+      </div>
     </div>
   );
 };

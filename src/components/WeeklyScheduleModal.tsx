@@ -6,6 +6,7 @@ import {
   ActivityIntensity,
   SPORT_DEFINITIONS,
 } from '../types/workout';
+import { FormSelect } from './common/FormSelect';
 import {
   X,
   Plus,
@@ -471,7 +472,7 @@ export const WeeklyScheduleModal: React.FC<WeeklyScheduleModalProps> = ({
         </div>
 
         {/* Selected Day Content */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 [overscroll-behavior:contain] min-h-0">
           <div className="flex items-center justify-between">
             <div>
               <h3 className="text-sm font-bold text-[#E8E9E7]">
@@ -528,27 +529,29 @@ export const WeeklyScheduleModal: React.FC<WeeklyScheduleModalProps> = ({
                           {getSportIcon(act.sportType)}
                         </div>
 
-                        <select
-                          value={act.sportType}
-                          onChange={(e) =>
-                            handleUpdateActivity(
-                              selectedDayIdx,
-                              act.id,
-                              'sportType',
-                              e.target.value as SportType
-                            )
-                          }
-                          className="bg-[#101719] border border-[#252D2F] rounded-lg px-2.5 py-1 text-xs text-[#E8E9E7] font-semibold focus:outline-none focus:border-[#58C995]"
-                        >
-                          <option value="strength">🏋️ Силовая тренировка</option>
-                          <option value="boxing">🥊 Бокс / Единоборства</option>
-                          <option value="basketball">🏀 Баскетбол</option>
-                          <option value="running">🏃 Бег / Кардио</option>
-                          <option value="cycling">🚴 Велоспорт</option>
-                          <option value="swimming">🏊 Плавание</option>
-                          <option value="other_sport">⚡ Другой вид спорта</option>
-                          <option value="rest">🌙 День отдыха</option>
-                        </select>
+                        <div className="flex-1 min-w-0">
+                          <FormSelect
+                            value={act.sportType}
+                            onChange={(val) =>
+                              handleUpdateActivity(
+                                selectedDayIdx,
+                                act.id,
+                                'sportType',
+                                val as SportType
+                              )
+                            }
+                            options={[
+                              { value: 'strength', label: '🏋️ Силовая тренировка' },
+                              { value: 'boxing', label: '🥊 Бокс / Единоборства' },
+                              { value: 'basketball', label: '🏀 Баскетбол' },
+                              { value: 'running', label: '🏃 Бег / Кардио' },
+                              { value: 'cycling', label: '🚴 Велоспорт' },
+                              { value: 'swimming', label: '🏊 Плавание' },
+                              { value: 'other_sport', label: '⚡ Другой вид спорта' },
+                              { value: 'rest', label: '🌙 День отдыха' },
+                            ]}
+                          />
+                        </div>
                       </div>
 
                       <button
@@ -618,25 +621,23 @@ export const WeeklyScheduleModal: React.FC<WeeklyScheduleModalProps> = ({
                       </div>
 
                       <div>
-                        <label className="text-[10px] text-[#92999A] font-semibold block mb-1">
-                          Интенсивность
-                        </label>
-                        <select
+                        <FormSelect
+                          label="Интенсивность"
                           value={act.intensity}
-                          onChange={(e) =>
+                          onChange={(val) =>
                             handleUpdateActivity(
                               selectedDayIdx,
                               act.id,
                               'intensity',
-                              e.target.value as ActivityIntensity
+                              val as ActivityIntensity
                             )
                           }
-                          className="w-full bg-[#101719] border border-[#252D2F] rounded-lg px-1.5 py-1 text-[11px] text-[#E8E9E7] font-semibold focus:outline-none focus:border-[#58C995]"
-                        >
-                          <option value="low">🟢 Лёгкая</option>
-                          <option value="medium">🟡 Средняя</option>
-                          <option value="high">🔴 Высокая</option>
-                        </select>
+                          options={[
+                            { value: 'low', label: '🟢 Лёгкая' },
+                            { value: 'medium', label: '🟡 Средняя' },
+                            { value: 'high', label: '🔴 Высокая' },
+                          ]}
+                        />
                       </div>
                     </div>
 

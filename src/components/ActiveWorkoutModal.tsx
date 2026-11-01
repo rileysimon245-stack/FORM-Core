@@ -9,6 +9,7 @@ import {
   MUSCLE_DEFINITIONS,
 } from '../types/workout';
 import { StorageService } from '../services/storage';
+import { FormSelect } from './common/FormSelect';
 import {
   X,
   Plus,
@@ -478,7 +479,18 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       )}
 
       {/* Main Content: Exercises and Sets */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4">
+        {exercises.length === 0 && (
+          <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-6 text-center space-y-2">
+            <div className="w-10 h-10 rounded-xl bg-[#14231b] text-[#58C995] flex items-center justify-center mx-auto">
+              <BookOpen className="w-5 h-5" />
+            </div>
+            <p className="text-xs font-semibold text-[#E8E9E7]">В тренировке пока нет упражнений</p>
+            <p className="text-[11px] text-[#92999A]">
+              Нажмите кнопку ниже, чтобы выбрать упражнения из каталога или создать своё.
+            </p>
+          </div>
+        )}
         {exercises.map((ex, exIndex) => {
           const prev = prevResultsMap[ex.name];
 
@@ -846,20 +858,21 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                   onChange={(e) => setCustomExName(e.target.value)}
                   className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-3 py-1.5 text-xs text-[#E8E9E7] focus:outline-none"
                 />
-                <div className="flex gap-2">
-                  <select
-                    value={customExMuscle}
-                    onChange={(e) => setCustomExMuscle(e.target.value as MuscleGroup)}
-                    className="flex-1 bg-[#171D1F] border border-[#252D2F] rounded-xl px-2 py-1 text-xs text-[#E8E9E7]"
-                  >
-                    {Object.values(MUSCLE_DEFINITIONS).map((m) => (
-                      <option key={m.id} value={m.id}>{m.nameRu}</option>
-                    ))}
-                  </select>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <FormSelect
+                      value={customExMuscle}
+                      onChange={(val) => setCustomExMuscle(val as MuscleGroup)}
+                      options={Object.values(MUSCLE_DEFINITIONS).map((m) => ({
+                        value: m.id,
+                        label: m.nameRu,
+                      }))}
+                    />
+                  </div>
                   <button
                     onClick={handleAddCustomExercise}
                     disabled={!customExName.trim()}
-                    className="px-3 py-1 bg-[#58C995] text-[#080D0E] font-bold text-xs rounded-xl disabled:opacity-40"
+                    className="px-3 py-2 bg-[#58C995] text-[#080D0E] font-bold text-xs rounded-xl disabled:opacity-40 shrink-0 cursor-pointer"
                   >
                     Создать
                   </button>

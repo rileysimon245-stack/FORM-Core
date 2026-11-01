@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ExerciseLibraryItem,
   EXERCISE_CATALOG,
@@ -48,11 +48,18 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
     StorageService.getFavoriteExerciseIds()
   );
 
+  useEffect(() => {
+    const unsub = StorageService.subscribe(() => {
+      setFavorites(StorageService.getFavoriteExerciseIds());
+    });
+    return () => unsub();
+  }, []);
+
   const [expandedExerciseId, setExpandedExerciseId] = useState<string | null>(null);
 
   const handleToggleFavorite = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    const isFav = StorageService.toggleFavoriteExercise(id);
+    StorageService.toggleFavoriteExercise(id);
     setFavorites(StorageService.getFavoriteExerciseIds());
   };
 
@@ -143,14 +150,25 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
         <div className="flex gap-2 text-xs">
           <button
             onClick={() => setOnlyFavorites(!onlyFavorites)}
-            className={`px-3 py-1 rounded-lg border flex items-center gap-1.5 transition-all ${
+            className={`px-3 py-1.5 rounded-xl border flex items-center gap-1.5 transition-all cursor-pointer ${
               onlyFavorites
-                ? 'border-[#58C995] bg-[#315D4B]/30 text-[#58C995]'
-                : 'border-[#252D2F] bg-[#171D1F] text-[#92999A]'
+                ? 'border-[#58C995] bg-[#14231b] text-[#58C995] font-bold'
+                : 'border-[#252D2F] bg-[#101719] text-[#92999A] hover:text-[#E8E9E7]'
             }`}
           >
-            <Star className={`w-3.5 h-3.5 ${onlyFavorites ? 'fill-[#58C995]' : ''}`} />
-            <span>Избранное ({favorites.length})</span>
+            <Star className={`w-3.5 h-3.5 ${onlyFavorites ? 'fill-[#58C995] text-[#58C995]' : ''}`} />
+            <span>Избранное</span>
+            {favorites.length > 0 && (
+              <span
+                className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] font-bold leading-tight ${
+                  onlyFavorites
+                    ? 'bg-[#58C995] text-black'
+                    : 'bg-[#202729] text-[#58C995]'
+                }`}
+              >
+                {favorites.length}
+              </span>
+            )}
           </button>
 
           <button

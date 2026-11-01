@@ -18,7 +18,7 @@ const PORT = 3000;
 // API endpoint for AI program generation
 app.post('/api/generate-program', async (req, res) => {
   try {
-    const { goal, equipment, daysPerWeek, duration, experience, preferredDays, notes } = req.body;
+    const { goal, availableEquipmentIds, daysPerWeek, duration, experience, preferredDays, notes } = req.body;
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey.trim() === '') {
@@ -29,10 +29,29 @@ app.post('/api/generate-program', async (req, res) => {
       });
     }
 
+    const EQUIPMENT_NAMES_RU: Record<string, string> = {
+      bodyweight: 'Собственный вес',
+      pullup_bar: 'Турник',
+      dip_bars: 'Брусья',
+      dumbbells_adjustable: 'Разборные гантели',
+      dumbbells_fixed: 'Цельные гантели',
+      barbell: 'Штанга и блины',
+      bench: 'Скамья для жима',
+      resistance_bands: 'Фитнес-резинки',
+      kettlebells: 'Гири',
+      jump_rope: 'Скакалка',
+      gym_machines: 'Тренажёры',
+      other: 'Другой инвентарь',
+    };
+
+    const equipmentNames = Array.isArray(availableEquipmentIds) && availableEquipmentIds.length > 0
+      ? availableEquipmentIds.map((id: string) => EQUIPMENT_NAMES_RU[id] || id).join(', ')
+      : 'Только собственный вес (нет инвентаря)';
+
     const ai = new GoogleGenAI({ apiKey });
     const prompt = `Ты — элитный тренер по бодибилдингу и силовой подготовке. Составь научно обоснованную программу тренировок на русском языке:
 - Цель: ${goal || 'Набор мышечной массы'}
-- Доступное оборудование: ${equipment || 'Тренажерный зал'}
+- Строго доступный инвентарь (подбирай упражнения ТОЛЬКО из этого списка, никакого другого оборудования): ${equipmentNames}
 - Количество тренировок в неделю: ${daysPerWeek || 3}
 - Длительность одного занятия: ${duration || 60} минут
 - Уровень подготовки: ${experience || 'Средний'}

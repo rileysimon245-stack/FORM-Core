@@ -16,10 +16,15 @@ import {
   WeeklyScheduleDay,
   DayActivityItem,
   SPORT_DEFINITIONS,
+  AppSettings,
+  DEFAULT_APP_SETTINGS,
+  MuscleLoadHistoryItem,
+  EXERCISE_CATALOG,
 } from '../types/workout';
 
 const STORAGE_KEYS = {
-  APP_INITIALIZED: 'form_app_initialized_v5',
+  APP_INITIALIZED: 'form_app_initialized_v10',
+  CLEAN_PURGE: 'form_clean_purge_v10',
   PROFILE: 'form_user_profile',
   PROGRAMS: 'form_workout_programs',
   WORKOUTS: 'form_workout_sessions',
@@ -30,21 +35,22 @@ const STORAGE_KEYS = {
   EQUIPMENT: 'form_user_equipment_v1',
   FITNESS_PARAMS: 'form_fitness_parameters_v1',
   FAVORITES: 'form_favorite_exercises_v1',
+  SETTINGS: 'form_app_settings_v1',
 };
 
-// Default athletic user profile
+// Clean empty profile with zero fake parameters
 const DEFAULT_PROFILE: UserProfile = {
-  name: 'Алексей',
-  age: 28,
-  heightCm: 182,
-  weightKg: 82.5,
-  fitnessGoal: 'Набор мышечной массы и сила',
-  experienceLevel: 'Продвинутый',
-  streakDays: 12,
+  name: '',
+  age: 0,
+  heightCm: 0,
+  weightKg: 0,
+  fitnessGoal: '',
+  experienceLevel: '',
+  streakDays: 0,
 };
 
-// Default high-quality training programs
-const DEFAULT_PROGRAMS: WorkoutProgram[] = [
+// Catalog presets available for user to optionally import (not pre-injected into personal list)
+export const CATALOG_PRESET_PROGRAMS: WorkoutProgram[] = [
   {
     id: 'prog_push_pull_legs',
     name: 'Push / Pull / Legs (Сила + Масса)',
@@ -134,305 +140,24 @@ const DEFAULT_PROGRAMS: WorkoutProgram[] = [
   },
 ];
 
-// Generate consistent year-long activity map for 2026 that mirrors the screenshot
+// Clean initial activity map (starts empty)
 function generateInitial2026Activity(): Record<string, 'completed' | 'skipped' | 'none'> {
-  const map: Record<string, 'completed' | 'skipped' | 'none'> = {};
-  const year = 2026;
-  const today = new Date(2026, 9, 29); // 2026-10-29
-
-  for (let m = 0; m < 12; m++) {
-    const daysInMonth = new Date(year, m + 1, 0).getDate();
-    for (let d = 1; d <= daysInMonth; d++) {
-      const date = new Date(year, m, d);
-      const dateKey = `${year}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      
-      if (date > today) {
-        map[dateKey] = 'none';
-        continue;
-      }
-
-      const dayOfWeek = date.getDay();
-      const dayOfYear = Math.floor((date.getTime() - new Date(year, 0, 1).getTime()) / (1000 * 60 * 60 * 24));
-      const isMissed = [38, 79, 114, 156, 185, 212, 240, 275].includes(dayOfYear);
-
-      if (isMissed) {
-        map[dateKey] = 'skipped';
-      } else if (dayOfWeek === 1 || dayOfWeek === 3 || dayOfWeek === 5 || (dayOfWeek === 6 && dayOfYear % 3 === 0) || (dayOfWeek === 2 && dayOfYear % 5 === 0)) {
-        map[dateKey] = 'completed';
-      } else {
-        map[dateKey] = 'none';
-      }
-    }
-  }
-
-  map['2026-10-26'] = 'completed';
-  map['2026-10-28'] = 'completed';
-  return map;
+  return {};
 }
 
+// Clean initial workout sessions (starts empty)
 function generateInitialSessions(): WorkoutSession[] {
-  return [
-    {
-      id: 'session_oct_28',
-      name: 'Push: Грудь и Плечи (Тяжелая)',
-      programName: 'Push / Pull / Legs',
-      date: '2026-10-28',
-      startTime: '18:15',
-      durationMinutes: 58,
-      status: 'completed',
-      totalVolumeKg: 8420,
-      completedSets: 14,
-      totalReps: 122,
-      notes: 'Отличное самочувствие, в жиме лежа взял 90 кг на 5 повторений.',
-      personalRecords: [
-        { exerciseName: 'Жим штанги лежа', weightKg: 90, reps: 5, date: '2026-10-28', isNew: true },
-      ],
-      exercises: [
-        {
-          id: 'ex_1',
-          exerciseId: 'bench_press',
-          name: 'Жим штанги лежа',
-          targetMuscle: 'chest',
-          isBodyweight: false,
-          restSeconds: 90,
-          sets: [
-            { setNumber: 1, weightKg: 70, reps: 10, completed: true, previousWeightKg: 70, previousReps: 10 },
-            { setNumber: 2, weightKg: 80, reps: 8, completed: true, previousWeightKg: 80, previousReps: 8 },
-            { setNumber: 3, weightKg: 85, reps: 6, completed: true, previousWeightKg: 85, previousReps: 6 },
-            { setNumber: 4, weightKg: 90, reps: 5, completed: true, previousWeightKg: 85, previousReps: 6 },
-          ],
-        },
-        {
-          id: 'ex_2',
-          exerciseId: 'incline_dumbbells',
-          name: 'Жим гантелей на наклонной',
-          targetMuscle: 'chest',
-          isBodyweight: false,
-          restSeconds: 75,
-          sets: [
-            { setNumber: 1, weightKg: 26, reps: 10, completed: true, previousWeightKg: 24, previousReps: 10 },
-            { setNumber: 2, weightKg: 28, reps: 9, completed: true, previousWeightKg: 26, previousReps: 9 },
-            { setNumber: 3, weightKg: 30, reps: 8, completed: true, previousWeightKg: 28, previousReps: 8 },
-          ],
-        },
-        {
-          id: 'ex_3',
-          exerciseId: 'military_press',
-          name: 'Армейский жим стоя',
-          targetMuscle: 'shoulders',
-          isBodyweight: false,
-          restSeconds: 90,
-          sets: [
-            { setNumber: 1, weightKg: 45, reps: 8, completed: true, previousWeightKg: 45, previousReps: 8 },
-            { setNumber: 2, weightKg: 50, reps: 7, completed: true, previousWeightKg: 50, previousReps: 6 },
-            { setNumber: 3, weightKg: 50, reps: 6, completed: true, previousWeightKg: 50, previousReps: 6 },
-          ],
-        },
-        {
-          id: 'ex_4',
-          exerciseId: 'dips',
-          name: 'Отжимания на брусьях',
-          targetMuscle: 'triceps',
-          isBodyweight: true,
-          restSeconds: 60,
-          sets: [
-            { setNumber: 1, weightKg: 0, reps: 15, completed: true, previousWeightKg: 0, previousReps: 15 },
-            { setNumber: 2, weightKg: 0, reps: 12, completed: true, previousWeightKg: 0, previousReps: 12 },
-            { setNumber: 3, weightKg: 0, reps: 12, completed: true, previousWeightKg: 0, previousReps: 10 },
-          ],
-        },
-      ],
-    },
-    {
-      id: 'session_oct_26',
-      name: 'Pull: Спина и Бицепс',
-      programName: 'Push / Pull / Legs',
-      date: '2026-10-26',
-      startTime: '19:00',
-      durationMinutes: 62,
-      status: 'completed',
-      totalVolumeKg: 7850,
-      completedSets: 14,
-      totalReps: 115,
-      notes: 'Хорошая прокачка широчайших, подтягивания с чистой техникой.',
-      exercises: [
-        {
-          id: 'ex_pull_1',
-          exerciseId: 'pull_ups',
-          name: 'Подтягивания широким хватом',
-          targetMuscle: 'lats',
-          isBodyweight: true,
-          restSeconds: 90,
-          sets: [
-            { setNumber: 1, weightKg: 0, reps: 12, completed: true },
-            { setNumber: 2, weightKg: 0, reps: 10, completed: true },
-            { setNumber: 3, weightKg: 0, reps: 9, completed: true },
-            { setNumber: 4, weightKg: 0, reps: 8, completed: true },
-          ],
-        },
-        {
-          id: 'ex_pull_2',
-          exerciseId: 'barbell_row',
-          name: 'Тяга штанги в наклоне',
-          targetMuscle: 'lats',
-          isBodyweight: false,
-          restSeconds: 90,
-          sets: [
-            { setNumber: 1, weightKg: 70, reps: 10, completed: true },
-            { setNumber: 2, weightKg: 75, reps: 8, completed: true },
-            { setNumber: 3, weightKg: 80, reps: 6, completed: true },
-          ],
-        },
-      ],
-    },
-    {
-      id: 'session_oct_24',
-      name: 'Legs: Приседания и Ноги',
-      programName: 'Push / Pull / Legs',
-      date: '2026-10-24',
-      startTime: '11:00',
-      durationMinutes: 70,
-      status: 'completed',
-      totalVolumeKg: 11200,
-      completedSets: 16,
-      totalReps: 140,
-      notes: 'Тяжелый день ног, приседания 115 кг.',
-      personalRecords: [
-        { exerciseName: 'Приседания со штангой', weightKg: 115, reps: 6, date: '2026-10-24', isNew: true },
-      ],
-      exercises: [
-        {
-          id: 'ex_leg_1',
-          exerciseId: 'squats',
-          name: 'Приседания со штангой',
-          targetMuscle: 'quads',
-          isBodyweight: false,
-          restSeconds: 120,
-          sets: [
-            { setNumber: 1, weightKg: 80, reps: 10, completed: true },
-            { setNumber: 2, weightKg: 100, reps: 8, completed: true },
-            { setNumber: 3, weightKg: 110, reps: 6, completed: true },
-            { setNumber: 4, weightKg: 115, reps: 6, completed: true },
-          ],
-        },
-      ],
-    },
-  ];
+  return [];
 }
 
 export const DEFAULT_WEEKLY_SCHEDULE: WeeklyScheduleDay[] = [
-  {
-    dayOfWeek: 0,
-    dayName: 'Пн',
-    fullDayName: 'Понедельник',
-    activities: [
-      {
-        id: 'act_mon_strength',
-        sportType: 'strength',
-        title: 'Силовая: Push (Грудь, Плечи, Трицепс)',
-        startTime: '18:30',
-        durationMinutes: 60,
-        intensity: 'high',
-        notes: 'Базовый силовой сплит',
-      },
-    ],
-  },
-  {
-    dayOfWeek: 1,
-    dayName: 'Вт',
-    fullDayName: 'Вторник',
-    activities: [
-      {
-        id: 'act_tue_boxing',
-        sportType: 'boxing',
-        title: 'Бокс: Отработка ударов и челнок',
-        startTime: '19:00',
-        durationMinutes: 75,
-        intensity: 'high',
-        notes: 'Работа на мешке, лапы, скакалка',
-      },
-    ],
-  },
-  {
-    dayOfWeek: 2,
-    dayName: 'Ср',
-    fullDayName: 'Среда',
-    activities: [
-      {
-        id: 'act_wed_strength',
-        sportType: 'strength',
-        title: 'Силовая: Pull (Спина, Дельты, Бицепс)',
-        startTime: '18:30',
-        durationMinutes: 60,
-        intensity: 'high',
-        notes: 'Тяжелые тяги и подтягивания',
-      },
-    ],
-  },
-  {
-    dayOfWeek: 3,
-    dayName: 'Чт',
-    fullDayName: 'Четверг',
-    activities: [
-      {
-        id: 'act_thu_boxing',
-        sportType: 'boxing',
-        title: 'Бокс: Скоростные раунды и спарринг',
-        startTime: '19:00',
-        durationMinutes: 60,
-        intensity: 'medium',
-        notes: 'Техника защиты и бой с тенью',
-      },
-    ],
-  },
-  {
-    dayOfWeek: 4,
-    dayName: 'Пт',
-    fullDayName: 'Пятница',
-    activities: [
-      {
-        id: 'act_fri_strength',
-        sportType: 'strength',
-        title: 'Силовая: Legs & Core (Ноги и Пресс)',
-        startTime: '18:30',
-        durationMinutes: 65,
-        intensity: 'high',
-        notes: 'Приседания со штангой, выпады',
-      },
-    ],
-  },
-  {
-    dayOfWeek: 5,
-    dayName: 'Сб',
-    fullDayName: 'Суббота',
-    activities: [
-      {
-        id: 'act_sat_basketball',
-        sportType: 'basketball',
-        title: 'Баскетбол / Игра на площадке',
-        startTime: '11:00',
-        durationMinutes: 90,
-        intensity: 'high',
-        notes: 'Интервальный бег, прыжки, броски',
-      },
-    ],
-  },
-  {
-    dayOfWeek: 6,
-    dayName: 'Вс',
-    fullDayName: 'Воскресенье',
-    activities: [
-      {
-        id: 'act_sun_rest',
-        sportType: 'rest',
-        title: 'День отдыха и суперкомпенсации',
-        startTime: '10:00',
-        durationMinutes: 40,
-        intensity: 'low',
-        notes: 'МФР-ролл, легкая растяжка, сон',
-      },
-    ],
-  },
+  { dayOfWeek: 0, dayName: 'Пн', fullDayName: 'Понедельник', activities: [] },
+  { dayOfWeek: 1, dayName: 'Вт', fullDayName: 'Вторник', activities: [] },
+  { dayOfWeek: 2, dayName: 'Ср', fullDayName: 'Среда', activities: [] },
+  { dayOfWeek: 3, dayName: 'Чт', fullDayName: 'Четверг', activities: [] },
+  { dayOfWeek: 4, dayName: 'Пт', fullDayName: 'Пятница', activities: [] },
+  { dayOfWeek: 5, dayName: 'Сб', fullDayName: 'Суббота', activities: [] },
+  { dayOfWeek: 6, dayName: 'Вс', fullDayName: 'Воскресенье', activities: [] },
 ];
 
 type Listener = () => void;
@@ -454,8 +179,42 @@ export const StorageService = {
     return () => listeners.delete(fn);
   },
 
+  checkAndPurgeLegacyData(): void {
+    try {
+      const purged = localStorage.getItem(STORAGE_KEYS.CLEAN_PURGE);
+      if (purged !== 'v10') {
+        // Complete purge of any legacy mock artifacts
+        localStorage.removeItem(STORAGE_KEYS.WORKOUTS);
+        localStorage.removeItem(STORAGE_KEYS.PROGRAMS);
+        localStorage.removeItem(STORAGE_KEYS.CUSTOM_ACTIVITY);
+        localStorage.removeItem(STORAGE_KEYS.SPORTS_SESSIONS);
+        localStorage.removeItem(STORAGE_KEYS.ACTIVE_DRAFT);
+
+        // Reset profile if mock name 'Алексей' or empty
+        const prof = localStorage.getItem(STORAGE_KEYS.PROFILE);
+        if (prof) {
+          try {
+            const parsed = JSON.parse(prof);
+            if (parsed.name === 'Алексей' || !parsed.name) {
+              localStorage.removeItem(STORAGE_KEYS.PROFILE);
+            }
+          } catch {
+            localStorage.removeItem(STORAGE_KEYS.PROFILE);
+          }
+        }
+
+        // Reset equipment and fitness parameters to clean unselected defaults
+        localStorage.removeItem(STORAGE_KEYS.EQUIPMENT);
+        localStorage.removeItem(STORAGE_KEYS.FITNESS_PARAMS);
+
+        localStorage.setItem(STORAGE_KEYS.CLEAN_PURGE, 'v10');
+      }
+    } catch {}
+  },
+
   getProfile(): UserProfile {
     try {
+      this.checkAndPurgeLegacyData();
       const data = localStorage.getItem(STORAGE_KEYS.PROFILE);
       return data ? JSON.parse(data) : DEFAULT_PROFILE;
     } catch {
@@ -473,17 +232,12 @@ export const StorageService = {
 
   getPrograms(): WorkoutProgram[] {
     try {
+      this.checkAndPurgeLegacyData();
       const data = localStorage.getItem(STORAGE_KEYS.PROGRAMS);
       if (data !== null) {
         return JSON.parse(data);
       }
-      const isInit = localStorage.getItem(STORAGE_KEYS.APP_INITIALIZED);
-      if (isInit) {
-        return [];
-      }
-      localStorage.setItem(STORAGE_KEYS.APP_INITIALIZED, 'true');
-      localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(DEFAULT_PROGRAMS));
-      return DEFAULT_PROGRAMS;
+      return [];
     } catch {
       return [];
     }
@@ -532,17 +286,12 @@ export const StorageService = {
 
   getWorkoutSessions(): WorkoutSession[] {
     try {
+      this.checkAndPurgeLegacyData();
       const data = localStorage.getItem(STORAGE_KEYS.WORKOUTS);
       if (data !== null) {
         return JSON.parse(data);
       }
-      const isInit = localStorage.getItem(STORAGE_KEYS.APP_INITIALIZED);
-      if (isInit) {
-        return [];
-      }
-      const initial = generateInitialSessions();
-      localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(initial));
-      return initial;
+      return [];
     } catch {
       return [];
     }
@@ -810,15 +559,14 @@ export const StorageService = {
 
   getActivityMap(year: number = 2026): Record<string, 'completed' | 'skipped' | 'none'> {
     try {
+      this.checkAndPurgeLegacyData();
       const data = localStorage.getItem(STORAGE_KEYS.CUSTOM_ACTIVITY);
       if (data) {
         return JSON.parse(data);
       }
-      const initial = generateInitial2026Activity();
-      localStorage.setItem(STORAGE_KEYS.CUSTOM_ACTIVITY, JSON.stringify(initial));
-      return initial;
+      return {};
     } catch {
-      return generateInitial2026Activity();
+      return {};
     }
   },
 
@@ -934,17 +682,46 @@ export const StorageService = {
       // 1. Strength sessions load
       let strengthVolume = 0;
       let strengthHits = 0;
+      let totalSets = 0;
+      const distinctExercises = new Set<string>();
+      const history: MuscleLoadHistoryItem[] = [];
+
       sessions.forEach((s) => {
+        let sessionMuscleVol = 0;
+        let sessionMuscleSets = 0;
+
         s.exercises?.forEach((ex) => {
-          if (ex.targetMuscle === m) {
-            strengthHits++;
+          const isPrimary = ex.targetMuscle === m;
+          // Check if secondary muscle in exercise catalog
+          const catalogItem = EXERCISE_CATALOG.find((cat) => cat.name.toLowerCase() === ex.name.toLowerCase());
+          const isSecondary = catalogItem?.secondaryMuscles?.includes(m);
+
+          if (isPrimary || isSecondary) {
+            distinctExercises.add(ex.name);
+            const multiplier = isPrimary ? 1.0 : 0.45;
+
             ex.sets?.forEach((st) => {
               if (st.completed) {
-                strengthVolume += (st.weightKg > 0 ? st.weightKg : (ex.isBodyweight ? 75 : 50)) * st.reps;
+                totalSets++;
+                sessionMuscleSets++;
+                const setWeight = st.weightKg > 0 ? st.weightKg : (ex.isBodyweight ? 75 : 50);
+                const vol = setWeight * st.reps * multiplier;
+                strengthVolume += vol;
+                sessionMuscleVol += vol;
               }
             });
           }
         });
+
+        if (sessionMuscleSets > 0) {
+          strengthHits++;
+          history.push({
+            date: s.date,
+            volumeKg: Math.round(sessionMuscleVol),
+            sets: sessionMuscleSets,
+            exerciseName: s.name,
+          });
+        }
       });
 
       // 2. Multi-sport sessions load (Boxing, Basketball, Running, etc.)
@@ -961,7 +738,14 @@ export const StorageService = {
               const duration = sp.actualDurationMinutes || sp.plannedDurationMinutes || 45;
               const intensityMult = sp.intensity === 'high' ? 2.2 : sp.intensity === 'medium' ? 1.5 : 1.0;
               const weight = isPrimary ? 1.0 : 0.5;
-              sportLoadPoints += duration * intensityMult * weight;
+              const points = duration * intensityMult * weight;
+              sportLoadPoints += points;
+              history.push({
+                date: sp.date,
+                volumeKg: Math.round(points * 20),
+                sets: 1,
+                exerciseName: sp.title || spDef.nameRu,
+              });
             }
           }
         }
@@ -970,23 +754,24 @@ export const StorageService = {
       const totalHits = strengthHits + sportHits;
       // 1 sport load point ~ 20 kg volume equivalent
       const totalEffectiveKg = Math.round(strengthVolume + sportLoadPoints * 20);
+      const hasRealData = totalHits > 0;
 
-      let effectivePercent = def.defaultPercent || 25;
+      let effectivePercent = 0;
       let recoveryDays = 1;
       let status: 'fatigued' | 'recovering' | 'recovered' = 'recovered';
       let finalTonnage = totalEffectiveKg;
       let finalHits = totalHits;
 
-      if (totalHits > 0) {
+      if (hasRealData) {
         effectivePercent = Math.min(100, Math.max(10, Math.round((totalEffectiveKg / 8000) * 75)));
         recoveryDays = effectivePercent > 70 ? 3 : effectivePercent > 45 ? 2 : 1;
         status = effectivePercent > 65 ? 'fatigued' : effectivePercent > 35 ? 'recovering' : 'recovered';
       } else {
-        effectivePercent = def.defaultPercent || 25;
-        finalTonnage = Math.round((effectivePercent / 100) * 8420);
-        finalHits = Math.max(1, Math.round((effectivePercent / 100) * 5));
-        recoveryDays = effectivePercent > 60 ? 2 : 1;
-        status = effectivePercent > 60 ? 'fatigued' : effectivePercent > 35 ? 'recovering' : 'recovered';
+        effectivePercent = 0;
+        finalTonnage = 0;
+        finalHits = 0;
+        recoveryDays = 0;
+        status = 'recovered';
       }
 
       stats[m] = {
@@ -995,12 +780,101 @@ export const StorageService = {
         percent: effectivePercent,
         weeklyTonnageKg: finalTonnage,
         recentWorkoutsCount: finalHits,
+        exerciseCount: hasRealData ? distinctExercises.size : 0,
+        setsCount: hasRealData ? totalSets : 0,
         recoveryDays,
         status,
+        history: history.sort((a, b) => b.date.localeCompare(a.date)),
+        hasData: hasRealData,
       };
     });
 
     return stats as Record<MuscleGroup, MuscleLoadStats>;
+  },
+
+  // Calculate detailed daily activity data for a given date
+  getDayActivityData(dateStr: string) {
+    const workouts = this.getWorkoutSessions().filter((s) => s.date === dateStr);
+    const sports = this.getSportSessions().filter((s) => s.date === dateStr);
+
+    const totalWorkouts = workouts.length + sports.length;
+    let totalDuration = 0;
+    let totalVolume = 0;
+
+    const sessionSummaries = [
+      ...workouts.map((w) => {
+        totalDuration += w.durationMinutes || 45;
+        totalVolume += w.totalVolumeKg || 0;
+        return {
+          id: w.id,
+          type: 'strength' as const,
+          name: w.name,
+          durationMinutes: w.durationMinutes || 45,
+          volumeKg: w.totalVolumeKg || 0,
+          completedSets: w.completedSets || 0,
+          exercises: (w.exercises || []).map((ex) => ({
+            name: ex.name,
+            setsCount: ex.sets?.filter((s) => s.completed).length || ex.sets?.length || 0,
+            summary: ex.sets?.filter((s) => s.completed).map((s) => `${s.weightKg}кг×${s.reps}`).join(', ') || '',
+          })),
+        };
+      }),
+      ...sports.map((sp) => {
+        const dur = sp.actualDurationMinutes || sp.plannedDurationMinutes || 45;
+        totalDuration += dur;
+        return {
+          id: sp.id,
+          type: 'sport' as const,
+          name: sp.title || 'Спортивная тренировка',
+          durationMinutes: dur,
+          volumeKg: Math.round((sp.loadScore || 50) * 20),
+          completedSets: 1,
+          exercises: [],
+        };
+      }),
+    ];
+
+    // Determine visual intensity level: 0 (none), 1 (light), 2 (medium), 3 (high)
+    let intensityLevel: 0 | 1 | 2 | 3 = 0;
+    if (totalWorkouts > 0) {
+      if (totalVolume >= 7000 || totalDuration >= 65) {
+        intensityLevel = 3;
+      } else if (totalVolume >= 3000 || totalDuration >= 40) {
+        intensityLevel = 2;
+      } else {
+        intensityLevel = 1;
+      }
+    }
+
+    return {
+      date: dateStr,
+      workoutsCount: totalWorkouts,
+      totalDurationMinutes: totalDuration,
+      totalVolumeKg: totalVolume,
+      sessions: sessionSummaries,
+      intensityLevel,
+    };
+  },
+
+  // APP SETTINGS
+  getSettings(): AppSettings {
+    try {
+      const data = localStorage.getItem(STORAGE_KEYS.SETTINGS);
+      if (data) {
+        return { ...DEFAULT_APP_SETTINGS, ...JSON.parse(data) };
+      }
+      return DEFAULT_APP_SETTINGS;
+    } catch {
+      return DEFAULT_APP_SETTINGS;
+    }
+  },
+
+  updateSettings(settings: Partial<AppSettings>): AppSettings {
+    const current = this.getSettings();
+    const updated = { ...current, ...settings };
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+    notifyListeners();
+    return updated;
   },
 
   // EQUIPMENT MANAGEMENT
@@ -1058,7 +932,7 @@ export const StorageService = {
       const data = localStorage.getItem(STORAGE_KEYS.FAVORITES);
       if (data) return JSON.parse(data);
     } catch {}
-    return ['bench_press', 'pullups_wide', 'squats_barbell', 'military_press'];
+    return [];
   },
 
   toggleFavoriteExercise(exerciseId: string): boolean {
@@ -1087,6 +961,7 @@ export const StorageService = {
     localStorage.removeItem(STORAGE_KEYS.EQUIPMENT);
     localStorage.removeItem(STORAGE_KEYS.FITNESS_PARAMS);
     localStorage.removeItem(STORAGE_KEYS.FAVORITES);
+    localStorage.removeItem(STORAGE_KEYS.SETTINGS);
     notifyListeners();
   },
 
@@ -1129,28 +1004,28 @@ export const StorageService = {
 };
 
 export const DEFAULT_EQUIPMENT: EquipmentItem[] = [
-  { id: 'bodyweight', name: 'Собственный вес', categoryName: 'Без оборудования', iconName: 'User', selected: true },
-  { id: 'pullup_bar', name: 'Турник', categoryName: 'Перекладина для подтягиваний', iconName: 'Minus', selected: true },
-  { id: 'dip_bars', name: 'Брусья', categoryName: 'Параллельные брусья', iconName: 'Equal', selected: true },
-  { id: 'dumbbells_adjustable', name: 'Гантели с регулируемым весом', categoryName: 'Разборные гантели', iconName: 'Dumbbell', selected: true, minWeightKg: 2, maxWeightKg: 32, weightStepKg: 2 },
+  { id: 'bodyweight', name: 'Собственный вес', categoryName: 'Без оборудования', iconName: 'User', selected: false },
+  { id: 'pullup_bar', name: 'Турник', categoryName: 'Перекладина для подтягиваний', iconName: 'Minus', selected: false },
+  { id: 'dip_bars', name: 'Брусья', categoryName: 'Параллельные брусья', iconName: 'Equal', selected: false },
+  { id: 'dumbbells_adjustable', name: 'Гантели с регулируемым весом', categoryName: 'Разборные гантели', iconName: 'Dumbbell', selected: false, minWeightKg: 2, maxWeightKg: 32, weightStepKg: 2 },
   { id: 'dumbbells_fixed', name: 'Гантели с фиксированным весом', categoryName: 'Цельные гантели', iconName: 'Dumbbell', selected: false, singleDumbbellWeightKg: 16 },
-  { id: 'barbell', name: 'Штанга и блины', categoryName: 'Олимпийский или прямой гриф', iconName: 'Shield', selected: true, maxWeightKg: 140 },
-  { id: 'bench', name: 'Скамья для жима', categoryName: 'Горизонтальная или наклонная скамья', iconName: 'Square', selected: true },
-  { id: 'resistance_bands', name: 'Эспандеры и резиновые ленты', categoryName: 'Фитнес-резинки и жгуты', iconName: 'Activity', selected: true },
+  { id: 'barbell', name: 'Штанга и блины', categoryName: 'Олимпийский или прямой гриф', iconName: 'Shield', selected: false, maxWeightKg: 140 },
+  { id: 'bench', name: 'Скамья для жима', categoryName: 'Горизонтальная или наклонная скамья', iconName: 'Square', selected: false },
+  { id: 'resistance_bands', name: 'Эспандеры и резиновые ленты', categoryName: 'Фитнес-резинки и жгуты', iconName: 'Activity', selected: false },
   { id: 'kettlebells', name: 'Гири', categoryName: 'Чугунные гири', iconName: 'Circle', selected: false, singleDumbbellWeightKg: 16 },
-  { id: 'jump_rope', name: 'Скакалка', categoryName: 'Кардио-разминка', iconName: 'Zap', selected: true },
-  { id: 'gym_machines', name: 'Тренажёры', categoryName: 'Блочные и рычажные тренажеры', iconName: 'Cpu', selected: true },
+  { id: 'jump_rope', name: 'Скакалка', categoryName: 'Кардио-разминка', iconName: 'Zap', selected: false },
+  { id: 'gym_machines', name: 'Тренажёры', categoryName: 'Блочные и рычажные тренажеры', iconName: 'Cpu', selected: false },
   { id: 'other', name: 'Другой инвентарь', categoryName: 'Ролики для пресса, утяжелители', iconName: 'Plus', selected: false },
 ];
 
 export const DEFAULT_USER_PARAMETERS: UserFitnessParameters = {
-  goal: 'Развитие мышц',
-  level: 'Средний',
-  location: 'В зале',
-  daysPerWeek: 4,
-  durationMinutes: 60,
-  availableDays: ['Пн', 'Вт', 'Чт', 'Пт'],
-  preferredMuscles: ['chest', 'lats', 'shoulders', 'quads'],
+  goal: '' as any,
+  level: '' as any,
+  location: '' as any,
+  daysPerWeek: 0,
+  durationMinutes: 0,
+  availableDays: [],
+  preferredMuscles: [],
   excludedExercises: [],
   healthRestrictions: [],
   notes: '',

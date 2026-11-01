@@ -25,12 +25,12 @@ import { ActiveWorkoutModal } from './components/ActiveWorkoutModal';
 import { ProgramEditorModal } from './components/ProgramEditorModal';
 import { ProgramGeneratorModal } from './components/ProgramGeneratorModal';
 import { DayDetailsModal } from './components/DayDetailsModal';
-import { SettingsApkModal } from './components/SettingsApkModal';
+import { SettingsModal } from './components/SettingsModal';
 import { EquipmentModal } from './components/EquipmentModal';
 import { UserParametersModal } from './components/UserParametersModal';
 import { WeeklyScheduleModal } from './components/WeeklyScheduleModal';
 import { SportSessionModal } from './components/SportSessionModal';
-import { Wifi, BatteryMedium } from 'lucide-react';
+import { ElasticScroll } from './components/ElasticScroll';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
@@ -56,13 +56,40 @@ export default function App() {
   const [showProgramGenerator, setShowProgramGenerator] = useState<boolean>(false);
   const [showEquipmentModal, setShowEquipmentModal] = useState<boolean>(false);
   const [showUserParamsModal, setShowUserParamsModal] = useState<boolean>(false);
-  const [showSettingsApk, setShowSettingsApk] = useState<boolean>(false);
+  const [showSettings, setShowSettings] = useState<boolean>(false);
   const [showWeeklyScheduleModal, setShowWeeklyScheduleModal] = useState<boolean>(false);
   const [sportModalDate, setSportModalDate] = useState<string | null>(null);
   const [inspectingDay, setInspectingDay] = useState<{
     dateStr: string;
     status: 'completed' | 'skipped' | 'none';
   } | null>(null);
+
+  // Lock body scroll when any modal is open
+  const isAnyModalOpen = Boolean(
+    activeWorkoutSession ||
+    editingProgram ||
+    showProgramGenerator ||
+    showEquipmentModal ||
+    showUserParamsModal ||
+    showSettings ||
+    showWeeklyScheduleModal ||
+    sportModalDate ||
+    inspectingDay
+  );
+
+  useEffect(() => {
+    if (isAnyModalOpen) {
+      document.body.style.overflow = 'hidden';
+      document.body.style.touchAction = 'none';
+    } else {
+      document.body.style.overflow = '';
+      document.body.style.touchAction = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+      document.body.style.touchAction = '';
+    };
+  }, [isAnyModalOpen]);
 
   // Subscribe to storage changes
   const reloadData = useCallback(() => {
@@ -88,19 +115,20 @@ export default function App() {
     programName: string,
     programId?: string
   ) => {
-    const todayStr = '2026-10-29';
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const newSession: WorkoutSession = {
       id: `session_${Date.now()}`,
       programId,
       programName,
       name: day.dayName,
       date: todayStr,
-      startTime: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+      startTime: now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
       durationMinutes: day.estimatedDuration || 55,
       totalVolumeKg: 0,
       completedSets: 0,
       status: 'in_progress',
-      exercises: day.exercises.map((ex, idx) => ({
+      exercises: (day.exercises || []).map((ex, idx) => ({
         id: `ex_${idx}_${Date.now()}`,
         exerciseId: `ex_${idx}`,
         name: ex.name,
@@ -109,7 +137,7 @@ export default function App() {
         restSeconds: ex.restSeconds || 90,
         sets: Array.from({ length: ex.sets || 3 }).map((_, sIdx) => ({
           setNumber: sIdx + 1,
-          weightKg: ex.isBodyweight ? 0 : ex.targetWeight || 50,
+          weightKg: ex.isBodyweight ? 0 : (ex.targetWeight || 0),
           reps: ex.reps || 10,
           completed: false,
         })),
@@ -121,32 +149,19 @@ export default function App() {
 
   // Quick start blank workout
   const handleStartCustomQuickWorkout = () => {
-    const todayStr = '2026-10-29';
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const quickSession: WorkoutSession = {
       id: `session_${Date.now()}`,
-      name: 'Свободная силовая тренировка',
+      name: 'Свободная тренировка',
       programName: 'По выбору',
       date: todayStr,
-      startTime: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-      durationMinutes: 45,
+      startTime: now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+      durationMinutes: 0,
       totalVolumeKg: 0,
       completedSets: 0,
       status: 'in_progress',
-      exercises: [
-        {
-          id: `ex_1_${Date.now()}`,
-          exerciseId: 'bench_quick',
-          name: 'Жим штанги лежа',
-          targetMuscle: 'chest',
-          isBodyweight: false,
-          restSeconds: 90,
-          sets: [
-            { setNumber: 1, weightKg: 60, reps: 10, completed: false },
-            { setNumber: 2, weightKg: 70, reps: 8, completed: false },
-            { setNumber: 3, weightKg: 75, reps: 6, completed: false },
-          ],
-        },
-      ],
+      exercises: [],
     };
 
     setActiveWorkoutSession(quickSession);
@@ -240,108 +255,128 @@ export default function App() {
     reloadData();
   };
 
+  const tabOrder: TabType[] = ['overview', 'workouts', 'profile'];
+  const handleSwipeLeft = useCallback(() => {
+    setActiveTab((prev) => {
+      const idx = tabOrder.indexOf(prev);
+      if (idx < tabOrder.length - 1) {
+        return tabOrder[idx + 1];
+      }
+      return prev;
+    });
+  }, []);
+
+  const handleSwipeRight = useCallback(() => {
+    setActiveTab((prev) => {
+      const idx = tabOrder.indexOf(prev);
+      if (idx > 0) {
+        return tabOrder[idx - 1];
+      }
+      return prev;
+    });
+  }, []);
+
   return (
     <AnimationProvider>
-      <div className="min-h-screen bg-[#080D0E] text-[#E8E9E7] flex justify-center selection:bg-[#58C995] selection:text-black">
+      <div className="h-[100dvh] w-full bg-[#080D0E] text-[#E8E9E7] flex justify-center selection:bg-[#58C995] selection:text-black overflow-hidden">
         {/* Mobile Smartphone Frame Container */}
-        <div className="w-full max-w-md min-h-screen bg-[#080D0E] flex flex-col relative px-4 pt-2 border-x border-[#1a2224] shadow-2xl">
-          {/* Android Top Status Bar Mockup matching Image 1 & 2 */}
-          <div className="flex items-center justify-between py-1 px-1 text-[12px] text-[#92999A] font-medium shrink-0">
-            <span className="font-semibold text-white tracking-tight">9:41</span>
-            <div className="flex items-center gap-2">
-              <Wifi className="w-3.5 h-3.5" />
-              <div className="w-2.5 h-2.5 rounded-full bg-white/20" />
-              <BatteryMedium className="w-4 h-4 text-white" />
-            </div>
-          </div>
+        <div className="w-full max-w-md h-full bg-[#080D0E] flex flex-col relative px-4 pt-2 pb-0 border-x border-[#1a2224] shadow-2xl overflow-hidden">
+          {/* Tab Content Display with authentic iOS-style elastic scrolling */}
+          <main className="flex-1 min-h-0 w-full relative flex flex-col overflow-hidden">
+            <ElasticScroll
+              className="flex-1 min-h-0 w-full"
+              onSwipeLeft={handleSwipeLeft}
+              onSwipeRight={handleSwipeRight}
+            >
+              <AnimatePresence mode="wait">
+                {activeTab === 'overview' && (
+                  <motion.div
+                    key="overview"
+                    variants={tabContentVariants}
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    className="w-full pb-28 pt-1"
+                  >
+                    <OverviewTab
+                      year={currentYear}
+                      onYearChange={(y) => setCurrentYear(y)}
+                      activityMap={activityMap}
+                      recentlyCompletedDate={recentlyCompletedDate}
+                      stats={yearStats}
+                      totalActivityStats={totalActivityStats}
+                      weeklySchedule={weeklySchedule}
+                      onDayClick={(dateStr, status) => setInspectingDay({ dateStr, status })}
+                      programs={programs}
+                      onStartWorkout={(workoutDay, progName) =>
+                        handleStartProgramWorkout(workoutDay, progName, programs[0]?.id)
+                      }
+                      onOpenSettings={() => setShowSettings(true)}
+                      onOpenWeeklySchedule={() => setShowWeeklyScheduleModal(true)}
+                      onOpenSportModal={(date) => {
+                        const now = new Date();
+                        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                        setSportModalDate(date || todayStr);
+                      }}
+                      onCreateProgram={() => setEditingProgram('new')}
+                      onQuickStart={handleStartCustomQuickWorkout}
+                    />
+                  </motion.div>
+                )}
 
-          {/* Tab Content Display with smooth tab transitions */}
-          <main className="flex-1 overflow-x-hidden pt-1">
-            <AnimatePresence mode="wait">
-              {activeTab === 'overview' && (
-                <motion.div
-                  key="overview"
-                  variants={tabContentVariants}
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  className="w-full"
-                >
-                  <OverviewTab
-                    year={currentYear}
-                    onYearChange={(y) => setCurrentYear(y)}
-                    activityMap={activityMap}
-                    recentlyCompletedDate={recentlyCompletedDate}
-                    stats={yearStats}
-                    totalActivityStats={totalActivityStats}
-                    weeklySchedule={weeklySchedule}
-                    onDayClick={(dateStr, status) => setInspectingDay({ dateStr, status })}
-                    programs={programs}
-                    onStartWorkout={(workoutDay, progName) =>
-                      handleStartProgramWorkout(workoutDay, progName, programs[0]?.id)
-                    }
-                    onOpenSettings={() => setShowSettingsApk(true)}
-                    onOpenWeeklySchedule={() => setShowWeeklyScheduleModal(true)}
-                    onOpenSportModal={(date) => setSportModalDate(date || '2026-10-29')}
-                  />
-                </motion.div>
-              )}
+                {activeTab === 'workouts' && (
+                  <motion.div
+                    key="workouts"
+                    variants={tabContentVariants}
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    className="w-full pb-28 pt-1"
+                  >
+                    <WorkoutsTab
+                      programs={programs}
+                      sessions={sessions}
+                      onStartProgramWorkout={(day, pName, pId) =>
+                        handleStartProgramWorkout(day, pName, pId)
+                      }
+                      onStartCustomQuickWorkout={handleStartCustomQuickWorkout}
+                      onCreateProgram={() => setEditingProgram('new')}
+                      onGenerateProgram={() => setShowProgramGenerator(true)}
+                      onEditProgram={(prog) => setEditingProgram(prog)}
+                      onDuplicateProgram={handleDuplicateProgram}
+                      onDeleteProgram={(id) => StorageService.deleteProgram(id)}
+                      onDeleteSession={(id) => StorageService.deleteWorkoutSession(id)}
+                      onOpenEquipment={() => setShowEquipmentModal(true)}
+                      onOpenParameters={() => setShowUserParamsModal(true)}
+                      activeDraft={activeDraft}
+                      onResumeDraft={handleResumeDraft}
+                      onDiscardDraft={handleDiscardDraft}
+                    />
+                  </motion.div>
+                )}
 
-              {activeTab === 'workouts' && (
-                <motion.div
-                  key="workouts"
-                  variants={tabContentVariants}
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  className="w-full"
-                >
-                  <WorkoutsTab
-                    programs={programs}
-                    sessions={sessions}
-                    onStartProgramWorkout={(day, pName, pId) =>
-                      handleStartProgramWorkout(day, pName, pId)
-                    }
-                    onStartCustomQuickWorkout={handleStartCustomQuickWorkout}
-                    onCreateProgram={() => setEditingProgram('new')}
-                    onGenerateProgram={() => setShowProgramGenerator(true)}
-                    onEditProgram={(prog) => setEditingProgram(prog)}
-                    onDuplicateProgram={handleDuplicateProgram}
-                    onDeleteProgram={(id) => StorageService.deleteProgram(id)}
-                    onDeleteSession={(id) => StorageService.deleteWorkoutSession(id)}
-                    onOpenEquipment={() => setShowEquipmentModal(true)}
-                    onOpenParameters={() => setShowUserParamsModal(true)}
-                    activeDraft={activeDraft}
-                    onResumeDraft={handleResumeDraft}
-                    onDiscardDraft={handleDiscardDraft}
-                  />
-                </motion.div>
-              )}
-
-              {activeTab === 'profile' && (
-                <motion.div
-                  key="profile"
-                  variants={tabContentVariants}
-                  initial="initial"
-                  animate="animate"
-                  exit="exit"
-                  className="w-full"
-                >
-                  <ProfileTab
-                    profile={profile}
-                    onUpdateProfile={(updated) => StorageService.updateProfile(updated)}
-                    muscleStats={muscleStats}
-                    sessions={sessions}
-                    onOpenEquipment={() => setShowEquipmentModal(true)}
-                    onOpenParameters={() => setShowUserParamsModal(true)}
-                    onOpenApkGuide={() => setShowSettingsApk(true)}
-                    onExportData={handleExportData}
-                    onImportData={() => setShowSettingsApk(true)}
-                    onResetData={() => StorageService.resetAllData()}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
+                {activeTab === 'profile' && (
+                  <motion.div
+                    key="profile"
+                    variants={tabContentVariants}
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    className="w-full pb-28 pt-1"
+                  >
+                    <ProfileTab
+                      profile={profile}
+                      onUpdateProfile={(updated) => StorageService.updateProfile(updated)}
+                      muscleStats={muscleStats}
+                      sessions={sessions}
+                      onOpenEquipment={() => setShowEquipmentModal(true)}
+                      onOpenParameters={() => setShowUserParamsModal(true)}
+                      onOpenSettings={() => setShowSettings(true)}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </ElasticScroll>
           </main>
 
           {/* Bottom Navigation with strictly 3 tabs */}
@@ -429,6 +464,7 @@ export default function App() {
                 currentStatus={inspectingDay.status}
                 strengthSessions={sessions.filter((s) => s.date === inspectingDay.dateStr)}
                 sportSessions={StorageService.getSportSessions().filter((s) => s.date === inspectingDay.dateStr)}
+                weeklySchedule={weeklySchedule}
                 onSetStatus={handleSetDayStatus}
                 onStartWorkoutForDay={handleStartWorkoutOnSelectedDay}
                 onAddSportSession={(date) => {
@@ -467,14 +503,18 @@ export default function App() {
               />
             )}
 
-            {/* Settings & Android APK Packaging Modal */}
-            {showSettingsApk && (
-              <SettingsApkModal
-                key="modal-settings-apk"
-                onClose={() => setShowSettingsApk(false)}
+            {/* Full Form App Settings Modal */}
+            {showSettings && (
+              <SettingsModal
+                key="modal-settings"
+                onClose={() => setShowSettings(false)}
                 onExportData={handleExportData}
                 onImportData={handleImportData}
-                onResetData={() => StorageService.resetAllData()}
+                onResetData={() => {
+                  StorageService.resetAllData();
+                  reloadData();
+                }}
+                onDataChanged={reloadData}
               />
             )}
           </AnimatePresence>

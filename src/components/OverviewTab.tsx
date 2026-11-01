@@ -1,7 +1,7 @@
 import React from 'react';
-import { YearCalendar } from './YearCalendar';
-import { WorkoutProgram, WorkoutSession, SportSession, WeeklyScheduleDay, SPORT_DEFINITIONS } from '../types/workout';
-import { Play, Settings, Dumbbell, Clock, Calendar, Plus, Swords, Trophy, Zap, Activity, Flame } from 'lucide-react';
+import { MonthCalendar } from './MonthCalendar';
+import { WorkoutProgram, WeeklyScheduleDay } from '../types/workout';
+import { Play, Settings, Dumbbell, Clock, Calendar, Plus, Swords, Trophy, Zap, Activity, Flame, PlusCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface OverviewTabProps {
@@ -27,9 +27,11 @@ interface OverviewTabProps {
   onDayClick: (dateStr: string, currentStatus: 'completed' | 'skipped' | 'none') => void;
   programs: WorkoutProgram[];
   onStartWorkout: (workoutDay: any, programName: string) => void;
-  onOpenSettings: () => void;
+  onOpenSettings?: () => void;
   onOpenWeeklySchedule: () => void;
   onOpenSportModal: (date?: string) => void;
+  onCreateProgram?: () => void;
+  onQuickStart?: () => void;
 }
 
 export const OverviewTab: React.FC<OverviewTabProps> = ({
@@ -43,50 +45,54 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   onDayClick,
   programs,
   onStartWorkout,
-  onOpenSettings,
   onOpenWeeklySchedule,
   onOpenSportModal,
+  onCreateProgram,
+  onQuickStart,
 }) => {
-  // Determine next scheduled workout
-  const defaultProgram = programs[0] || null;
-  const nextWorkout = defaultProgram?.workouts[0] || {
-    id: 'next_default',
-    dayName: 'Push: Грудь, Плечи, Трицепс',
-    estimatedDuration: 55,
-    exercises: [
-      { name: 'Жим штанги лежа', targetMuscle: 'chest', sets: 4, reps: 8, targetWeight: 80 },
-      { name: 'Армейский жим', targetMuscle: 'shoulders', sets: 3, reps: 8, targetWeight: 50 },
-      { name: 'Махи гантелями', targetMuscle: 'shoulders', sets: 4, reps: 12, targetWeight: 14 },
-    ],
-  };
+  // Format current date in Russian: e.g. "Четверг, 29 октября"
+  const now = new Date();
+  const todayFormatted = new Intl.DateTimeFormat('ru-RU', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  }).format(now);
+  const capitalizedToday = todayFormatted.charAt(0).toUpperCase() + todayFormatted.slice(1);
+  const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-  const todayFormatted = 'Четверг, 29 октября';
-
-  // Find today's activity from weekly schedule (Thursday = index 3)
-  const todaySchedule = weeklySchedule[3]?.activities || [];
+  // Find today's activity from weekly schedule (0 = Monday, ..., 6 = Sunday)
+  const currentDayOfWeek = (now.getDay() + 6) % 7;
+  const todaySchedule = weeklySchedule[currentDayOfWeek]?.activities || [];
   const primaryTodayAct = todaySchedule[0] || null;
 
+  // Active program if user has one
+  const activeProgram = programs.length > 0 ? programs[0] : null;
+  const nextWorkout = activeProgram ? activeProgram.workouts[0] : null;
+
   return (
-    <div className="w-full flex flex-col pb-24">
-      {/* Top Header: FORM Logo, Settings icon */}
+    <div className="w-full flex flex-col pb-4">
+      {/* Top Header: FORM Logo, Date, Settings icon */}
       <div className="flex items-center justify-between pt-2 pb-1 px-1 mb-2">
         <div>
           <span className="text-2xl font-black tracking-wider text-[#E8E9E7] font-mono">
             FORM
           </span>
           <span className="text-[11px] text-[#92999A] block font-medium">
-            {todayFormatted}
+            {capitalizedToday}
           </span>
         </div>
 
-        <motion.button
-          whileTap={{ scale: 0.92 }}
-          onClick={onOpenSettings}
-          className="w-10 h-10 rounded-xl bg-[#101719] border border-[#252D2F] flex items-center justify-center text-[#92999A] hover:text-[#E8E9E7] transition-colors cursor-pointer"
-          aria-label="Настройки и экспорт"
-        >
-          <Settings className="w-5 h-5" />
-        </motion.button>
+        {stats.streakDays > 0 ? (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#14231b] border border-[#2f553f] rounded-xl text-xs font-bold text-[#58C995] shadow-sm">
+            <Flame className="w-3.5 h-3.5 fill-[#58C995]" />
+            <span>{stats.streakDays} дн. подряд</span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-[#101719] border border-[#252D2F] rounded-xl text-xs font-semibold text-[#92999A]">
+            <Activity className="w-3.5 h-3.5 text-[#58C995]" />
+            <span>Трекер активности</span>
+          </div>
+        )}
       </div>
 
       {/* Quick Actions Strip: [Расписание недели] [+ Бокс / Спорт] */}
@@ -102,7 +108,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
 
         <motion.button
           whileTap={{ scale: 0.96 }}
-          onClick={() => onOpenSportModal('2026-10-29')}
+          onClick={() => onOpenSportModal(todayIso)}
           className="py-2.5 px-3 bg-[#14231b] border border-[#2f553f] hover:border-[#58C995] rounded-xl text-xs font-bold text-[#58C995] flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm group"
         >
           <Plus className="w-4 h-4 text-[#58C995] group-hover:scale-110 transition-transform" />
@@ -120,7 +126,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
         </div>
       )}
 
-      {/* Overall Total Physical Activity Strip */}
+      {/* Total Physical Activity Strip */}
       {totalActivityStats && (
         <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-3.5 mb-3 space-y-2.5">
           <div className="flex items-center justify-between">
@@ -154,103 +160,149 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
             </div>
           </div>
 
-          {/* Sports Breakdown Badges */}
-          <div className="flex items-center gap-1.5 flex-wrap pt-0.5 text-[11px]">
-            {totalActivityStats.sportCounts.strength > 0 && (
-              <span className="px-2 py-0.5 rounded-md bg-[#14231b] text-[#58C995] border border-[#2f553f] font-semibold">
-                🏋️ {totalActivityStats.sportCounts.strength} силовых
-              </span>
-            )}
-            {totalActivityStats.sportCounts.boxing > 0 && (
-              <span className="px-2 py-0.5 rounded-md bg-[#2a1714] text-[#E06D53] border border-[#552720] font-semibold">
-                🥊 {totalActivityStats.sportCounts.boxing} бокс
-              </span>
-            )}
-            {totalActivityStats.sportCounts.basketball > 0 && (
-              <span className="px-2 py-0.5 rounded-md bg-[#2b2210] text-[#E5A93C] border border-[#54431e] font-semibold">
-                🏀 {totalActivityStats.sportCounts.basketball} баскетбол
-              </span>
-            )}
-            {totalActivityStats.sportCounts.running > 0 && (
-              <span className="px-2 py-0.5 rounded-md bg-[#12222d] text-[#4EA5D9] border border-[#234257] font-semibold">
-                🏃 {totalActivityStats.sportCounts.running} бег
-              </span>
-            )}
-          </div>
+          {/* Sports Breakdown Badges if any */}
+          {totalActivityStats.totalSessionsCount > 0 ? (
+            <div className="flex items-center gap-1.5 flex-wrap pt-0.5 text-[11px]">
+              {totalActivityStats.sportCounts.strength > 0 && (
+                <span className="px-2 py-0.5 rounded-md bg-[#14231b] text-[#58C995] border border-[#2f553f] font-semibold">
+                  🏋️ {totalActivityStats.sportCounts.strength} силовых
+                </span>
+              )}
+              {totalActivityStats.sportCounts.boxing > 0 && (
+                <span className="px-2 py-0.5 rounded-md bg-[#2a1714] text-[#E06D53] border border-[#552720] font-semibold">
+                  🥊 {totalActivityStats.sportCounts.boxing} бокс
+                </span>
+              )}
+              {totalActivityStats.sportCounts.basketball > 0 && (
+                <span className="px-2 py-0.5 rounded-md bg-[#2b2210] text-[#E5A93C] border border-[#54431e] font-semibold">
+                  🏀 {totalActivityStats.sportCounts.basketball} баскетбол
+                </span>
+              )}
+              {totalActivityStats.sportCounts.running > 0 && (
+                <span className="px-2 py-0.5 rounded-md bg-[#12222d] text-[#4EA5D9] border border-[#234257] font-semibold">
+                  🏃 {totalActivityStats.sportCounts.running} бег
+                </span>
+              )}
+              {totalActivityStats.sportCounts.cycling > 0 && (
+                <span className="px-2 py-0.5 rounded-md bg-[#12281a] text-[#44CF6C] border border-[#235034] font-semibold">
+                  🚴 {totalActivityStats.sportCounts.cycling} вело
+                </span>
+              )}
+              {totalActivityStats.sportCounts.swimming > 0 && (
+                <span className="px-2 py-0.5 rounded-md bg-[#102726] text-[#2EC4B6] border border-[#1f4e4c] font-semibold">
+                  🏊 {totalActivityStats.sportCounts.swimming} плавание
+                </span>
+              )}
+            </div>
+          ) : (
+            <p className="text-[11px] text-[#6b7577] text-center pt-1">
+              Пока нет завершенных тренировок
+            </p>
+          )}
         </div>
       )}
 
-      {/* Title */}
-      <div className="mb-2 px-1">
-        <h1 className="text-2xl font-bold tracking-tight text-[#E8E9E7]">
-          Календарь тренировок
-        </h1>
-      </div>
-
-      {/* Main Year Activity Calendar */}
-      <YearCalendar
-        year={year}
-        onYearChange={onYearChange}
+      {/* Main Month Activity Calendar (No scrollbars, fits mobile viewport perfectly) */}
+      <MonthCalendar
         activityMap={activityMap}
         onDayClick={onDayClick}
         recentlyCompletedDate={recentlyCompletedDate}
-        stats={stats}
+        onYearChange={onYearChange}
+        weeklySchedule={weeklySchedule}
       />
 
-      {/* Block «Следующая активность» */}
-      <div className="w-full bg-[#101719] border border-[#252D2F] rounded-2xl p-4 mt-2 space-y-3">
+      {/* Block «Следующая активность / План на сегодня» */}
+      <div className="w-full bg-[#101719] border border-[#252D2F] rounded-2xl p-4 mt-3 space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-xs font-bold text-[#92999A] uppercase tracking-wider">
             План на сегодня
           </span>
           <span className="text-xs text-[#58C995] font-semibold bg-[#14231b] border border-[#2f553f] px-2.5 py-0.5 rounded-full">
-            {primaryTodayAct ? primaryTodayAct.startTime : 'Сегодня, 18:30'}
+            {primaryTodayAct ? primaryTodayAct.startTime : 'Сегодня'}
           </span>
         </div>
 
-        <div>
-          <h3 className="text-base font-bold text-[#E8E9E7]">
-            {primaryTodayAct ? primaryTodayAct.title : nextWorkout.dayName}
-          </h3>
-          <div className="flex items-center gap-3 text-xs text-[#92999A] mt-1">
-            <div className="flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5 text-[#92999A]" />
-              <span>~{primaryTodayAct ? primaryTodayAct.durationMinutes : nextWorkout.estimatedDuration || 55} мин</span>
-            </div>
-            {primaryTodayAct ? (
+        {primaryTodayAct ? (
+          <div>
+            <h3 className="text-base font-bold text-[#E8E9E7]">
+              {primaryTodayAct.title}
+            </h3>
+            <div className="flex items-center gap-3 text-xs text-[#92999A] mt-1">
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-[#92999A]" />
+                <span>~{primaryTodayAct.durationMinutes} мин</span>
+              </div>
               <span className="font-semibold text-[#E06D53]">
-                {primaryTodayAct.intensity === 'high' ? 'Высокая интенсивность' : 'Средний темп'}
+                {primaryTodayAct.intensity === 'high' ? 'Высокая интенсивность' : primaryTodayAct.intensity === 'medium' ? 'Средний темп' : 'Низкая нагрузка'}
               </span>
-            ) : (
+            </div>
+
+            <motion.button
+              whileTap={{ scale: 0.97 }}
+              onClick={() => onOpenSportModal(todayIso)}
+              className="w-full py-3 mt-3 bg-[#E06D53] hover:bg-[#eb7b62] text-white font-extrabold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg transition-colors cursor-pointer"
+            >
+              <Swords className="w-4 h-4 fill-white" />
+              <span>Записать занятие: {primaryTodayAct.title}</span>
+            </motion.button>
+          </div>
+        ) : nextWorkout && activeProgram ? (
+          <div>
+            <h3 className="text-base font-bold text-[#E8E9E7]">
+              {nextWorkout.dayName}
+            </h3>
+            <p className="text-xs text-[#92999A] mt-0.5">
+              Программа: <span className="text-[#58C995] font-medium">{activeProgram.name}</span>
+            </p>
+            <div className="flex items-center gap-3 text-xs text-[#92999A] mt-1">
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-[#92999A]" />
+                <span>~{nextWorkout.estimatedDuration || 55} мин</span>
+              </div>
               <div className="flex items-center gap-1.5">
                 <Dumbbell className="w-3.5 h-3.5 text-[#92999A]" />
-                <span>{nextWorkout.exercises?.length || 5} упражнений</span>
+                <span>{nextWorkout.exercises?.length || 0} упражнений</span>
               </div>
-            )}
-          </div>
-        </div>
+            </div>
 
-        {/* Action Button: Start Workout or Log Sport */}
-        {primaryTodayAct && primaryTodayAct.sportType !== 'strength' ? (
-          <motion.button
-            whileTap={{ scale: 0.97 }}
-            onClick={() => onOpenSportModal('2026-10-29')}
-            className="w-full py-3 bg-[#E06D53] hover:bg-[#eb7b62] text-white font-extrabold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg transition-colors cursor-pointer"
-          >
-            <Swords className="w-4 h-4 fill-white" />
-            <span>Записать занятие: {primaryTodayAct.title}</span>
-          </motion.button>
+            <motion.button
+              whileTap={{ scale: 0.97 }}
+              onClick={() => onStartWorkout(nextWorkout, activeProgram.name)}
+              className="w-full py-3 mt-3 bg-[#58C995] hover:bg-[#68d7a4] text-black font-extrabold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg transition-colors cursor-pointer"
+            >
+              <Play className="w-4 h-4 fill-black stroke-black" />
+              <span>Начать тренировку</span>
+            </motion.button>
+          </div>
         ) : (
-          <motion.button
-            whileTap={{ scale: 0.97 }}
-            onClick={() =>
-              onStartWorkout(nextWorkout, defaultProgram?.name || 'Push / Pull / Legs')
-            }
-            className="w-full py-3 bg-[#58C995] hover:bg-[#68d7a4] text-black font-extrabold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg transition-colors cursor-pointer"
-          >
-            <Play className="w-4 h-4 fill-black stroke-black" />
-            <span>Начать тренировку</span>
-          </motion.button>
+          /* Empty State when no program and no scheduled activity */
+          <div className="text-center py-2 space-y-2">
+            <p className="text-xs text-[#92999A]">
+              Активных программ пока нет. Создайте программу тренировок или начните свободную сессию.
+            </p>
+            <div className="flex items-center justify-center gap-2 pt-1">
+              {onCreateProgram && (
+                <motion.button
+                  whileTap={{ scale: 0.95 }}
+                  onClick={onCreateProgram}
+                  className="px-3 py-2 bg-[#101719] border border-[#252D2F] hover:border-[#58C995] rounded-xl text-xs font-bold text-[#E8E9E7] flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <PlusCircle className="w-3.5 h-3.5 text-[#58C995]" />
+                  <span>Создать программу</span>
+                </motion.button>
+              )}
+              {onQuickStart && (
+                <motion.button
+                  whileTap={{ scale: 0.95 }}
+                  onClick={onQuickStart}
+                  className="px-3 py-2 bg-[#172d24] border border-[#2d5843] rounded-xl text-xs font-bold text-[#58C995] flex items-center gap-1.5 hover:bg-[#1e3c30] transition-colors cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5 fill-[#58C995]" />
+                  <span>Быстрый старт</span>
+                </motion.button>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </div>

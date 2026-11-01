@@ -8,6 +8,7 @@ import {
   ExerciseLibraryItem,
 } from '../types/workout';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
+import { FormSelect } from './common/FormSelect';
 import { X, Plus, Trash2, ArrowRightLeft, ChevronDown, ChevronUp, BookOpen } from 'lucide-react';
 import { motion } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
@@ -25,7 +26,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
 }) => {
   const [name, setName] = useState(initialProgram?.name || '');
   const [description, setDescription] = useState(
-    initialProgram?.description || 'Индивидуальная тренировочная программа'
+    initialProgram?.description || ''
   );
   const [goal, setGoal] = useState(initialProgram?.goal || 'Развитие мышц');
   const [daysPerWeek, setDaysPerWeek] = useState(initialProgram?.daysPerWeek || 3);
@@ -33,30 +34,10 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
     initialProgram?.workouts || [
       {
         id: `day_${Date.now()}`,
-        dayName: 'День 1: Верх тела (Грудь и Спина)',
-        targetMuscleGroups: ['chest', 'lats'],
-        estimatedDuration: 60,
-        exercises: [
-          {
-            name: 'Жим штанги лежа',
-            targetMuscle: 'chest',
-            isBodyweight: false,
-            sets: 4,
-            reps: 8,
-            targetWeight: 75,
-            restSeconds: 90,
-            technique: 'Опускайте гриф под контроль, лопатки сведены',
-          },
-          {
-            name: 'Подтягивания широким хватом',
-            targetMuscle: 'lats',
-            isBodyweight: true,
-            sets: 4,
-            reps: 8,
-            targetWeight: 0,
-            restSeconds: 90,
-          },
-        ],
+        dayName: 'День 1',
+        targetMuscleGroups: [],
+        estimatedDuration: 45,
+        exercises: [],
       },
     ]
   );
@@ -68,21 +49,10 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
   const handleAddWorkoutDay = () => {
     const newDay: ProgramWorkoutDay = {
       id: `day_${Date.now()}`,
-      dayName: `День ${workouts.length + 1}: Новая тренировка`,
-      targetMuscleGroups: ['quads'],
-      estimatedDuration: 55,
-      exercises: [
-        {
-          name: 'Приседания со штангой',
-          targetMuscle: 'quads',
-          isBodyweight: false,
-          sets: 4,
-          reps: 8,
-          targetWeight: 80,
-          restSeconds: 90,
-          technique: 'Глубокий сед, колени не заваливать внутрь',
-        },
-      ],
+      dayName: `День ${workouts.length + 1}`,
+      targetMuscleGroups: [],
+      estimatedDuration: 45,
+      exercises: [],
     };
     setWorkouts([...workouts, newDay]);
   };
@@ -214,7 +184,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4 text-xs [overscroll-behavior:contain] min-h-0">
           <div>
             <label className="block text-[11px] font-semibold text-[#92999A] mb-1">
               Название программы
@@ -231,35 +201,31 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[11px] font-semibold text-[#92999A] mb-1">
-                Цель тренировок
-              </label>
-              <select
+              <FormSelect
+                label="Цель тренировок"
                 value={goal}
-                onChange={(e) => setGoal(e.target.value)}
-                className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-2.5 py-1.5 text-xs text-[#E8E9E7]"
-              >
-                <option value="Развитие мышц">Развитие мышц</option>
-                <option value="Сила">Сила</option>
-                <option value="Выносливость">Выносливость</option>
-                <option value="Общая физическая подготовка">Общая физическая подготовка</option>
-                <option value="Улучшение физической формы">Улучшение физической формы</option>
-              </select>
+                onChange={(val) => setGoal(String(val))}
+                options={[
+                  { value: 'Развитие мышц', label: 'Развитие мышц' },
+                  { value: 'Сила', label: 'Сила' },
+                  { value: 'Выносливость', label: 'Выносливость' },
+                  { value: 'Общая физическая подготовка', label: 'Общая физическая подготовка' },
+                  { value: 'Улучшение физической формы', label: 'Улучшение физической формы' },
+                ]}
+              />
             </div>
             <div>
-              <label className="block text-[11px] font-semibold text-[#92999A] mb-1">
-                Дней в неделю
-              </label>
-              <select
+              <FormSelect
+                label="Дней в неделю"
                 value={daysPerWeek}
-                onChange={(e) => setDaysPerWeek(Number(e.target.value))}
-                className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-2.5 py-1.5 text-xs text-[#E8E9E7]"
-              >
-                <option value={2}>2 тренировки</option>
-                <option value={3}>3 тренировки</option>
-                <option value={4}>4 тренировки</option>
-                <option value={5}>5 тренировок</option>
-              </select>
+                onChange={(val) => setDaysPerWeek(Number(val))}
+                options={[
+                  { value: 2, label: '2 тренировки' },
+                  { value: 3, label: '3 тренировки' },
+                  { value: 4, label: '4 тренировки' },
+                  { value: 5, label: '5 тренировок' },
+                ]}
+              />
             </div>
           </div>
 

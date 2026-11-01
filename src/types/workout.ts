@@ -9,7 +9,9 @@ export type MuscleGroup =
   | 'triceps'
   | 'forearms'
   | 'abs'
+  | 'obliques'
   | 'quads'
+  | 'tibialis'
   | 'hamstrings'
   | 'calves'
   | 'lats'
@@ -25,23 +27,174 @@ export interface MuscleInfo {
   category: 'upper' | 'core' | 'lower';
   defaultPercent: number;
   recoveryHours: number;
+  locationRu: string;
+  functionRu: string;
 }
 
 export const MUSCLE_DEFINITIONS: Record<MuscleGroup, MuscleInfo> = {
-  chest: { id: 'chest', nameRu: 'Грудные', view: 'front', category: 'upper', defaultPercent: 68, recoveryHours: 48 },
-  shoulders: { id: 'shoulders', nameRu: 'Плечи', view: 'front', category: 'upper', defaultPercent: 42, recoveryHours: 48 },
-  biceps: { id: 'biceps', nameRu: 'Бицепсы', view: 'front', category: 'upper', defaultPercent: 52, recoveryHours: 36 },
-  triceps: { id: 'triceps', nameRu: 'Трицепсы', view: 'back', category: 'upper', defaultPercent: 33, recoveryHours: 36 },
-  forearms: { id: 'forearms', nameRu: 'Предплечья', view: 'front', category: 'upper', defaultPercent: 34, recoveryHours: 24 },
-  abs: { id: 'abs', nameRu: 'Пресс', view: 'front', category: 'core', defaultPercent: 58, recoveryHours: 24 },
-  quads: { id: 'quads', nameRu: 'Квадрицепсы', view: 'front', category: 'lower', defaultPercent: 61, recoveryHours: 72 },
-  hamstrings: { id: 'hamstrings', nameRu: 'Бицепсы бедер', view: 'back', category: 'lower', defaultPercent: 40, recoveryHours: 72 },
-  calves: { id: 'calves', nameRu: 'Икры', view: 'both', category: 'lower', defaultPercent: 28, recoveryHours: 24 },
-  lats: { id: 'lats', nameRu: 'Широчайшие', view: 'back', category: 'upper', defaultPercent: 53, recoveryHours: 48 },
-  traps: { id: 'traps', nameRu: 'Трапеции', view: 'back', category: 'upper', defaultPercent: 42, recoveryHours: 36 },
-  rearDelts: { id: 'rearDelts', nameRu: 'Задние дельты', view: 'back', category: 'upper', defaultPercent: 38, recoveryHours: 36 },
-  lowerback: { id: 'lowerback', nameRu: 'Разгибатели спины', view: 'back', category: 'core', defaultPercent: 29, recoveryHours: 48 },
-  glutes: { id: 'glutes', nameRu: 'Ягодицы', view: 'back', category: 'lower', defaultPercent: 46, recoveryHours: 48 },
+  // FRONT
+  chest: {
+    id: 'chest',
+    nameRu: 'Грудные',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 68,
+    recoveryHours: 48,
+    locationRu: 'Передняя верхняя поверхность грудной клетки от ключицы до мечевидного отростка.',
+    functionRu: 'Горизонтальное приведение и сгибание плеча, жимовые движения от груди.',
+  },
+  shoulders: {
+    id: 'shoulders',
+    nameRu: 'Передние дельты',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 42,
+    recoveryHours: 48,
+    locationRu: 'Передняя порция дельтовидной мышцы плечевого сустава.',
+    functionRu: 'Сгибание плеча вперед и вверх, стабилизация сустава в вертикальных и наклонных жимах.',
+  },
+  biceps: {
+    id: 'biceps',
+    nameRu: 'Бицепсы',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 52,
+    recoveryHours: 36,
+    locationRu: 'Передняя область плеча между плечевым и локтевым суставами.',
+    functionRu: 'Сгибание предплечья в локтевом суставе и супинация кисти кверху.',
+  },
+  forearms: {
+    id: 'forearms',
+    nameRu: 'Предплечья',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 34,
+    recoveryHours: 24,
+    locationRu: 'Мышцы от локтевого сустава до кисти (сгибатели и разгибатели запястья, плечелучевая мышца).',
+    functionRu: 'Хват пальцев, сгибание/разгибание запястья и стабилизация снаряда.',
+  },
+  abs: {
+    id: 'abs',
+    nameRu: 'Пресс (прямая мышца)',
+    view: 'front',
+    category: 'core',
+    defaultPercent: 58,
+    recoveryHours: 24,
+    locationRu: 'Передняя брюшная стенка от лобкового симфиза до реберной дуги.',
+    functionRu: 'Сгибание позвоночника, подтягивание таза к грудной клетке, удержание внутрибрюшного давления.',
+  },
+  obliques: {
+    id: 'obliques',
+    nameRu: 'Косые мышцы живота',
+    view: 'front',
+    category: 'core',
+    defaultPercent: 45,
+    recoveryHours: 24,
+    locationRu: 'Боковые стенки брюшного пресса от нижних ребер до подвздошного гребня.',
+    functionRu: 'Вращение и боковое сгибание туловища, стабилизация таза и защита поясницы.',
+  },
+  quads: {
+    id: 'quads',
+    nameRu: 'Квадрицепсы',
+    view: 'front',
+    category: 'lower',
+    defaultPercent: 61,
+    recoveryHours: 72,
+    locationRu: 'Передняя поверхность бедра (прямая, латеральная, медиальная и промежуточная широкие мышцы).',
+    functionRu: 'Разгибание ноги в коленном суставе и содействие сгибанию бедра в тазобедренном.',
+  },
+  tibialis: {
+    id: 'tibialis',
+    nameRu: 'Передняя большеберцовая',
+    view: 'front',
+    category: 'lower',
+    defaultPercent: 32,
+    recoveryHours: 24,
+    locationRu: 'Передняя наружная сторона голени вдоль большеберцовой кости.',
+    functionRu: 'Тыльное сгибание стопы (подъем носка вверх), амортизация при ходьбе, беге и прыжках.',
+  },
+
+  // BACK
+  traps: {
+    id: 'traps',
+    nameRu: 'Трапеции',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 42,
+    recoveryHours: 36,
+    locationRu: 'Верхняя и средняя часть спины от затылка до нижних грудных позвонков.',
+    functionRu: 'Подъем, сведение и фиксация лопаток, удержание тяжестей в руках.',
+  },
+  rearDelts: {
+    id: 'rearDelts',
+    nameRu: 'Задние дельты',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 38,
+    recoveryHours: 36,
+    locationRu: 'Задняя порция дельтовидной мышцы на тыльной стороне плечевого сустава.',
+    functionRu: 'Горизонтальное отведение плеча назад и наружная ротация.',
+  },
+  triceps: {
+    id: 'triceps',
+    nameRu: 'Трицепсы',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 33,
+    recoveryHours: 36,
+    locationRu: 'Задняя поверхность плеча (латеральная, медиальная и длинная головки).',
+    functionRu: 'Разгибание руки в локтевом суставе и приведение плеча к корпусу.',
+  },
+  lats: {
+    id: 'lats',
+    nameRu: 'Широчайшие спины',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 53,
+    recoveryHours: 48,
+    locationRu: 'Нижняя и средняя боковая область спины, формирующая V-образный конус.',
+    functionRu: 'Тяга плеча вниз и назад к туловищу, приведение и внутренняя ротация плеча.',
+  },
+  lowerback: {
+    id: 'lowerback',
+    nameRu: 'Разгибатели спины',
+    view: 'back',
+    category: 'core',
+    defaultPercent: 29,
+    recoveryHours: 48,
+    locationRu: 'Глубокие продольные мышечные столбы вдоль всего позвоночника до крестца.',
+    functionRu: 'Разгибание и удержание вертикального положения позвоночного столба при нагрузках.',
+  },
+  glutes: {
+    id: 'glutes',
+    nameRu: 'Ягодичные мышцы',
+    view: 'back',
+    category: 'lower',
+    defaultPercent: 46,
+    recoveryHours: 48,
+    locationRu: 'Большая, средняя и малая ягодичные мышцы тазовой области.',
+    functionRu: 'Разгибание и отведение бедра, стабилизация таза в приседаниях и становых тягах.',
+  },
+  hamstrings: {
+    id: 'hamstrings',
+    nameRu: 'Бицепсы бедер',
+    view: 'back',
+    category: 'lower',
+    defaultPercent: 40,
+    recoveryHours: 72,
+    locationRu: 'Задняя поверхность бедра (двуглавая, полусухожильная и полуперепончатая мышцы).',
+    functionRu: 'Сгибание голени в колене и мощное разгибание туловища в тазобедренном суставе.',
+  },
+  calves: {
+    id: 'calves',
+    nameRu: 'Икроножные мышцы',
+    view: 'back',
+    category: 'lower',
+    defaultPercent: 28,
+    recoveryHours: 24,
+    locationRu: 'Задняя поверхность голени (икроножная и камбаловидная мышцы).',
+    functionRu: 'Подошвенное сгибание стопы (подъем на носки), толчок при беге и прыжках.',
+  },
 };
 
 export type EquipmentCategory =
@@ -327,15 +480,62 @@ export const SPORT_DEFINITIONS: Record<
   },
 };
 
+export interface MuscleLoadHistoryItem {
+  date: string;
+  volumeKg: number;
+  sets: number;
+  exerciseName: string;
+}
+
 export interface MuscleLoadStats {
   muscle: MuscleGroup;
   nameRu: string;
   percent: number;
   weeklyTonnageKg: number;
   recentWorkoutsCount: number;
+  exerciseCount: number;
+  setsCount: number;
   recoveryDays: number;
   status: 'fatigued' | 'recovering' | 'recovered';
+  history: MuscleLoadHistoryItem[];
+  hasData: boolean;
 }
+
+export interface AppSettings {
+  theme: 'dark' | 'light' | 'system';
+  textSize: 'compact' | 'normal' | 'large';
+  accentColor: 'emerald' | 'mint' | 'amber';
+  animationMode: 'full' | 'reduced' | 'off';
+  reducedMotion: boolean;
+  // Notifications
+  notificationsEnabled: boolean;
+  workoutReminders: boolean;
+  scheduledActivityReminders: boolean;
+  reminderTime: string;
+  // Workouts
+  weightUnit: 'kg' | 'lbs';
+  autoRestTimer: boolean;
+  defaultRestSeconds: number;
+  vibrateOnTimerEnd: boolean;
+  autoAdvanceSet: boolean;
+}
+
+export const DEFAULT_APP_SETTINGS: AppSettings = {
+  theme: 'dark',
+  textSize: 'normal',
+  accentColor: 'emerald',
+  animationMode: 'full',
+  reducedMotion: false,
+  notificationsEnabled: true,
+  workoutReminders: true,
+  scheduledActivityReminders: true,
+  reminderTime: '18:00',
+  weightUnit: 'kg',
+  autoRestTimer: true,
+  defaultRestSeconds: 90,
+  vibrateOnTimerEnd: true,
+  autoAdvanceSet: true,
+};
 
 export interface ExerciseLibraryItem {
   id: string;
@@ -344,8 +544,8 @@ export interface ExerciseLibraryItem {
   secondaryMuscles?: MuscleGroup[];
   isBodyweight: boolean;
   requiredEquipment: EquipmentCategory;
-  difficulty: 'Начинающий' | 'Средний' | 'Сложный';
-  type: 'Базовое (многосуставное)' | 'Изолирующее';
+  difficulty: 'Начинающий' | 'Средний' | 'Сложный' | 'Опытный' | string;
+  type: string;
   homeFriendly: boolean;
   defaultSets: number;
   defaultReps: number;
@@ -788,5 +988,94 @@ export const EXERCISE_CATALOG: ExerciseLibraryItem[] = [
     defaultRestSeconds: 60,
     technique: 'Локти под плечами, тело натянуто как струна. Пресс и ягодицы напряжены максимально, не допускайте провисания таза.',
     alternatives: ['Боковая планка', 'Колесо для пресса'],
+  },
+
+  // OBLIQUES (Косые мышцы живота)
+  {
+    id: 'russian_twists',
+    name: 'Русские скручивания с весом',
+    primaryMuscle: 'obliques',
+    secondaryMuscles: ['abs'],
+    isBodyweight: false,
+    requiredEquipment: 'bodyweight',
+    difficulty: 'Средний',
+    type: 'Изолирующее',
+    homeFriendly: true,
+    defaultSets: 3,
+    defaultReps: 20,
+    defaultWeight: 8,
+    defaultRestSeconds: 60,
+    technique: 'Сидя на полу с согнутыми коленями и отклоненным назад корпусом под 45 градусов. Поворачивайте корпус из стороны в сторону, касаясь снарядом пола.',
+    alternatives: ['Боковая планка с подъемом таза', 'Скручивания на боку', 'Дровосек на блоке'],
+  },
+  {
+    id: 'side_plank',
+    name: 'Боковая планка на предплечье',
+    primaryMuscle: 'obliques',
+    secondaryMuscles: ['abs', 'glutes', 'shoulders'],
+    isBodyweight: true,
+    requiredEquipment: 'bodyweight',
+    difficulty: 'Начинающий',
+    type: 'Изолирующее',
+    homeFriendly: true,
+    defaultSets: 3,
+    defaultReps: 45,
+    defaultWeight: 0,
+    defaultRestSeconds: 60,
+    technique: 'Упор на одно предплечье и ребро стопы. Тело вытянуто в прямую линию, таз поднят, косые мышцы напряжены.',
+    alternatives: ['Русские скручивания', 'Боковые наклоны с гантелью'],
+  },
+  {
+    id: 'cable_woodchopper',
+    name: 'Дровосек на блоке (повороты корпуса)',
+    primaryMuscle: 'obliques',
+    secondaryMuscles: ['abs', 'shoulders'],
+    isBodyweight: false,
+    requiredEquipment: 'gym_machines',
+    difficulty: 'Средний',
+    type: 'Базовое (многосуставное)',
+    homeFriendly: false,
+    defaultSets: 3,
+    defaultReps: 12,
+    defaultWeight: 20,
+    defaultRestSeconds: 60,
+    technique: 'Тяга рукояти кроссовера по диагонали сверху вниз с мощным вращением корпуса за счет косых мышц пресса.',
+    alternatives: ['Русские скручивания с медболом', 'Повороты корпуса с блином'],
+  },
+
+  // TIBIALIS (Передняя большеберцовая мышца)
+  {
+    id: 'tibialis_raises_wall',
+    name: 'Подъемы носков у стены (Tibialis Raise)',
+    primaryMuscle: 'tibialis',
+    secondaryMuscles: ['calves'],
+    isBodyweight: true,
+    requiredEquipment: 'bodyweight',
+    difficulty: 'Начинающий',
+    type: 'Изолирующее',
+    homeFriendly: true,
+    defaultSets: 3,
+    defaultReps: 20,
+    defaultWeight: 0,
+    defaultRestSeconds: 45,
+    technique: 'Прислонитесь спиной к стене, ноги выставите вперед на 30-40 см. Не отрывая пятки от пола, максимально тяните носки стоп на себя вверх.',
+    alternatives: ['Подъемы носков со свободным весом', 'Тренажер для тибиалиса'],
+  },
+  {
+    id: 'tibialis_kettlebell_raise',
+    name: 'Подъем носка с гирей на стопе',
+    primaryMuscle: 'tibialis',
+    secondaryMuscles: ['calves'],
+    isBodyweight: false,
+    requiredEquipment: 'kettlebells',
+    difficulty: 'Средний',
+    type: 'Изолирующее',
+    homeFriendly: true,
+    defaultSets: 3,
+    defaultReps: 15,
+    defaultWeight: 8,
+    defaultRestSeconds: 60,
+    technique: 'Сидя на возвышении, свесьте стопу с надетой гирей или лентой. Выполняйте плавное сгибание стопы носком вверх с паузой в верхней точке.',
+    alternatives: ['Подъемы носков у стены', 'Разгибания стопы с резиной'],
   },
 ];

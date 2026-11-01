@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { UserFitnessParameters, MuscleGroup, MUSCLE_DEFINITIONS, EXERCISE_CATALOG } from '../types/workout';
 import { StorageService } from '../services/storage';
+import { FormSelect } from './common/FormSelect';
 import { X, Check, Sliders, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { motion } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
@@ -126,90 +127,84 @@ export const UserParametersModal: React.FC<UserParametersModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs [overscroll-behavior:contain] min-h-0">
           {/* Goal */}
           <div>
-            <label className="block text-[11px] font-semibold text-[#92999A] mb-1 uppercase tracking-wider">
-              Главная цель
-            </label>
-            <select
-              value={params.goal}
-              onChange={(e) => setParams({ ...params, goal: e.target.value as any })}
-              className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995]"
-            >
-              {GOALS.map((g) => (
-                <option key={g} value={g}>{g}</option>
-              ))}
-            </select>
+            <FormSelect
+              label="Главная цель"
+              value={params.goal || ''}
+              onChange={(val) => setParams({ ...params, goal: val as any })}
+              placeholder="Не выбрано"
+              options={[
+                { value: '' as any, label: 'Не выбрано' },
+                ...GOALS.map((g) => ({ value: g, label: g })),
+              ]}
+            />
           </div>
 
           {/* Level & Location */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block text-[11px] font-semibold text-[#92999A] mb-1 uppercase tracking-wider">
-                Уровень
-              </label>
-              <select
-                value={params.level}
-                onChange={(e) => setParams({ ...params, level: e.target.value as any })}
-                className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-2.5 py-2 text-xs text-[#E8E9E7]"
-              >
-                {LEVELS.map((l) => (
-                  <option key={l} value={l}>{l}</option>
-                ))}
-              </select>
+              <FormSelect
+                label="Уровень"
+                value={params.level || ''}
+                onChange={(val) => setParams({ ...params, level: val as any })}
+                placeholder="Не указан"
+                options={[
+                  { value: '' as any, label: 'Не указан' },
+                  ...LEVELS.map((l) => ({ value: l, label: l })),
+                ]}
+              />
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-[#92999A] mb-1 uppercase tracking-wider">
-                Место тренировок
-              </label>
-              <select
-                value={params.location}
-                onChange={(e) => setParams({ ...params, location: e.target.value as any })}
-                className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-2.5 py-2 text-xs text-[#E8E9E7]"
-              >
-                {LOCATIONS.map((loc) => (
-                  <option key={loc} value={loc}>{loc}</option>
-                ))}
-              </select>
+              <FormSelect
+                label="Место тренировок"
+                value={params.location || ''}
+                onChange={(val) => setParams({ ...params, location: val as any })}
+                placeholder="Не выбрано"
+                options={[
+                  { value: '' as any, label: 'Не выбрано' },
+                  ...LOCATIONS.map((loc) => ({ value: loc, label: loc })),
+                ]}
+              />
             </div>
           </div>
 
           {/* Frequency & Duration */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block text-[11px] font-semibold text-[#92999A] mb-1 uppercase tracking-wider">
-                Дней в неделю
-              </label>
-              <select
-                value={params.daysPerWeek}
-                onChange={(e) => setParams({ ...params, daysPerWeek: Number(e.target.value) })}
-                className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-2.5 py-2 text-xs text-[#E8E9E7]"
-              >
-                <option value={2}>2 тренировки</option>
-                <option value={3}>3 тренировки</option>
-                <option value={4}>4 тренировки</option>
-                <option value={5}>5 тренировок</option>
-                <option value={6}>6 тренировок</option>
-              </select>
+              <FormSelect
+                label="Дней в неделю"
+                value={params.daysPerWeek || 0}
+                onChange={(val) => setParams({ ...params, daysPerWeek: Number(val) })}
+                placeholder="Не выбрано"
+                options={[
+                  { value: 0, label: 'Не выбрано' },
+                  { value: 2, label: '2 тренировки' },
+                  { value: 3, label: '3 тренировки' },
+                  { value: 4, label: '4 тренировки' },
+                  { value: 5, label: '5 тренировок' },
+                  { value: 6, label: '6 тренировок' },
+                ]}
+              />
             </div>
 
             <div>
-              <label className="block text-[11px] font-semibold text-[#92999A] mb-1 uppercase tracking-wider">
-                Длительность
-              </label>
-              <select
-                value={params.durationMinutes}
-                onChange={(e) => setParams({ ...params, durationMinutes: Number(e.target.value) })}
-                className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-2.5 py-2 text-xs text-[#E8E9E7]"
-              >
-                <option value={30}>30 минут</option>
-                <option value={45}>45 минут</option>
-                <option value={60}>60 минут</option>
-                <option value={75}>75 минут</option>
-                <option value={90}>90 минут</option>
-              </select>
+              <FormSelect
+                label="Длительность"
+                value={params.durationMinutes || 0}
+                onChange={(val) => setParams({ ...params, durationMinutes: Number(val) })}
+                placeholder="Не указана"
+                options={[
+                  { value: 0, label: 'Не указана' },
+                  { value: 30, label: '30 минут' },
+                  { value: 45, label: '45 минут' },
+                  { value: 60, label: '60 минут' },
+                  { value: 75, label: '75 минут' },
+                  { value: 90, label: '90 минут' },
+                ]}
+              />
             </div>
           </div>
 

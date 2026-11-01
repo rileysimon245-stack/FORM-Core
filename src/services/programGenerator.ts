@@ -10,7 +10,6 @@ import { StorageService } from './storage';
 
 export interface GeneratorParams {
   goal: string;
-  equipment?: string;
   daysPerWeek: number;
   duration: number;
   experience: string;
@@ -84,12 +83,12 @@ export async function generateWorkoutProgram(
     console.warn('Backend AI generation unavailable, using smart algorithmic generator:', err);
   }
 
-  // Robust Local Algorithmic Generator strictly respecting equipment and health
+  // Robust Local Algorithmic Generator strictly respecting selected equipment and health
   const localProgram = generateLocalTemplateProgram(enrichedParams, availableEquipmentIds);
   return {
     program: localProgram,
     source: 'algorithmic',
-    message: 'Программа успешно составлена с учетом вашего инвентаря, ограничений и времени восстановления.',
+    message: 'Программа успешно составлена строго с учетом выбранного вами инвентаря, ограничений и восстановления.',
   };
 }
 
@@ -99,7 +98,7 @@ export function generateLocalTemplateProgram(
 ): WorkoutProgram {
   const { goal, daysPerWeek, duration, experience, age = 28 } = params;
 
-  // Read available equipment if not passed
+  // Read available equipment if not passed - strictly using user inventory selection
   const eqList = availableEquipmentIds || StorageService.getEquipmentList().filter((e) => e.selected).map((e) => e.id);
   const excluded = (params.excludedExercises || []).map((e) => e.toLowerCase().trim());
   const healthLimits = (params.healthRestrictions || []).map((h) => h.toLowerCase().trim());
@@ -109,17 +108,20 @@ export function generateLocalTemplateProgram(
   const hasPullupBar = eqList.includes('pullup_bar');
   const hasDipBars = eqList.includes('dip_bars');
   const hasMachines = eqList.includes('gym_machines');
+  const hasKettlebells = eqList.includes('kettlebells');
+  const hasBands = eqList.includes('resistance_bands');
+  const hasJumpRope = eqList.includes('jump_rope');
+  const hasBodyweight = eqList.includes('bodyweight') || eqList.length === 0;
 
   const avoidSpine = healthLimits.some((h) => h.includes('позвоночник') || h.includes('осевой'));
   const protectKnees = healthLimits.some((h) => h.includes('колен'));
   const protectShoulders = healthLimits.some((h) => h.includes('плеч'));
 
-  // Helper to pick exercise matching equipment, muscle, and avoiding excluded
+  // Helper to pick exercise matching equipment strictly, muscle, and avoiding excluded
   const pickExercise = (
-    primaryMuscle: MuscleGroup,
-    preferredType?: 'barbell' | 'dumbbells' | 'bodyweight' | 'machine'
+    primaryMuscle: MuscleGroup
   ): ProgramExerciseTemplate => {
-    // Filter candidate list
+    // Filter candidate list strictly by equipment
     const candidates = EXERCISE_CATALOG.filter((ex) => {
       // Must target muscle
       if (ex.primaryMuscle !== primaryMuscle && !ex.secondaryMuscles?.includes(primaryMuscle)) {
@@ -139,12 +141,16 @@ export function generateLocalTemplateProgram(
       if (protectShoulders && ex.name.includes('Армейский жим')) {
         return false;
       }
-      // Must have required equipment
+      // Must have required equipment strictly in user's inventory
       if (ex.requiredEquipment === 'barbell' && !hasBarbell) return false;
       if ((ex.requiredEquipment === 'dumbbells_adjustable' || ex.requiredEquipment === 'dumbbells_fixed') && !hasDumbbells) return false;
       if (ex.requiredEquipment === 'pullup_bar' && !hasPullupBar) return false;
       if (ex.requiredEquipment === 'dip_bars' && !hasDipBars) return false;
       if (ex.requiredEquipment === 'gym_machines' && !hasMachines) return false;
+      if (ex.requiredEquipment === 'kettlebells' && !hasKettlebells) return false;
+      if (ex.requiredEquipment === 'resistance_bands' && !hasBands) return false;
+      if (ex.requiredEquipment === 'jump_rope' && !hasJumpRope) return false;
+      if (ex.requiredEquipment === 'bodyweight' && !hasBodyweight) return false;
 
       return true;
     });
