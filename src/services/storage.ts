@@ -20,6 +20,7 @@ import {
   DEFAULT_APP_SETTINGS,
   MuscleLoadHistoryItem,
   EXERCISE_CATALOG,
+  MusclePeriod,
 } from '../types/workout';
 
 const STORAGE_KEYS = {
@@ -671,33 +672,145 @@ export const StorageService = {
   },
 
   // REAL MUSCLE IMPACT: Combines Strength sets + Multi-sport sessions
-  getMuscleStats(): Record<MuscleGroup, MuscleLoadStats> {
-    const sessions = this.getWorkoutSessions();
-    const sportSessions = this.getSportSessions();
+  getMuscleStats(period: MusclePeriod = '7d'): Record<MuscleGroup, MuscleLoadStats> {
+    const allSessions = this.getWorkoutSessions();
+    const allSportSessions = this.getSportSessions();
+
+    const now = new Date();
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    const filterByPeriod = (itemDate: string) => {
+      if (period === 'session') {
+        return itemDate === todayIso;
+      }
+      const itemTime = new Date(`${itemDate}T12:00:00`).getTime();
+      const daysDiff = (now.getTime() - itemTime) / (1000 * 60 * 60 * 24);
+      if (period === '7d') {
+        return daysDiff >= 0 && daysDiff <= 7;
+      }
+      if (period === '30d') {
+        return daysDiff >= 0 && daysDiff <= 30;
+      }
+      return true;
+    };
+
+    const completedSessions = allSessions.filter((s) => s.status === 'completed' && filterByPeriod(s.date));
+    const completedSportSessions = allSportSessions.filter((sp) => sp.status === 'completed' && filterByPeriod(sp.date));
     const stats: Partial<Record<MuscleGroup, MuscleLoadStats>> = {};
 
     (Object.keys(MUSCLE_DEFINITIONS) as MuscleGroup[]).forEach((m) => {
       const def = MUSCLE_DEFINITIONS[m];
 
-      // 1. Strength sessions load
+      // 1. Strength sessions load: strictly completed sessions and completed sets
       let strengthVolume = 0;
       let strengthHits = 0;
       let totalSets = 0;
       const distinctExercises = new Set<string>();
       const history: MuscleLoadHistoryItem[] = [];
 
-      sessions.forEach((s) => {
+      completedSessions.forEach((s) => {
         let sessionMuscleVol = 0;
         let sessionMuscleSets = 0;
 
         s.exercises?.forEach((ex) => {
-          const isPrimary = ex.targetMuscle === m;
-          // Check if secondary muscle in exercise catalog
           const catalogItem = EXERCISE_CATALOG.find((cat) => cat.name.toLowerCase() === ex.name.toLowerCase());
-          const isSecondary = catalogItem?.secondaryMuscles?.includes(m);
+          const secondaryMuscles = ex.secondaryMuscles || catalogItem?.secondaryMuscles;
+          
+          let isPrimary = ex.targetMuscle === m;
+          let isSecondary = secondaryMuscles?.includes(m) || false;
+
+          // Smart muscle hierarchy mapping for detailed muscle heads
+          if (!isPrimary && !isSecondary) {
+            const exNameLow = ex.name.toLowerCase();
+            // Aliases
+            if (m === 'rear_delts' && (ex.targetMuscle === 'rearDelts' || secondaryMuscles?.includes('rearDelts'))) {
+              isPrimary = ex.targetMuscle === 'rearDelts';
+              isSecondary = !isPrimary;
+            } else if (m === 'rearDelts' && (ex.targetMuscle === 'rear_delts' || secondaryMuscles?.includes('rear_delts'))) {
+              isPrimary = ex.targetMuscle === 'rear_delts';
+              isSecondary = !isPrimary;
+            }
+            // Chest sub-heads
+            else if (m === 'chest_upper' && (ex.targetMuscle === 'chest' || secondaryMuscles?.includes('chest'))) {
+              if (exNameLow.includes('наклон') || exNameLow.includes('вверх') || exNameLow.includes('incline')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            } else if (m === 'chest_mid' && (ex.targetMuscle === 'chest' || secondaryMuscles?.includes('chest'))) {
+              if (exNameLow.includes('лежа') || exNameLow.includes('отжимания от пола') || exNameLow.includes('кроссовер')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            } else if (m === 'chest_lower' && (ex.targetMuscle === 'chest' || secondaryMuscles?.includes('chest'))) {
+              if (exNameLow.includes('брусь') || exNameLow.includes('dips') || exNameLow.includes('вниз') || exNameLow.includes('decline')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            }
+            // Shoulders sub-heads
+            else if (m === 'front_delts' && (ex.targetMuscle === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
+              if (exNameLow.includes('армей') || exNameLow.includes('вверх') || exNameLow.includes('передн') || exNameLow.includes('overhead')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            } else if (m === 'side_delts' && (ex.targetMuscle === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
+              if (exNameLow.includes('мах') || exNameLow.includes('разводк') || exNameLow.includes('боков') || exNameLow.includes('lateral')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            } else if (m === 'rear_delts' && (ex.targetMuscle === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
+              if (exNameLow.includes('задн') || exNameLow.includes('face pull')) {
+                isPrimary = true;
+              }
+            }
+            // Arms: Brachialis
+            else if (m === 'brachialis' && (ex.targetMuscle === 'biceps' || secondaryMuscles?.includes('biceps'))) {
+              if (exNameLow.includes('молот') || exNameLow.includes('нейтральн') || exNameLow.includes('обратн') || exNameLow.includes('hammer')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            }
+            // Back: Traps sub-heads & Rhomboids
+            else if (m === 'traps_upper' && (ex.targetMuscle === 'traps' || secondaryMuscles?.includes('traps'))) {
+              isPrimary = true;
+            } else if (m === 'traps_mid' && (ex.targetMuscle === 'traps' || secondaryMuscles?.includes('traps') || ex.targetMuscle === 'lats')) {
+              isSecondary = true;
+            } else if (m === 'traps_lower' && (ex.targetMuscle === 'traps' || ex.targetMuscle === 'lats' || secondaryMuscles?.includes('lats'))) {
+              isSecondary = true;
+            } else if (m === 'rhomboids' && (ex.targetMuscle === 'traps' || ex.targetMuscle === 'lats' || secondaryMuscles?.includes('lats'))) {
+              isSecondary = true;
+            }
+            // Quads sub-heads
+            else if (m === 'quads_rectus' && (ex.targetMuscle === 'quads' || secondaryMuscles?.includes('quads'))) {
+              if (exNameLow.includes('разгибан') || exNameLow.includes('выпад')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            } else if (m === 'quads_lateralis' && (ex.targetMuscle === 'quads' || secondaryMuscles?.includes('quads'))) {
+              if (exNameLow.includes('присед') || exNameLow.includes('жим ногами')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            } else if (m === 'quads_medialis' && (ex.targetMuscle === 'quads' || secondaryMuscles?.includes('quads'))) {
+              if (exNameLow.includes('присед') || exNameLow.includes('разгибан') || exNameLow.includes('гакк')) {
+                isPrimary = true;
+              } else {
+                isSecondary = true;
+              }
+            }
+          }
 
           if (isPrimary || isSecondary) {
             distinctExercises.add(ex.name);
+            // Primary muscle receives 100% volume; secondary receives 45% volume
             const multiplier = isPrimary ? 1.0 : 0.45;
 
             ex.sets?.forEach((st) => {
@@ -727,26 +840,24 @@ export const StorageService = {
       // 2. Multi-sport sessions load (Boxing, Basketball, Running, etc.)
       let sportLoadPoints = 0;
       let sportHits = 0;
-      sportSessions.forEach((sp) => {
-        if (sp.status === 'completed' || sp.status === 'planned') {
-          const spDef = SPORT_DEFINITIONS[sp.sportType];
-          if (spDef) {
-            const isPrimary = spDef.primaryMuscles.includes(m);
-            const isSecondary = spDef.secondaryMuscles.includes(m);
-            if (isPrimary || isSecondary) {
-              sportHits++;
-              const duration = sp.actualDurationMinutes || sp.plannedDurationMinutes || 45;
-              const intensityMult = sp.intensity === 'high' ? 2.2 : sp.intensity === 'medium' ? 1.5 : 1.0;
-              const weight = isPrimary ? 1.0 : 0.5;
-              const points = duration * intensityMult * weight;
-              sportLoadPoints += points;
-              history.push({
-                date: sp.date,
-                volumeKg: Math.round(points * 20),
-                sets: 1,
-                exerciseName: sp.title || spDef.nameRu,
-              });
-            }
+      completedSportSessions.forEach((sp) => {
+        const spDef = SPORT_DEFINITIONS[sp.sportType];
+        if (spDef) {
+          const isPrimary = spDef.primaryMuscles.includes(m);
+          const isSecondary = spDef.secondaryMuscles.includes(m);
+          if (isPrimary || isSecondary) {
+            sportHits++;
+            const duration = sp.actualDurationMinutes || sp.plannedDurationMinutes || 45;
+            const intensityMult = sp.intensity === 'high' ? 2.2 : sp.intensity === 'medium' ? 1.5 : 1.0;
+            const weight = isPrimary ? 1.0 : 0.5;
+            const points = duration * intensityMult * weight;
+            sportLoadPoints += points;
+            history.push({
+              date: sp.date,
+              volumeKg: Math.round(points * 20),
+              sets: 1,
+              exerciseName: sp.title || spDef.nameRu,
+            });
           }
         }
       });
@@ -754,23 +865,61 @@ export const StorageService = {
       const totalHits = strengthHits + sportHits;
       // 1 sport load point ~ 20 kg volume equivalent
       const totalEffectiveKg = Math.round(strengthVolume + sportLoadPoints * 20);
-      const hasRealData = totalHits > 0;
+      const hasRealData = totalHits > 0 && (totalSets > 0 || sportHits > 0);
+
+      // Sort history chronologically descending (newest first)
+      history.sort((a, b) => b.date.localeCompare(a.date));
 
       let effectivePercent = 0;
-      let recoveryDays = 1;
+      let recoveryDays: number | null = null;
+      let recoveryTime: string | null = null;
       let status: 'fatigued' | 'recovering' | 'recovered' = 'recovered';
-      let finalTonnage = totalEffectiveKg;
-      let finalHits = totalHits;
+      let finalTonnage = 0;
+      let finalHits = 0;
 
       if (hasRealData) {
         effectivePercent = Math.min(100, Math.max(10, Math.round((totalEffectiveKg / 8000) * 75)));
-        recoveryDays = effectivePercent > 70 ? 3 : effectivePercent > 45 ? 2 : 1;
-        status = effectivePercent > 65 ? 'fatigued' : effectivePercent > 35 ? 'recovering' : 'recovered';
+        finalTonnage = totalEffectiveKg;
+        finalHits = totalHits;
+
+        // Base recovery physiological hours (e.g. 48 for chest/shoulders, 72 for hamstrings, 36 for biceps, 24 for calves)
+        const baseHours = def.recoveryHours || 48;
+        const volumeMultiplier = totalEffectiveKg > 6000 ? 1.25 : totalEffectiveKg > 3000 ? 1.1 : totalEffectiveKg < 1200 ? 0.75 : 1.0;
+        const totalNeededHours = Math.round(baseHours * volumeMultiplier);
+
+        // Calculate hours elapsed since the latest completed workout
+        const latestDateStr = history[0]?.date;
+        let elapsedHours = 0;
+        if (latestDateStr) {
+          const workoutDate = new Date(`${latestDateStr}T12:00:00`);
+          const now = new Date();
+          const diffMs = now.getTime() - workoutDate.getTime();
+          elapsedHours = Math.max(0, diffMs / (1000 * 60 * 60));
+        }
+
+        const remainingHours = Math.max(0, totalNeededHours - elapsedHours);
+
+        if (remainingHours <= 0) {
+          recoveryTime = 'Восстановлена';
+          recoveryDays = 0;
+          status = 'recovered';
+        } else if (remainingHours < 24) {
+          recoveryTime = `~${Math.max(1, Math.round(remainingHours))} ч.`;
+          recoveryDays = 1;
+          status = remainingHours > (totalNeededHours * 0.5) ? 'fatigued' : 'recovering';
+        } else {
+          const days = Math.ceil(remainingHours / 24);
+          recoveryTime = `~${days} дн.`;
+          recoveryDays = days;
+          status = remainingHours > (totalNeededHours * 0.5) ? 'fatigued' : 'recovering';
+        }
       } else {
+        // Strictly no load: no timer, no invented recovery time
         effectivePercent = 0;
         finalTonnage = 0;
         finalHits = 0;
-        recoveryDays = 0;
+        recoveryDays = null;
+        recoveryTime = null;
         status = 'recovered';
       }
 
@@ -783,8 +932,9 @@ export const StorageService = {
         exerciseCount: hasRealData ? distinctExercises.size : 0,
         setsCount: hasRealData ? totalSets : 0,
         recoveryDays,
+        recoveryTime,
         status,
-        history: history.sort((a, b) => b.date.localeCompare(a.date)),
+        history,
         hasData: hasRealData,
       };
     });

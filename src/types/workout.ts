@@ -3,6 +3,7 @@
  */
 
 export type MuscleGroup =
+  // Base & Rollups
   | 'chest'
   | 'shoulders'
   | 'biceps'
@@ -18,7 +19,30 @@ export type MuscleGroup =
   | 'traps'
   | 'rearDelts'
   | 'lowerback'
-  | 'glutes';
+  | 'glutes'
+  // Chest detailed
+  | 'chest_upper'
+  | 'chest_mid'
+  | 'chest_lower'
+  // Shoulders detailed
+  | 'front_delts'
+  | 'side_delts'
+  | 'rear_delts'
+  // Arms detailed
+  | 'brachialis'
+  // Back detailed
+  | 'traps_upper'
+  | 'traps_mid'
+  | 'traps_lower'
+  | 'rhomboids'
+  // Quads detailed
+  | 'quads_rectus'
+  | 'quads_lateralis'
+  | 'quads_medialis';
+
+export type MusclePeriod = 'session' | '7d' | '30d';
+
+
 
 export interface MuscleInfo {
   id: MuscleGroup;
@@ -32,56 +56,224 @@ export interface MuscleInfo {
 }
 
 export const MUSCLE_DEFINITIONS: Record<MuscleGroup, MuscleInfo> = {
-  // FRONT
+  // --- CHEST ---
+  chest_upper: {
+    id: 'chest_upper',
+    nameRu: 'Верхняя часть груди',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 65,
+    recoveryHours: 48,
+    locationRu: 'Ключичная часть большой грудной мышцы (верхние пучки).',
+    functionRu: 'Подъем и приведение руки вперед-вверх, жимы на наклонной скамье.',
+  },
+  chest_mid: {
+    id: 'chest_mid',
+    nameRu: 'Средняя часть груди',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 70,
+    recoveryHours: 48,
+    locationRu: 'Грудинно-реберная порция большой грудной мышцы.',
+    functionRu: 'Горизонтальное приведение рук к центру, базовые жимы лежа и сведения.',
+  },
+  chest_lower: {
+    id: 'chest_lower',
+    nameRu: 'Нижняя часть груди',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 60,
+    recoveryHours: 48,
+    locationRu: 'Абдоминальная часть грудной мышцы вдоль нижнего реберного контура.',
+    functionRu: 'Приведение руки книзу, отжимания на брусьях и жимы на наклонной скамье головой вниз.',
+  },
   chest: {
     id: 'chest',
-    nameRu: 'Грудные',
+    nameRu: 'Грудные (общие)',
     view: 'front',
     category: 'upper',
     defaultPercent: 68,
     recoveryHours: 48,
-    locationRu: 'Передняя верхняя поверхность грудной клетки от ключицы до мечевидного отростка.',
-    functionRu: 'Горизонтальное приведение и сгибание плеча, жимовые движения от груди.',
+    locationRu: 'Большая и малая грудные мышцы.',
+    functionRu: 'Горизонтальное приведение, сгибание и внутренняя ротация плеча.',
+  },
+
+  // --- SHOULDERS ---
+  front_delts: {
+    id: 'front_delts',
+    nameRu: 'Передняя дельта',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 50,
+    recoveryHours: 48,
+    locationRu: 'Передний пучок дельтовидной мышцы на передней стороне плеча.',
+    functionRu: 'Сгибание и подъем плеча вперед, вертикальные армейские жимы.',
+  },
+  side_delts: {
+    id: 'side_delts',
+    nameRu: 'Средняя дельта',
+    view: 'both',
+    category: 'upper',
+    defaultPercent: 45,
+    recoveryHours: 48,
+    locationRu: 'Латеральный пучок дельтовидной мышцы, формирующий ширину плеч.',
+    functionRu: 'Отведение руки в сторону до горизонтали (махи гантелями).',
+  },
+  rear_delts: {
+    id: 'rear_delts',
+    nameRu: 'Задняя дельта',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 40,
+    recoveryHours: 36,
+    locationRu: 'Задний пучок дельтовидной мышцы на тыльной поверхности плечевого сустава.',
+    functionRu: 'Горизонтальное отведение руки назад, внешняя ротация плеча.',
+  },
+  rearDelts: {
+    id: 'rearDelts',
+    nameRu: 'Задняя дельта',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 40,
+    recoveryHours: 36,
+    locationRu: 'Задний пучок дельтовидной мышцы.',
+    functionRu: 'Горизонтальное отведение плеча назад.',
   },
   shoulders: {
     id: 'shoulders',
-    nameRu: 'Передние дельты',
-    view: 'front',
+    nameRu: 'Плечи (дельтовидные)',
+    view: 'both',
     category: 'upper',
-    defaultPercent: 42,
+    defaultPercent: 46,
     recoveryHours: 48,
-    locationRu: 'Передняя порция дельтовидной мышцы плечевого сустава.',
-    functionRu: 'Сгибание плеча вперед и вверх, стабилизация сустава в вертикальных и наклонных жимах.',
+    locationRu: 'Дельтовидные мышцы плечевого пояса (передняя, средняя, задняя).',
+    functionRu: 'Подъем, отведение и вращение рук во всех плоскостях.',
   },
+
+  // --- ARMS ---
   biceps: {
     id: 'biceps',
-    nameRu: 'Бицепсы',
+    nameRu: 'Бицепс',
     view: 'front',
     category: 'upper',
     defaultPercent: 52,
     recoveryHours: 36,
-    locationRu: 'Передняя область плеча между плечевым и локтевым суставами.',
-    functionRu: 'Сгибание предплечья в локтевом суставе и супинация кисти кверху.',
+    locationRu: 'Двуглавая мышца плеча на передней поверхности между плечом и локтем.',
+    functionRu: 'Сгибание предплечья в локтевом суставе и супинация кисти (разворот ладонью кверху).',
+  },
+  brachialis: {
+    id: 'brachialis',
+    nameRu: 'Брахиалис',
+    view: 'front',
+    category: 'upper',
+    defaultPercent: 42,
+    recoveryHours: 36,
+    locationRu: 'Плечевая мышца, залегающая под нижней частью бицепса с наружной стороны.',
+    functionRu: 'Чистое сгибание предплечья при нейтральном или прямом хвате («молотковые» сгибания).',
+  },
+  triceps: {
+    id: 'triceps',
+    nameRu: 'Трицепс',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 55,
+    recoveryHours: 36,
+    locationRu: 'Трехглавая мышца задней поверхности плеча (латеральная, длинная и медиальная головки).',
+    functionRu: 'Разгибание руки в локтевом суставе и приведение руки к туловищу.',
   },
   forearms: {
     id: 'forearms',
     nameRu: 'Предплечья',
-    view: 'front',
+    view: 'both',
     category: 'upper',
-    defaultPercent: 34,
+    defaultPercent: 35,
     recoveryHours: 24,
-    locationRu: 'Мышцы от локтевого сустава до кисти (сгибатели и разгибатели запястья, плечелучевая мышца).',
+    locationRu: 'Мышцы от локтевого сустава до кисти (плечелучевая мышца, сгибатели и разгибатели пальцев).',
     functionRu: 'Хват пальцев, сгибание/разгибание запястья и стабилизация снаряда.',
   },
+
+  // --- BACK ---
+  traps_upper: {
+    id: 'traps_upper',
+    nameRu: 'Верхняя трапеция',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 45,
+    recoveryHours: 36,
+    locationRu: 'Верхние волокна трапециевидной мышцы от затылка к ключице и акромиону.',
+    functionRu: 'Подъем плечевого пояса вверх (шраги), фиксация лопаток при удержании веса.',
+  },
+  traps_mid: {
+    id: 'traps_mid',
+    nameRu: 'Средняя трапеция',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 42,
+    recoveryHours: 36,
+    locationRu: 'Горизонтальные пучки трапеции между остью лопатки и позвоночником.',
+    functionRu: 'Мощное сведение лопаток назад к позвоночному столбу в тягах.',
+  },
+  traps_lower: {
+    id: 'traps_lower',
+    nameRu: 'Нижняя трапеция',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 38,
+    recoveryHours: 36,
+    locationRu: 'Нисходящие волокна трапециевидной мышцы к нижним грудным позвонкам.',
+    functionRu: 'Опускание лопатки книзу (депрессия) и правильная фиксация плеча при подтягиваниях.',
+  },
+  rhomboids: {
+    id: 'rhomboids',
+    nameRu: 'Ромбовидные мышцы',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 44,
+    recoveryHours: 48,
+    locationRu: 'Большая и малая ромбовидные мышцы под трапецией вдоль внутреннего края лопатки.',
+    functionRu: 'Сведение, вращение и плотное прижатие лопатки к грудной стенке.',
+  },
+  traps: {
+    id: 'traps',
+    nameRu: 'Трапеции (общие)',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 44,
+    recoveryHours: 36,
+    locationRu: 'Трапециевидная мышца спины от затылка до нижних грудных позвонков.',
+    functionRu: 'Подъем, сведение и опускание лопаток.',
+  },
+  lats: {
+    id: 'lats',
+    nameRu: 'Широчайшие спины',
+    view: 'back',
+    category: 'upper',
+    defaultPercent: 55,
+    recoveryHours: 48,
+    locationRu: 'Большие крыловидные мышцы средней и нижней части спины.',
+    functionRu: 'Тяга рук сверху вниз и к корпусу, приведение плеча и формирование V-образного силуэта.',
+  },
+  lowerback: {
+    id: 'lowerback',
+    nameRu: 'Разгибатели спины (поясница)',
+    view: 'back',
+    category: 'core',
+    defaultPercent: 35,
+    recoveryHours: 48,
+    locationRu: 'Глубокие мышечные столбы (мышца, выпрямляющая позвоночник) в поясничной зоне.',
+    functionRu: 'Разгибание позвоночника, стабилизация корпуса и удержание осанки при осевых нагрузках.',
+  },
+
+  // --- CORE ---
   abs: {
     id: 'abs',
-    nameRu: 'Пресс (прямая мышца)',
+    nameRu: 'Прямая мышца живота',
     view: 'front',
     category: 'core',
-    defaultPercent: 58,
+    defaultPercent: 55,
     recoveryHours: 24,
-    locationRu: 'Передняя брюшная стенка от лобкового симфиза до реберной дуги.',
-    functionRu: 'Сгибание позвоночника, подтягивание таза к грудной клетке, удержание внутрибрюшного давления.',
+    locationRu: 'Передняя брюшная стенка от лобкового гребня до мечевидного отростка (кубики пресса).',
+    functionRu: 'Сгибание позвоночника вперед, подъем таза к грудной клетке, удержание брюшного давления.',
   },
   obliques: {
     id: 'obliques',
@@ -90,18 +282,80 @@ export const MUSCLE_DEFINITIONS: Record<MuscleGroup, MuscleInfo> = {
     category: 'core',
     defaultPercent: 45,
     recoveryHours: 24,
-    locationRu: 'Боковые стенки брюшного пресса от нижних ребер до подвздошного гребня.',
-    functionRu: 'Вращение и боковое сгибание туловища, стабилизация таза и защита поясницы.',
+    locationRu: 'Боковые стенки живота от нижних ребер до подвздошного гребня.',
+    functionRu: 'Вращение и боковое сгибание корпуса, жесткая стабилизация таза и талии.',
+  },
+
+  // --- LEGS ---
+  quads_rectus: {
+    id: 'quads_rectus',
+    nameRu: 'Прямая мышца бедра',
+    view: 'front',
+    category: 'lower',
+    defaultPercent: 60,
+    recoveryHours: 72,
+    locationRu: 'Центральная поверхностная головка квадрицепса, проходящая по центру бедра.',
+    functionRu: 'Разгибание ноги в коленном суставе и содействие сгибанию бедра в тазобедренном.',
+  },
+  quads_lateralis: {
+    id: 'quads_lateralis',
+    nameRu: 'Латеральная широкая (внешняя)',
+    view: 'front',
+    category: 'lower',
+    defaultPercent: 62,
+    recoveryHours: 72,
+    locationRu: 'Внешняя массивная головка квадрицепса, формирующая наружный изгиб бедра.',
+    functionRu: 'Мощное разгибание ноги в колене в базовых приседаниях и жимах ногами.',
+  },
+  quads_medialis: {
+    id: 'quads_medialis',
+    nameRu: 'Медиальная широкая («капля»)',
+    view: 'front',
+    category: 'lower',
+    defaultPercent: 58,
+    recoveryHours: 72,
+    locationRu: 'Внутренняя каплевидная головка квадрицепса непосредственно над коленным суставом.',
+    functionRu: 'Финальное доразгибание колена и центрирование коленной чашечки.',
   },
   quads: {
     id: 'quads',
-    nameRu: 'Квадрицепсы',
+    nameRu: 'Квадрицепсы (общие)',
     view: 'front',
     category: 'lower',
-    defaultPercent: 61,
+    defaultPercent: 62,
     recoveryHours: 72,
-    locationRu: 'Передняя поверхность бедра (прямая, латеральная, медиальная и промежуточная широкие мышцы).',
-    functionRu: 'Разгибание ноги в коленном суставе и содействие сгибанию бедра в тазобедренном.',
+    locationRu: 'Четырехглавая мышца передней поверхности бедра.',
+    functionRu: 'Разгибание ноги в коленном суставе.',
+  },
+  hamstrings: {
+    id: 'hamstrings',
+    nameRu: 'Бицепс бедра',
+    view: 'back',
+    category: 'lower',
+    defaultPercent: 48,
+    recoveryHours: 72,
+    locationRu: 'Задняя поверхность бедра (двуглавая, полусухожильная и полуперепончатая мышцы).',
+    functionRu: 'Сгибание голени в колене и разгибание туловища в тазобедренном суставе.',
+  },
+  glutes: {
+    id: 'glutes',
+    nameRu: 'Ягодичные мышцы',
+    view: 'back',
+    category: 'lower',
+    defaultPercent: 52,
+    recoveryHours: 48,
+    locationRu: 'Большая, средняя и малая ягодичные мышцы тазовой области.',
+    functionRu: 'Разгибание, отведение и внешняя ротация бедра, стабилизация таза.',
+  },
+  calves: {
+    id: 'calves',
+    nameRu: 'Икроножные мышцы',
+    view: 'both',
+    category: 'lower',
+    defaultPercent: 30,
+    recoveryHours: 24,
+    locationRu: 'Задняя поверхность голени (икроножная и камбаловидная мышцы).',
+    functionRu: 'Подошвенное сгибание стопы (подъем на носки), толчок при беге и прыжках.',
   },
   tibialis: {
     id: 'tibialis',
@@ -111,91 +365,10 @@ export const MUSCLE_DEFINITIONS: Record<MuscleGroup, MuscleInfo> = {
     defaultPercent: 32,
     recoveryHours: 24,
     locationRu: 'Передняя наружная сторона голени вдоль большеберцовой кости.',
-    functionRu: 'Тыльное сгибание стопы (подъем носка вверх), амортизация при ходьбе, беге и прыжках.',
-  },
-
-  // BACK
-  traps: {
-    id: 'traps',
-    nameRu: 'Трапеции',
-    view: 'back',
-    category: 'upper',
-    defaultPercent: 42,
-    recoveryHours: 36,
-    locationRu: 'Верхняя и средняя часть спины от затылка до нижних грудных позвонков.',
-    functionRu: 'Подъем, сведение и фиксация лопаток, удержание тяжестей в руках.',
-  },
-  rearDelts: {
-    id: 'rearDelts',
-    nameRu: 'Задние дельты',
-    view: 'back',
-    category: 'upper',
-    defaultPercent: 38,
-    recoveryHours: 36,
-    locationRu: 'Задняя порция дельтовидной мышцы на тыльной стороне плечевого сустава.',
-    functionRu: 'Горизонтальное отведение плеча назад и наружная ротация.',
-  },
-  triceps: {
-    id: 'triceps',
-    nameRu: 'Трицепсы',
-    view: 'back',
-    category: 'upper',
-    defaultPercent: 33,
-    recoveryHours: 36,
-    locationRu: 'Задняя поверхность плеча (латеральная, медиальная и длинная головки).',
-    functionRu: 'Разгибание руки в локтевом суставе и приведение плеча к корпусу.',
-  },
-  lats: {
-    id: 'lats',
-    nameRu: 'Широчайшие спины',
-    view: 'back',
-    category: 'upper',
-    defaultPercent: 53,
-    recoveryHours: 48,
-    locationRu: 'Нижняя и средняя боковая область спины, формирующая V-образный конус.',
-    functionRu: 'Тяга плеча вниз и назад к туловищу, приведение и внутренняя ротация плеча.',
-  },
-  lowerback: {
-    id: 'lowerback',
-    nameRu: 'Разгибатели спины',
-    view: 'back',
-    category: 'core',
-    defaultPercent: 29,
-    recoveryHours: 48,
-    locationRu: 'Глубокие продольные мышечные столбы вдоль всего позвоночника до крестца.',
-    functionRu: 'Разгибание и удержание вертикального положения позвоночного столба при нагрузках.',
-  },
-  glutes: {
-    id: 'glutes',
-    nameRu: 'Ягодичные мышцы',
-    view: 'back',
-    category: 'lower',
-    defaultPercent: 46,
-    recoveryHours: 48,
-    locationRu: 'Большая, средняя и малая ягодичные мышцы тазовой области.',
-    functionRu: 'Разгибание и отведение бедра, стабилизация таза в приседаниях и становых тягах.',
-  },
-  hamstrings: {
-    id: 'hamstrings',
-    nameRu: 'Бицепсы бедер',
-    view: 'back',
-    category: 'lower',
-    defaultPercent: 40,
-    recoveryHours: 72,
-    locationRu: 'Задняя поверхность бедра (двуглавая, полусухожильная и полуперепончатая мышцы).',
-    functionRu: 'Сгибание голени в колене и мощное разгибание туловища в тазобедренном суставе.',
-  },
-  calves: {
-    id: 'calves',
-    nameRu: 'Икроножные мышцы',
-    view: 'back',
-    category: 'lower',
-    defaultPercent: 28,
-    recoveryHours: 24,
-    locationRu: 'Задняя поверхность голени (икроножная и камбаловидная мышцы).',
-    functionRu: 'Подошвенное сгибание стопы (подъем на носки), толчок при беге и прыжках.',
+    functionRu: 'Тыльное сгибание стопы (подъем носка вверх), амортизация при приземлениях.',
   },
 };
+
 
 export type EquipmentCategory =
   | 'bodyweight'
@@ -495,7 +668,8 @@ export interface MuscleLoadStats {
   recentWorkoutsCount: number;
   exerciseCount: number;
   setsCount: number;
-  recoveryDays: number;
+  recoveryDays: number | null;
+  recoveryTime: string | null;
   status: 'fatigued' | 'recovering' | 'recovered';
   history: MuscleLoadHistoryItem[];
   hasData: boolean;
