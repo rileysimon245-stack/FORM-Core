@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   WorkoutProgram,
   WorkoutSession,
   ProgramWorkoutDay,
 } from '../types/workout';
-import { StorageService, CATALOG_PRESET_PROGRAMS } from '../services/storage';
+import { StorageService } from '../services/storage';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
+import { ExerciseProgressModal } from './ExerciseProgressModal';
+import { WorkoutAnalyticsView } from './WorkoutAnalyticsView';
 import {
   Plus,
   Sparkles,
@@ -29,8 +31,6 @@ import {
   X,
   Layers,
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { tabContentVariants, modalBackdropVariants, modalDialogVariants } from '../utils/animations';
 
 interface WorkoutsTabProps {
   programs: WorkoutProgram[];
@@ -67,433 +67,436 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
   onResumeDraft,
   onDiscardDraft,
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'programs' | 'library' | 'history'>('programs');
+  const [activeSubTab, setActiveSubTab] = useState<'programs' | 'analytics' | 'history' | 'library'>('programs');
   const [selectedProgramId, setSelectedProgramId] = useState<string>(
     programs[0]?.id || ''
   );
   const [expandedDayId, setExpandedDayId] = useState<string | null>(null);
-  const [showCatalogModal, setShowCatalogModal] = useState<boolean>(false);
 
   const selectedProgram =
     programs.find((p) => p.id === selectedProgramId) || programs[0] || null;
 
-  // Last finished session
-  const lastSession = sessions.length > 0 ? sessions[0] : null;
+  // Real completed sessions stats
+  const completedSessions = useMemo(
+    () => sessions.filter((s) => s.status === 'completed'),
+    [sessions]
+  );
+  const totalCompletedCount = completedSessions.length;
+  const totalVolumeKg = useMemo(
+    () => completedSessions.reduce((acc, s) => acc + (s.totalVolumeKg || 0), 0),
+    [completedSessions]
+  );
+  const totalTonnageDisplay = totalVolumeKg >= 1000 ? `${(totalVolumeKg / 1000).toFixed(1)} т` : `${totalVolumeKg} кг`;
+
+  // Workouts this week
+  const workoutsThisWeekCount = useMemo(() => {
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    const day = now.getDay();
+    const diff = now.getDate() - day + (day === 0 ? -6 : 1); // Monday start
+    startOfWeek.setDate(diff);
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    return completedSessions.filter((s) => {
+      const d = new Date(s.date);
+      return d >= startOfWeek;
+    }).length;
+  }, [completedSessions]);
+
+  const lastSession = completedSessions.length > 0 ? completedSessions[0] : null;
+  const activeProgram = programs.length > 0 ? programs[0] : null;
+  const nextWorkoutDay = activeProgram && activeProgram.workouts.length > 0 ? activeProgram.workouts[0] : null;
 
   return (
-    <div className="w-full flex flex-col pb-4">
-      {/* Title & Quick Start */}
-      <div className="flex items-center justify-between pt-2 mb-3 px-1">
-        <h1 className="text-2xl font-bold tracking-tight text-[#E8E9E7]">
-          Тренировки
-        </h1>
+    <div className="w-full flex flex-col pb-6 space-y-4">
+      {/* 1. Header & Title */}
+      <div className="flex items-center justify-between pt-1 px-0.5">
+        <div>
+          <h1 className="text-2xl font-black tracking-tight text-[#E8E9E7]">
+            Тренировки
+          </h1>
+          <p className="text-xs text-[#869194] mt-0.5">
+            Программы, планирование и журнал занятий
+          </p>
+        </div>
 
-        <motion.button
+        <button
+          type="button"
           onClick={onStartCustomQuickWorkout}
-          whileTap={{ scale: 0.95 }}
-          className="px-3 py-1.5 bg-[#172d24] border border-[#2d5843] text-[#58C995] rounded-xl text-xs font-bold flex items-center gap-1.5 hover:bg-[#1e3c30] transition-colors cursor-pointer"
+          className="px-3.5 py-2 bg-[#12241C] border border-[#234736] text-[#58C995] rounded-xl text-xs font-bold flex items-center gap-1.5 hover:bg-[#183226] cursor-pointer shadow-sm"
         >
           <Play className="w-3.5 h-3.5 fill-[#58C995]" />
           <span>Быстрый старт</span>
-        </motion.button>
+        </button>
       </div>
 
-      {/* Active Draft Alert Banner if unfinished workout exists */}
+      {/* 2. Active Draft Alert Banner if unfinished workout exists */}
       {activeDraft && onResumeDraft && (
-        <div className="mb-4 bg-[#14231b] border border-[#2f553f] rounded-2xl p-3.5 flex items-center justify-between gap-3 animate-in fade-in">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-xl bg-[#203628] text-[#58C995] flex items-center justify-center shrink-0">
+        <div className="bg-[#14261E] border border-[#27533E] rounded-2xl p-4 flex items-center justify-between gap-3 shadow-md">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-[#1D3D2F] text-[#58C995] flex items-center justify-center shrink-0">
               <Play className="w-4 h-4 fill-[#58C995]" />
             </div>
-            <div className="truncate">
-              <span className="text-[11px] font-bold text-[#58C995] uppercase tracking-wider block">
-                Незавершенная тренировка
+            <div className="min-w-0">
+              <span className="text-[10.5px] font-bold text-[#58C995] uppercase tracking-wider block">
+                Незавершённая тренировка
               </span>
               <p className="text-xs font-bold text-[#E8E9E7] truncate">{activeDraft.name}</p>
             </div>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             {onDiscardDraft && (
-              <motion.button
-                whileTap={{ scale: 0.92 }}
+              <button
+                type="button"
                 onClick={onDiscardDraft}
-                className="px-2 py-1.5 text-[11px] text-[#92999A] hover:text-[#C83232] rounded-lg transition-colors cursor-pointer"
-                title="Сбросить черновик"
+                className="px-2.5 py-2 text-xs font-medium text-[#869194] hover:text-[#E05353] rounded-xl hover:bg-[#1A2529] cursor-pointer"
               >
-                Сброс
-              </motion.button>
+                Сбросить
+              </button>
             )}
-            <motion.button
-              whileTap={{ scale: 0.95 }}
+            <button
+              type="button"
               onClick={() => onResumeDraft(activeDraft)}
-              className="px-3 py-1.5 bg-[#58C995] text-black font-bold text-xs rounded-xl shadow-md hover:bg-[#68d7a4] transition-colors cursor-pointer"
+              className="px-3.5 py-2 bg-[#58C995] text-[#080D0E] font-bold text-xs rounded-xl shadow-md hover:bg-[#68d7a4] cursor-pointer"
             >
               Продолжить
-            </motion.button>
+            </button>
           </div>
         </div>
       )}
 
-      {/* Sub-navigation tabs: [Программы] [Каталог] [История] */}
-      <div className="w-full flex p-1 bg-[#101719] rounded-xl border border-[#252D2F] mb-4 relative">
-        <motion.button
+      {/* 3. Sub-navigation tabs */}
+      <div className="w-full grid grid-cols-4 p-1 bg-[#11181B] rounded-2xl border border-[#1E282B] gap-1 shadow-sm">
+        <button
+          type="button"
           onClick={() => setActiveSubTab('programs')}
-          whileTap={{ scale: 0.96 }}
-          className={`relative z-10 flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+          className={`py-2 text-[11px] sm:text-xs font-semibold rounded-xl text-center truncate cursor-pointer transition-colors ${
             activeSubTab === 'programs'
-              ? 'text-black font-bold'
-              : 'text-[#92999A] hover:text-[#E8E9E7]'
+              ? 'bg-[#58C995] text-[#080D0E] font-bold shadow-sm'
+              : 'text-[#869194] hover:text-[#E8E9E7]'
           }`}
         >
-          {activeSubTab === 'programs' && (
-            <motion.div
-              layoutId="workoutsSubTabPill"
-              transition={{ type: 'spring', stiffness: 440, damping: 32 }}
-              className="absolute inset-0 bg-[#58C995] rounded-lg -z-10 shadow-md"
-            />
-          )}
-          Программы ({programs.length})
-        </motion.button>
-        <motion.button
-          onClick={() => setActiveSubTab('library')}
-          whileTap={{ scale: 0.96 }}
-          className={`relative z-10 flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-            activeSubTab === 'library'
-              ? 'text-black font-bold'
-              : 'text-[#92999A] hover:text-[#E8E9E7]'
+          Программы
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('analytics')}
+          className={`py-2 text-[11px] sm:text-xs font-semibold rounded-xl text-center truncate cursor-pointer transition-colors ${
+            activeSubTab === 'analytics'
+              ? 'bg-[#58C995] text-[#080D0E] font-bold shadow-sm'
+              : 'text-[#869194] hover:text-[#E8E9E7]'
           }`}
         >
-          {activeSubTab === 'library' && (
-            <motion.div
-              layoutId="workoutsSubTabPill"
-              transition={{ type: 'spring', stiffness: 440, damping: 32 }}
-              className="absolute inset-0 bg-[#58C995] rounded-lg -z-10 shadow-md"
-            />
-          )}
-          Каталог упражнений
-        </motion.button>
-        <motion.button
+          Аналитика
+        </button>
+        <button
+          type="button"
           onClick={() => setActiveSubTab('history')}
-          whileTap={{ scale: 0.96 }}
-          className={`relative z-10 flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+          className={`py-2 text-[11px] sm:text-xs font-semibold rounded-xl text-center truncate cursor-pointer transition-colors ${
             activeSubTab === 'history'
-              ? 'text-black font-bold'
-              : 'text-[#92999A] hover:text-[#E8E9E7]'
+              ? 'bg-[#58C995] text-[#080D0E] font-bold shadow-sm'
+              : 'text-[#869194] hover:text-[#E8E9E7]'
           }`}
         >
-          {activeSubTab === 'history' && (
-            <motion.div
-              layoutId="workoutsSubTabPill"
-              transition={{ type: 'spring', stiffness: 440, damping: 32 }}
-              className="absolute inset-0 bg-[#58C995] rounded-lg -z-10 shadow-md"
-            />
-          )}
           История ({sessions.length})
-        </motion.button>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveSubTab('library')}
+          className={`py-2 text-[11px] sm:text-xs font-semibold rounded-xl text-center truncate cursor-pointer transition-colors ${
+            activeSubTab === 'library'
+              ? 'bg-[#58C995] text-[#080D0E] font-bold shadow-sm'
+              : 'text-[#869194] hover:text-[#E8E9E7]'
+          }`}
+        >
+          Каталог
+        </button>
       </div>
 
-      {/* SUB-TAB 1: PROGRAMS */}
+      {/* SUB-TAB 1: PROGRAMS & MAIN WORKOUT DASHBOARD */}
       {activeSubTab === 'programs' && (
         <div className="space-y-4">
-          {/* Action buttons: Create manual vs Generate AI */}
-          <div className="grid grid-cols-2 gap-2">
-            <motion.button
-              whileTap={{ scale: 0.96 }}
-              onClick={onCreateProgram}
-              className="py-3 px-3 bg-[#101719] border border-[#252D2F] hover:border-[#384346] rounded-xl flex items-center justify-center gap-2 text-xs font-bold text-[#E8E9E7] transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4 text-[#58C995]" />
-              <span>Создать программу</span>
-            </motion.button>
-
-            <motion.button
-              whileTap={{ scale: 0.96 }}
-              onClick={onGenerateProgram}
-              className="py-3 px-3 bg-[#14231b] border border-[#2f553f] hover:border-[#58C995] rounded-xl flex items-center justify-center gap-2 text-xs font-bold text-[#58C995] transition-colors cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4 text-[#58C995]" />
-              <span>Сгенерировать</span>
-            </motion.button>
+          {/* A. Statistics Summary Cards */}
+          <div className="grid grid-cols-3 gap-2.5">
+            <div className="bg-[#11181B] border border-[#1E282B] rounded-2xl p-3 text-center shadow-sm">
+              <span className="text-[10px] font-medium text-[#869194] block">Всего сессий</span>
+              <span className="text-base font-extrabold text-[#E8E9E7] tabular-nums mt-0.5 block">
+                {totalCompletedCount}
+              </span>
+            </div>
+            <div className="bg-[#11181B] border border-[#1E282B] rounded-2xl p-3 text-center shadow-sm">
+              <span className="text-[10px] font-medium text-[#869194] block">За неделю</span>
+              <span className="text-base font-extrabold text-[#58C995] tabular-nums mt-0.5 block">
+                {workoutsThisWeekCount}
+              </span>
+            </div>
+            <div className="bg-[#11181B] border border-[#1E282B] rounded-2xl p-3 text-center shadow-sm">
+              <span className="text-[10px] font-medium text-[#869194] block">Тоннаж</span>
+              <span className="text-base font-extrabold text-[#58C995] tabular-nums mt-0.5 block truncate">
+                {totalTonnageDisplay}
+              </span>
+            </div>
           </div>
 
-          {/* Quick Shortcuts for Equipment & Parameters */}
-          {(onOpenEquipment || onOpenParameters) && (
-            <div className="flex gap-2">
-              {onOpenParameters && (
-                <motion.button
-                  whileTap={{ scale: 0.96 }}
-                  onClick={onOpenParameters}
-                  className="flex-1 py-2 px-3 bg-[#101719] border border-[#252D2F] hover:border-[#384346] rounded-xl flex items-center justify-center gap-1.5 text-[11px] font-semibold text-[#92999A] hover:text-[#E8E9E7] transition-colors cursor-pointer"
-                >
-                  <Sliders className="w-3.5 h-3.5 text-[#58C995]" />
-                  <span>Мои параметры</span>
-                </motion.button>
-              )}
-              {onOpenEquipment && (
-                <motion.button
-                  whileTap={{ scale: 0.96 }}
-                  onClick={onOpenEquipment}
-                  className="flex-1 py-2 px-3 bg-[#101719] border border-[#252D2F] hover:border-[#384346] rounded-xl flex items-center justify-center gap-1.5 text-[11px] font-semibold text-[#92999A] hover:text-[#E8E9E7] transition-colors cursor-pointer"
-                >
-                  <Dumbbell className="w-3.5 h-3.5 text-[#58C995]" />
-                  <span>Мой инвентарь</span>
-                </motion.button>
-              )}
+          {/* B. Prominent Main Start Card */}
+          <div className="bg-[#11181B] border border-[#1E282B] rounded-3xl p-5 space-y-4 shadow-lg relative overflow-hidden">
+            <div className="flex items-center justify-between">
+              <span className="text-[10.5px] font-bold text-[#58C995] bg-[#14261E] border border-[#234736] px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                Активная программа
+              </span>
+              <span className="text-xs text-[#869194] font-medium">
+                {activeProgram ? activeProgram.name : 'Нет программ'}
+              </span>
             </div>
-          )}
 
-          {/* LAST COMPLETED WORKOUT CARD */}
-          {lastSession && (
-            <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-3.5 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-bold text-[#58C995] uppercase tracking-wider flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  Последняя завершенная тренировка
-                </span>
-                <span className="text-xs text-[#92999A] tabular-nums">{lastSession.date}</span>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-[#E8E9E7]">{lastSession.name}</h3>
-                <span className="text-xs text-[#92999A]">{lastSession.programName}</span>
-              </div>
-
-              {/* Quick stats strip */}
-              <div className="grid grid-cols-3 gap-2 py-2 bg-[#080D0E] rounded-xl px-3 border border-[#1b2224] text-center text-xs">
-                <div>
-                  <span className="text-[10px] text-[#92999A] block">Время</span>
-                  <span className="font-bold text-[#E8E9E7] tabular-nums">
-                    {lastSession.durationMinutes} мин
-                  </span>
+            {nextWorkoutDay && activeProgram ? (
+              <div className="space-y-2">
+                <h3 className="text-xl font-bold text-[#E8E9E7] tracking-tight">
+                  {nextWorkoutDay.dayName}
+                </h3>
+                <div className="flex items-center gap-4 text-xs text-[#869194]">
+                  <div className="flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-[#58C995]" />
+                    <span className="tabular-nums">~{nextWorkoutDay.estimatedDuration || 55} мин</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Dumbbell className="w-3.5 h-3.5 text-[#58C995]" />
+                    <span className="tabular-nums">{nextWorkoutDay.exercises?.length || 0} упражнений</span>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-[10px] text-[#92999A] block">Тоннаж</span>
-                  <span className="font-bold text-[#58C995] tabular-nums">
-                    {lastSession.totalVolumeKg?.toLocaleString('ru-RU') || 0} кг
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[10px] text-[#92999A] block">Подходов</span>
-                  <span className="font-bold text-[#E8E9E7] tabular-nums">
-                    {lastSession.completedSets || 0}
-                  </span>
-                </div>
-              </div>
 
-              {lastSession.notes && (
-                <p className="text-[11px] text-[#92999A] italic bg-[#080D0E] p-2 rounded-lg border border-[#1b2224]">
-                  «{lastSession.notes}»
+                <button
+                  type="button"
+                  onClick={() => onStartProgramWorkout(nextWorkoutDay, activeProgram.name, activeProgram.id)}
+                  className="w-full py-3.5 mt-2 bg-[#58C995] hover:bg-[#68d7a4] text-[#080D0E] font-black text-xs uppercase tracking-wider rounded-2xl flex items-center justify-center gap-2 shadow-[0_4px_20px_rgba(88,201,149,0.3)] cursor-pointer transition-colors"
+                >
+                  <Play className="w-4 h-4 fill-[#080D0E]" />
+                  <span>Начать тренировку</span>
+                </button>
+              </div>
+            ) : (
+              <div className="text-center py-4 space-y-3">
+                <p className="text-xs text-[#869194]">
+                  У вас пока нет активных тренировок. Создайте программу или запустите свободную сессию.
                 </p>
-              )}
-            </div>
-          )}
+                <div className="flex items-center justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={onCreateProgram}
+                    className="px-4 py-2.5 bg-[#152024] border border-[#223035] hover:border-[#58C995] text-xs font-bold text-[#E8E9E7] rounded-xl cursor-pointer"
+                  >
+                    Создать программу
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onStartCustomQuickWorkout}
+                    className="px-4 py-2.5 bg-[#12241C] border border-[#234736] text-xs font-bold text-[#58C995] rounded-xl cursor-pointer"
+                  >
+                    Быстрый старт
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
 
-          {/* Programs selector carousel pills (only if programs exist) */}
-          {programs.length > 0 ? (
-            <div className="space-y-1.5">
-              <span className="text-xs font-bold text-[#92999A] uppercase tracking-wider block px-1">
+          {/* C. Quick Actions Compact Bar */}
+          <div className="grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={onCreateProgram}
+              className="py-3 px-3.5 bg-[#11181B] hover:bg-[#152024] border border-[#1E282B] hover:border-[#2D453C] rounded-2xl flex items-center gap-2.5 text-xs font-bold text-[#E8E9E7] cursor-pointer shadow-sm"
+            >
+              <div className="w-7 h-7 rounded-xl bg-[#152024] text-[#58C995] flex items-center justify-center">
+                <Plus className="w-4 h-4" />
+              </div>
+              <span>Создать программу</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onGenerateProgram}
+              className="py-3 px-3.5 bg-[#12231B] hover:bg-[#162D23] border border-[#234535] hover:border-[#58C995] rounded-2xl flex items-center gap-2.5 text-xs font-bold text-[#58C995] cursor-pointer shadow-sm"
+            >
+              <div className="w-7 h-7 rounded-xl bg-[#1A382C] text-[#58C995] flex items-center justify-center">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <span>AI Генератор</span>
+            </button>
+          </div>
+
+          {/* D. My Programs Section */}
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center justify-between px-0.5">
+              <span className="text-xs font-bold text-[#7E8B8E] uppercase tracking-wider">
                 Мои программы ({programs.length})
               </span>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {programs.map((p) => (
-                  <button
-                    key={p.id}
-                    onClick={() => setSelectedProgramId(p.id)}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all border cursor-pointer ${
-                      selectedProgram?.id === p.id
-                        ? 'border-[#58C995] bg-[#14231b] text-[#58C995]'
-                        : 'border-[#252D2F] bg-[#101719] text-[#92999A] hover:text-[#E8E9E7]'
-                    }`}
-                  >
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {/* Selected Program Details with Full Actions: Open, Start, Edit, Duplicate, Delete */}
-          {selectedProgram ? (
-            <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-4">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <span className="text-[11px] font-bold text-[#58C995] bg-[#14231b] border border-[#2f553f] px-2 py-0.5 rounded-md">
-                      {selectedProgram.goal}
-                    </span>
-                    <span className="text-xs text-[#92999A]">
-                      {selectedProgram.daysPerWeek} дня в неделю
-                    </span>
-                  </div>
-                  <h2 className="text-lg font-bold text-[#E8E9E7]">{selectedProgram.name}</h2>
-                  <p className="text-xs text-[#92999A] mt-1">{selectedProgram.description}</p>
-                </div>
-
-                {/* Actions Toolbar */}
-                <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    onClick={() => onEditProgram(selectedProgram)}
-                    className="p-2 text-[#92999A] hover:text-[#E8E9E7] rounded-lg hover:bg-[#1c2426] transition-colors cursor-pointer"
-                    title="Редактировать программу"
-                  >
-                    <Edit3 className="w-4 h-4" />
-                  </button>
-
-                  <button
-                    onClick={() => onDuplicateProgram(selectedProgram.id)}
-                    className="p-2 text-[#92999A] hover:text-[#58C995] rounded-lg hover:bg-[#1c2426] transition-colors cursor-pointer"
-                    title="Дублировать программу"
-                  >
-                    <Copy className="w-4 h-4" />
-                  </button>
-
-                  {programs.length > 1 && (
+              {(onOpenEquipment || onOpenParameters) && (
+                <div className="flex items-center gap-2">
+                  {onOpenParameters && (
                     <button
-                      onClick={() => onDeleteProgram(selectedProgram.id)}
-                      className="p-2 text-[#92999A] hover:text-[#C83232] rounded-lg hover:bg-[#1c2426] transition-colors cursor-pointer"
-                      title="Удалить программу"
+                      type="button"
+                      onClick={onOpenParameters}
+                      className="text-[11px] font-semibold text-[#869194] hover:text-[#58C995] cursor-pointer"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      Параметры
+                    </button>
+                  )}
+                  {onOpenEquipment && (
+                    <button
+                      type="button"
+                      onClick={onOpenEquipment}
+                      className="text-[11px] font-semibold text-[#869194] hover:text-[#58C995] cursor-pointer"
+                    >
+                      Инвентарь
                     </button>
                   )}
                 </div>
-              </div>
-
-              {/* Start First Day Instant Button */}
-              {selectedProgram.workouts.length > 0 && (
-                <button
-                  onClick={() =>
-                    onStartProgramWorkout(
-                      selectedProgram.workouts[0],
-                      selectedProgram.name,
-                      selectedProgram.id
-                    )
-                  }
-                  className="w-full py-2.5 bg-[#58C995] text-black font-bold text-xs rounded-xl flex items-center justify-center gap-2 hover:bg-[#68d7a4] transition-colors shadow-md cursor-pointer"
-                >
-                  <Play className="w-3.5 h-3.5 fill-black" />
-                  <span>Начать тренировку ({selectedProgram.workouts[0].dayName})</span>
-                </button>
               )}
+            </div>
 
-              {/* Workout Days in this program */}
-              <div className="space-y-3 pt-1">
-                <span className="text-xs font-bold text-[#92999A] uppercase tracking-wider block">
-                  Тренировочные дни ({selectedProgram.workouts.length})
-                </span>
+            {/* Programs Carousel / List */}
+            <div className="flex gap-2.5 overflow-x-auto pb-1">
+              {programs.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setSelectedProgramId(p.id)}
+                  className={`px-4 py-3 rounded-2xl text-xs font-bold whitespace-nowrap transition-colors border cursor-pointer ${
+                    selectedProgram?.id === p.id
+                      ? 'border-[#58C995] bg-[#12241C] text-[#58C995] shadow-sm'
+                      : 'border-[#1E282B] bg-[#11181B] text-[#869194] hover:text-[#E8E9E7]'
+                  }`}
+                >
+                  {p.name} ({p.daysPerWeek} дн.)
+                </button>
+              ))}
+            </div>
 
-                {selectedProgram.workouts.map((day) => {
-                  const isExpanded = expandedDayId === day.id;
+            {/* Selected Program Details Card */}
+            {selectedProgram && (
+              <div className="bg-[#11181B] border border-[#1E282B] rounded-3xl p-4.5 space-y-4 shadow-md">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="text-[10px] font-bold text-[#58C995] bg-[#14261E] border border-[#234736] px-2 py-0.5 rounded-md">
+                        {selectedProgram.goal}
+                      </span>
+                      <span className="text-xs text-[#869194]">
+                        {selectedProgram.daysPerWeek} тренировочных дня
+                      </span>
+                    </div>
+                    <h3 className="text-base font-bold text-[#E8E9E7] tracking-tight">{selectedProgram.name}</h3>
+                    <p className="text-xs text-[#869194] mt-0.5">{selectedProgram.description}</p>
+                  </div>
 
-                  return (
-                    <div
-                      key={day.id}
-                      className="bg-[#080D0E] border border-[#202729] rounded-xl p-3.5 space-y-3"
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onEditProgram(selectedProgram)}
+                      className="p-2 text-[#869194] hover:text-[#E8E9E7] rounded-xl hover:bg-[#1A2529] cursor-pointer"
+                      title="Редактировать программу"
                     >
-                      <div
-                        onClick={() => setExpandedDayId(isExpanded ? null : day.id)}
-                        className="flex items-center justify-between cursor-pointer"
+                      <Edit3 className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDuplicateProgram(selectedProgram.id)}
+                      className="p-2 text-[#869194] hover:text-[#58C995] rounded-xl hover:bg-[#1A2529] cursor-pointer"
+                      title="Дублировать программу"
+                    >
+                      <Copy className="w-4 h-4" />
+                    </button>
+                    {programs.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => onDeleteProgram(selectedProgram.id)}
+                        className="p-2 text-[#869194] hover:text-[#E05353] rounded-xl hover:bg-[#1A2529] cursor-pointer"
+                        title="Удалить программу"
                       >
-                        <div>
-                          <h4 className="text-sm font-bold text-[#E8E9E7]">{day.dayName}</h4>
-                          <span className="text-xs text-[#92999A]">
-                            {day.exercises.length} упр. • ~{day.estimatedDuration} мин
-                          </span>
-                        </div>
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
 
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            className="p-1 text-[#92999A] hover:text-[#E8E9E7]"
-                            title="Открыть подробности"
-                          >
-                            {isExpanded ? (
-                              <ChevronDown className="w-4 h-4 text-[#58C995]" />
-                            ) : (
-                              <ChevronRight className="w-4 h-4" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
+                {/* Workout Days List inside Selected Program */}
+                <div className="space-y-2.5 pt-1">
+                  <span className="text-[10px] font-bold text-[#7E8B8E] uppercase tracking-wider block">
+                    Дни тренировок ({selectedProgram.workouts.length})
+                  </span>
 
-                      {/* Exercises brief list */}
-                      <div className="space-y-1">
-                        {day.exercises.map((ex, idx) => (
-                          <div
-                            key={idx}
-                            className="flex items-center justify-between text-xs py-1.5 px-2 bg-[#101719] rounded-lg border border-[#1b2224]"
-                          >
-                            <span className="text-[#c7c9c7]">{ex.name}</span>
-                            <span className="text-[#92999A] tabular-nums text-[11px]">
-                              {ex.sets} × {ex.reps} {ex.targetWeight > 0 ? `(${ex.targetWeight} кг)` : ''}
+                  {selectedProgram.workouts.map((day) => {
+                    const isExpanded = expandedDayId === day.id;
+
+                    return (
+                      <div
+                        key={day.id}
+                        className="bg-[#0D1518] border border-[#1B272A] rounded-2xl p-3 space-y-2.5"
+                      >
+                        <div
+                          onClick={() => setExpandedDayId(isExpanded ? null : day.id)}
+                          className="flex items-center justify-between cursor-pointer"
+                        >
+                          <div>
+                            <h4 className="text-xs font-bold text-[#E8E9E7]">{day.dayName}</h4>
+                            <span className="text-[11px] text-[#869194]">
+                              {day.exercises.length} упр. • ~{day.estimatedDuration} мин
                             </span>
                           </div>
-                        ))}
-                      </div>
 
-                      {/* Launch Day Workout Button */}
-                      <button
-                        onClick={() =>
-                          onStartProgramWorkout(day, selectedProgram.name, selectedProgram.id)
-                        }
-                        className="w-full py-2 bg-[#172d24] hover:bg-[#1e3c30] border border-[#2d5843] text-[#58C995] font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-[#58C995]" />
-                        <span>Начать этот день</span>
-                      </button>
-                    </div>
-                  );
-                })}
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onStartProgramWorkout(day, selectedProgram.name, selectedProgram.id);
+                              }}
+                              className="px-3 py-1.5 bg-[#12241C] border border-[#234736] hover:border-[#58C995] text-[#58C995] rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer"
+                            >
+                              <Play className="w-3 h-3 fill-[#58C995]" />
+                              <span>Старт</span>
+                            </button>
+                            <ChevronDown className={`w-4 h-4 text-[#869194] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                          </div>
+                        </div>
+
+                        {/* Expanded exercises preview */}
+                        {isExpanded && day.exercises && day.exercises.length > 0 && (
+                          <div className="space-y-1.5 pt-2 border-t border-[#182326] text-xs">
+                            {day.exercises.map((ex, exIdx) => (
+                              <div key={exIdx} className="flex items-center justify-between text-[#B2B8BA] py-1 px-2 rounded-lg bg-[#11181B]">
+                                <span className="font-medium truncate pr-2">{ex.name}</span>
+                                <span className="text-[#869194] tabular-nums shrink-0">{ex.sets} × {ex.reps}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          ) : (
-            /* Clean Empty State when user has no active programs */
-            <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-6 text-center space-y-3">
-              <div className="w-12 h-12 rounded-2xl bg-[#14231b] text-[#58C995] flex items-center justify-center mx-auto">
-                <Dumbbell className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-[#E8E9E7]">Нет созданных программ</h3>
-                <p className="text-xs text-[#92999A] mt-1 max-w-xs mx-auto">
-                  Создайте персональный сплит с нуля, сгенерируйте программу с ИИ или выберите готовый шаблон.
-                </p>
-              </div>
-              <div className="flex flex-col gap-2 pt-2 max-w-xs mx-auto">
-                <button
-                  onClick={onCreateProgram}
-                  className="w-full py-2.5 bg-[#58C995] text-black font-extrabold text-xs rounded-xl hover:bg-[#68d7a4] transition-colors cursor-pointer"
-                >
-                  + Создать программу
-                </button>
-                <button
-                  onClick={onGenerateProgram}
-                  className="w-full py-2.5 bg-[#14231b] border border-[#2f553f] text-[#58C995] font-bold text-xs rounded-xl hover:bg-[#1e3c30] transition-colors cursor-pointer"
-                >
-                  Сгенерировать программу
-                </button>
-                <button
-                  onClick={() => setShowCatalogModal(true)}
-                  className="w-full py-2.5 bg-[#101719] border border-[#252D2F] text-[#E8E9E7] font-bold text-xs rounded-xl hover:border-[#58C995] transition-colors cursor-pointer"
-                >
-                  Выбрать из каталога шаблонов
-                </button>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
 
-      {/* SUB-TAB 2: EXERCISE CATALOG */}
+      {/* SUB-TAB 2: WORKOUT ANALYTICS */}
+      {activeSubTab === 'analytics' && (
+        <WorkoutAnalyticsView onStartWorkout={onStartCustomQuickWorkout} />
+      )}
+
+      {/* SUB-TAB 3: EXERCISE CATALOG */}
       {activeSubTab === 'library' && (
-        <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-4">
+        <div className="bg-[#11181B] border border-[#1E282B] rounded-3xl p-4 shadow-md">
           <ExerciseLibraryView />
         </div>
       )}
 
-      {/* SUB-TAB 3: WORKOUT HISTORY & REAL PRs */}
+      {/* SUB-TAB 4: WORKOUT HISTORY & REAL PRS */}
       {activeSubTab === 'history' && (
         <div className="space-y-4">
-          {/* Key PRs Overview (Strictly from real user sessions) */}
+          {/* PRs overview */}
           {(() => {
             const benchPR = StorageService.getPersonalRecord('Жим штанги лежа');
             const squatPR = StorageService.getPersonalRecord('Приседания со штангой');
@@ -502,57 +505,45 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
             const hasAnyPR = Boolean(benchPR || squatPR || deadliftPR || pullupPR);
 
             return (
-              <div className="bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-3">
+              <div className="bg-[#11181B] border border-[#1E282B] rounded-3xl p-4 space-y-3 shadow-md">
                 <div className="flex items-center gap-2">
                   <Award className="w-4 h-4 text-[#58C995]" />
-                  <span className="text-sm font-bold text-[#E8E9E7]">
+                  <span className="text-xs font-bold text-[#E8E9E7] uppercase tracking-wider">
                     Личные рекорды в упражнениях
                   </span>
                 </div>
 
                 {hasAnyPR ? (
                   <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
-                      <span className="text-[10px] text-[#92999A] block">Жим штанги лежа</span>
+                    <div className="bg-[#0D1518] p-3 rounded-2xl border border-[#1B272A]">
+                      <span className="text-[10px] text-[#869194] block">Жим штанги лежа</span>
                       <span className="text-sm font-bold text-[#58C995] tabular-nums">
                         {benchPR ? `${benchPR.maxWeight} кг` : '—'}
                       </span>
-                      <span className="text-[10px] text-[#92999A] block">
-                        {benchPR ? `на ${benchPR.maxRepsAtMax} повт.` : 'нет данных'}
-                      </span>
                     </div>
-                    <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
-                      <span className="text-[10px] text-[#92999A] block">Приседания со штангой</span>
+                    <div className="bg-[#0D1518] p-3 rounded-2xl border border-[#1B272A]">
+                      <span className="text-[10px] text-[#869194] block">Приседания</span>
                       <span className="text-sm font-bold text-[#58C995] tabular-nums">
                         {squatPR ? `${squatPR.maxWeight} кг` : '—'}
                       </span>
-                      <span className="text-[10px] text-[#92999A] block">
-                        {squatPR ? `на ${squatPR.maxRepsAtMax} повт.` : 'нет данных'}
-                      </span>
                     </div>
-                    <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
-                      <span className="text-[10px] text-[#92999A] block">Становая тяга</span>
+                    <div className="bg-[#0D1518] p-3 rounded-2xl border border-[#1B272A]">
+                      <span className="text-[10px] text-[#869194] block">Становая тяга</span>
                       <span className="text-sm font-bold text-[#58C995] tabular-nums">
                         {deadliftPR ? `${deadliftPR.maxWeight} кг` : '—'}
                       </span>
-                      <span className="text-[10px] text-[#92999A] block">
-                        {deadliftPR ? `на ${deadliftPR.maxRepsAtMax} повт.` : 'нет данных'}
-                      </span>
                     </div>
-                    <div className="bg-[#080D0E] p-2.5 rounded-xl border border-[#202729]">
-                      <span className="text-[10px] text-[#92999A] block">Подтягивания</span>
+                    <div className="bg-[#0D1518] p-3 rounded-2xl border border-[#1B272A]">
+                      <span className="text-[10px] text-[#869194] block">Подтягивания</span>
                       <span className="text-sm font-bold text-[#58C995] tabular-nums">
                         {pullupPR ? `${pullupPR.maxWeight > 0 ? `+${pullupPR.maxWeight} кг` : 'свой вес'}` : '—'}
-                      </span>
-                      <span className="text-[10px] text-[#92999A] block">
-                        {pullupPR ? `на ${pullupPR.maxRepsAtMax} повт.` : 'нет данных'}
                       </span>
                     </div>
                   </div>
                 ) : (
-                  <div className="text-center py-2 text-xs text-[#92999A]">
-                    Рекорды пока не зафиксированы. Записывайте веса во время тренировок, и они появятся здесь.
-                  </div>
+                  <p className="text-xs text-[#869194] text-center py-2">
+                    Рекорды пока не зафиксированы.
+                  </p>
                 )}
               </div>
             );
@@ -560,10 +551,10 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
 
           {/* Past Sessions List */}
           {sessions.length === 0 ? (
-            <div className="p-8 text-center bg-[#101719] rounded-2xl border border-[#252D2F]">
+            <div className="p-8 text-center bg-[#11181B] rounded-3xl border border-[#1E282B]">
               <History className="w-8 h-8 text-[#555] mx-auto mb-2" />
               <p className="text-sm font-medium text-[#E8E9E7]">История пуста</p>
-              <p className="text-xs text-[#92999A] mt-1">
+              <p className="text-xs text-[#869194] mt-1">
                 Завершите свою первую тренировку, чтобы увидеть запись здесь.
               </p>
             </div>
@@ -571,160 +562,55 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
             sessions.map((sess) => (
               <div
                 key={sess.id}
-                className="bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-3"
+                className="bg-[#11181B] border border-[#1E282B] rounded-3xl p-4 space-y-3 shadow-md"
               >
                 <div className="flex items-start justify-between">
                   <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[11px] text-[#58C995] font-semibold bg-[#14231b] border border-[#2f553f] px-2 py-0.5 rounded-md flex items-center gap-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="text-[10.5px] text-[#58C995] font-semibold bg-[#14261E] border border-[#234736] px-2 py-0.5 rounded-md flex items-center gap-1">
                         <CheckCircle2 className="w-3 h-3" />
                         Завершено
                       </span>
-                      <span className="text-xs text-[#92999A]">{sess.date}</span>
+                      <span className="text-xs text-[#869194]">{sess.date}</span>
                     </div>
                     <h3 className="text-base font-bold text-[#E8E9E7]">{sess.name}</h3>
                   </div>
 
                   <button
+                    type="button"
                     onClick={() => onDeleteSession(sess.id)}
-                    className="p-1.5 text-[#92999A] hover:text-[#C83232] transition-colors cursor-pointer"
+                    className="p-1.5 text-[#869194] hover:text-[#E05353] cursor-pointer"
                     title="Удалить запись"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
 
-                {/* Metrics strip */}
-                <div className="grid grid-cols-3 gap-2 py-2 bg-[#080D0E] rounded-xl px-3 border border-[#202729] text-center">
+                <div className="grid grid-cols-3 gap-2 py-2 bg-[#0D1518] rounded-2xl px-3 border border-[#1B272A] text-center">
                   <div>
-                    <span className="text-[10px] text-[#92999A] block">Длительность</span>
+                    <span className="text-[10px] text-[#869194] block">Длительность</span>
                     <span className="text-xs font-bold text-[#E8E9E7] tabular-nums">
                       {sess.durationMinutes} мин
                     </span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-[#92999A] block">Общий тоннаж</span>
+                    <span className="text-[10px] text-[#869194] block">Тоннаж</span>
                     <span className="text-xs font-bold text-[#58C995] tabular-nums">
                       {sess.totalVolumeKg?.toLocaleString('ru-RU') || 0} кг
                     </span>
                   </div>
                   <div>
-                    <span className="text-[10px] text-[#92999A] block">Подходов</span>
+                    <span className="text-[10px] text-[#869194] block">Подходов</span>
                     <span className="text-xs font-bold text-[#E8E9E7] tabular-nums">
                       {sess.completedSets || 0}
                     </span>
                   </div>
                 </div>
-
-                {/* Exercises logged */}
-                {sess.exercises && sess.exercises.length > 0 && (
-                  <div className="space-y-1 text-xs">
-                    {sess.exercises.map((ex, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between py-1 border-b border-[#202729] last:border-none"
-                      >
-                        <span className="text-[#c7c9c7]">{ex.name}</span>
-                        <span className="text-[#92999A] tabular-nums text-[11px]">
-                          {ex.sets.filter((s) => s.completed).length} подходов
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {sess.notes && (
-                  <p className="text-[11px] text-[#92999A] italic bg-[#080D0E] p-2 rounded-lg border border-[#202729]">
-                    «{sess.notes}»
-                  </p>
-                )}
               </div>
             ))
           )}
         </div>
       )}
-
-      {/* Catalog of Preset Programs Modal */}
-      <AnimatePresence>
-        {showCatalogModal && (
-          <motion.div
-            variants={modalBackdropVariants}
-            initial="initial"
-            animate="animate"
-            exit="exit"
-            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3"
-          >
-            <motion.div
-              variants={modalDialogVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="w-full max-w-md bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-4 max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
-            >
-              <div className="flex items-center justify-between pb-2 border-b border-[#252D2F]">
-                <div className="flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-[#58C995]" />
-                  <h3 className="text-base font-bold text-[#E8E9E7]">Каталог готовых программ</h3>
-                </div>
-                <button
-                  onClick={() => setShowCatalogModal(false)}
-                  className="p-1 text-[#92999A] hover:text-[#E8E9E7] cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-                {CATALOG_PRESET_PROGRAMS.map((prog) => (
-                  <div
-                    key={prog.id}
-                    className="bg-[#080D0E] border border-[#202729] rounded-xl p-3.5 space-y-2.5"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold text-[#58C995] bg-[#14231b] border border-[#2f553f] px-2 py-0.5 rounded-md">
-                        {prog.goal}
-                      </span>
-                      <span className="text-xs text-[#92999A]">{prog.daysPerWeek} дня/нед</span>
-                    </div>
-
-                    <div>
-                      <h4 className="text-sm font-bold text-[#E8E9E7]">{prog.name}</h4>
-                      <p className="text-xs text-[#92999A] mt-1">{prog.description}</p>
-                    </div>
-
-                    <div className="space-y-1 text-xs text-[#c7c9c7]">
-                      {prog.workouts.map((w) => (
-                        <div key={w.id} className="flex items-center justify-between py-1 border-t border-[#1b2224]">
-                          <span>{w.dayName}</span>
-                          <span className="text-[#92999A] text-[11px]">{w.exercises.length} упр.</span>
-                        </div>
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        const imported: WorkoutProgram = {
-                          ...prog,
-                          id: `prog_imported_${Date.now()}`,
-                          isCustom: true,
-                          createdAt: new Date().toISOString().split('T')[0],
-                        };
-                        StorageService.saveProgram(imported);
-                        setSelectedProgramId(imported.id);
-                        setShowCatalogModal(false);
-                      }}
-                      className="w-full py-2 bg-[#172d24] hover:bg-[#1e3c30] border border-[#2d5843] text-[#58C995] font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Импортировать в мои программы</span>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 };

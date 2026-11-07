@@ -3,21 +3,24 @@
 @layer base {
   :root {
     --bg-primary: #080D0E;
-    --card-surface: #101719;
-    --card-subtle: #171D1F;
-    --border-subtle: #252D2F;
-    --text-primary: #E8E9E7;
-    --text-secondary: #92999A;
-    --text-inactive: #697174;
-    --accent-green: #58C995;
-    --accent-green-soft: #83CBA5;
-    --accent-green-dark: #315D4B;
-    --accent-red: #C83232;
+    --bg-secondary: #0E1416;
+    --card-surface: #121A1C;
+    --card-elevated: #162124;
+    --card-subtle: #0F1618;
+    --border-default: #1C2628;
+    --border-subtle: #161F21;
+    --text-primary: #F0F3F2;
+    --text-secondary: #9AA3A5;
+    --text-muted: #5F6B6E;
+    --accent-mint: #58C995;
+    --accent-mint-soft: #83D9AE;
+    --accent-mint-deep: #31644E;
+    --accent-danger: #E04848;
   }
 
   body {
     background-color: #080D0E;
-    color: #E8E9E7;
+    color: #F0F3F2;
     font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     -webkit-tap-highlight-color: transparent;
     user-select: none;
@@ -63,99 +66,4 @@
   padding-top: env(safe-area-inset-top, 8px);
 }
 
-/* ========================================================
-   Android Native Animation System & Micro-Interactions
-   ======================================================== */
-
-/* Tactile button & icon touch response (180ms Android Material decelerate) */
-.android-touch {
-  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms cubic-bezier(0.2, 0, 0, 1), background-color 200ms ease;
-  will-change: transform;
-}
-.android-touch:active {
-  transform: scale(0.96);
-  opacity: 0.9;
-}
-
-/* Subtle card tap feedback (220ms) */
-.android-card {
-  transition: transform 220ms cubic-bezier(0.2, 0, 0, 1), border-color 220ms ease, box-shadow 220ms ease, background-color 220ms ease;
-  will-change: transform;
-}
-.android-card:active {
-  transform: scale(0.985);
-}
-
-/* Form input smooth focus & hover glow */
-.android-input {
-  transition: border-color 200ms cubic-bezier(0.2, 0, 0, 1), box-shadow 200ms cubic-bezier(0.2, 0, 0, 1), background-color 200ms ease;
-}
-.android-input:focus {
-  border-color: #58C995;
-  box-shadow: 0 0 0 3px rgba(88, 201, 149, 0.18);
-  outline: none;
-}
-
-/* Interactive toggle switches */
-.android-switch {
-  transition: background-color 220ms cubic-bezier(0.2, 0, 0, 1), border-color 220ms cubic-bezier(0.2, 0, 0, 1);
-}
-.android-switch-thumb {
-  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1), background-color 200ms ease;
-}
-
-/* Anatomy muscle smooth SVG transitions */
-.muscle-path {
-  transition: fill 220ms cubic-bezier(0.2, 0, 0, 1), fill-opacity 220ms cubic-bezier(0.2, 0, 0, 1), stroke 220ms cubic-bezier(0.2, 0, 0, 1), stroke-width 220ms ease, filter 220ms ease;
-}
-.muscle-leader-line {
-  transition: stroke 220ms cubic-bezier(0.2, 0, 0, 1), stroke-width 220ms cubic-bezier(0.2, 0, 0, 1);
-}
-.muscle-label-text {
-  transition: fill 220ms cubic-bezier(0.2, 0, 0, 1), transform 200ms ease;
-}
-
-/* Subtle animation when a workout mark appears in the calendar */
-@keyframes calendarMarkPop {
-  0% {
-    transform: scale(0.4);
-    opacity: 0.2;
-    box-shadow: 0 0 0 0 rgba(46, 227, 126, 0.95);
-  }
-  45% {
-    transform: scale(1.6);
-    box-shadow: 0 0 12px 4px rgba(46, 227, 126, 0.9);
-  }
-  100% {
-    transform: scale(1);
-    opacity: 1;
-    box-shadow: 0 0 3px 1px rgba(46, 227, 126, 0.5);
-  }
-}
-
-.animate-mark-appear {
-  animation: calendarMarkPop 1.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  z-index: 10;
-  position: relative;
-}
-
-/* Set completion checkmark micro-bounce */
-@keyframes checkmarkPop {
-  0% { transform: scale(0.7); opacity: 0; }
-  50% { transform: scale(1.22); }
-  100% { transform: scale(1); opacity: 1; }
-}
-.animate-check-pop {
-  animation: checkmarkPop 240ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-/* Calendar day cell selection pulse */
-@keyframes dayCellPulse {
-  0% { transform: scale(0.9); }
-  50% { transform: scale(1.1); }
-  100% { transform: scale(1); }
-}
-.animate-day-pulse {
-  animation: dayCellPulse 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
 

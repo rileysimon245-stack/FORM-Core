@@ -7,8 +7,6 @@ interface ElasticScrollProps {
   contentClassName?: string;
   onScroll?: (e: React.UIEvent<HTMLDivElement>) => void;
   maxPull?: number; // max pixels of stretch at boundaries
-  onSwipeLeft?: () => void;
-  onSwipeRight?: () => void;
 }
 
 /**
@@ -16,7 +14,6 @@ interface ElasticScrollProps {
  * - Fluid, unhindered vertical scrolling through all page content with native fling inertia
  * - Zero artificial stops or gesture lockups
  * - Tactile rubber-band spring curve at top & bottom boundaries
- * - Horizontal swipe detection for tab switching (guaranteed no interference with vertical scrolling)
  * - Automatic spring bounce-back upon boundary release
  * - Strictly hides all scrollbars
  */
@@ -26,8 +23,6 @@ export const ElasticScroll: React.FC<ElasticScrollProps> = ({
   contentClassName = '',
   onScroll,
   maxPull = 90,
-  onSwipeLeft,
-  onSwipeRight,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -147,25 +142,12 @@ export const ElasticScroll: React.FC<ElasticScrollProps> = ({
 
       // Determine gesture direction on initial movement
       if (directionLockedRef.current === 'none') {
-        const absX = Math.abs(totalDX);
         const absY = Math.abs(totalDY);
-
-        if (absX > 10 && absX > absY * 1.35) {
-          // Locked as horizontal swipe (for page tabs or calendar navigation)
-          directionLockedRef.current = 'horizontal';
-          return;
-        } else if (absY > 6) {
-          // Locked as vertical scroll
+        if (absY > 6) {
           directionLockedRef.current = 'vertical';
         } else {
-          // Movement below threshold, let browser handle
           return;
         }
-      }
-
-      // If user is swiping horizontally, do NOT interfere with vertical scrolling or rubber-band
-      if (directionLockedRef.current === 'horizontal') {
-        return;
       }
 
       // VERTICAL SCROLL HANDLING:
@@ -186,7 +168,6 @@ export const ElasticScroll: React.FC<ElasticScrollProps> = ({
       if (maxScroll > 15 && scrollTop >= maxScroll - 2 && totalDY < 0) {
         if (e.cancelable) e.preventDefault();
         isRubberBandingRef.current = true;
-        // Dampened resistance past bottom
         const pullPastBottom = totalDY;
         const elasticY = computeRubberBand(pullPastBottom);
         currentOffsetRef.current = elasticY;
@@ -194,36 +175,16 @@ export const ElasticScroll: React.FC<ElasticScrollProps> = ({
         return;
       }
 
-      // Normal scroll range (inside the page):
-      // Clean up rubber band if returning from boundary
       if (isRubberBandingRef.current) {
         isRubberBandingRef.current = false;
         currentOffsetRef.current = 0;
         content.style.transform = 'translate3d(0, 0px, 0)';
       }
-      // DO NOT call preventDefault here!
-      // Native Android / iOS scroll compositor handles natural inertial scrolling
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
       if (!isInteractingRef.current) return;
       isInteractingRef.current = false;
-
-      // Handle horizontal swipe trigger on end
-      if (directionLockedRef.current === 'horizontal' && e.changedTouches.length > 0) {
-        const endTouch = e.changedTouches[0];
-        const finalDX = endTouch.clientX - startXRef.current;
-        const finalDY = endTouch.clientY - startYRef.current;
-
-        // Require clean horizontal swipe: > 45px distance and > 1.4x vertical delta
-        if (Math.abs(finalDX) > 45 && Math.abs(finalDX) > Math.abs(finalDY) * 1.4) {
-          if (finalDX < 0) {
-            onSwipeLeft?.();
-          } else {
-            onSwipeRight?.();
-          }
-        }
-      }
 
       // If rubber-band was stretched, bounce back smoothly
       if (isRubberBandingRef.current || Math.abs(currentOffsetRef.current) > 0.5) {
@@ -268,7 +229,7 @@ export const ElasticScroll: React.FC<ElasticScrollProps> = ({
       container.removeEventListener('touchcancel', handleTouchEnd);
       container.removeEventListener('wheel', handleWheel);
     };
-  }, [computeRubberBand, maxPull, startSpringAnimation, stopSpring, onSwipeLeft, onSwipeRight]);
+  }, [computeRubberBand, maxPull, startSpringAnimation, stopSpring]);
 
   return (
     <div
@@ -277,7 +238,7 @@ export const ElasticScroll: React.FC<ElasticScrollProps> = ({
       className={`overflow-y-auto overscroll-y-contain relative no-scrollbar ${className}`}
       style={{
         WebkitOverflowScrolling: 'touch',
-        touchAction: 'pan-y', // Explicitly allow native vertical scrolling while enabling horizontal gesture detection
+        touchAction: 'pan-y',
         scrollbarWidth: 'none',
         msOverflowStyle: 'none',
       }}

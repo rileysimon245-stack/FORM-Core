@@ -7,6 +7,7 @@ import {
   EXERCISE_CATALOG,
 } from '../types/workout';
 import { StorageService } from '../services/storage';
+import { ExerciseLibraryView } from './ExerciseLibraryView';
 import {
   X,
   Plus,
@@ -102,19 +103,24 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
     }
   };
 
-  const handleAddExerciseFromCatalog = (catalogItem: typeof EXERCISE_CATALOG[0]) => {
+  const handleAddExerciseFromCatalog = (catalogItem: any) => {
+    const defaultSetsCount = catalogItem.defaultSets || 3;
+    const defaultRepsCount = catalogItem.defaultReps || 10;
+    const defaultWeightVal = catalogItem.defaultWeight || 0;
+    const restSec = catalogItem.defaultRestSeconds || 75;
+
     const newEx: WorkoutExercise = {
       id: `ex_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       exerciseId: catalogItem.id,
       name: catalogItem.name,
-      targetMuscle: catalogItem.primaryMuscle,
-      secondaryMuscles: catalogItem.secondaryMuscles,
-      isBodyweight: catalogItem.isBodyweight,
-      restSeconds: catalogItem.defaultRestSeconds,
-      sets: Array.from({ length: catalogItem.defaultSets }).map((_, i) => ({
+      targetMuscle: catalogItem.primaryMuscle || 'chest',
+      secondaryMuscles: catalogItem.secondaryMuscles || [],
+      isBodyweight: Boolean(catalogItem.isBodyweight),
+      restSeconds: restSec,
+      sets: Array.from({ length: defaultSetsCount }).map((_, i) => ({
         setNumber: i + 1,
-        weightKg: catalogItem.defaultWeight,
-        reps: catalogItem.defaultReps,
+        weightKg: defaultWeightVal,
+        reps: defaultRepsCount,
         completed: true,
       })),
     };
@@ -423,46 +429,13 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
 
         {/* Add Exercise Modal */}
         {showAddPicker && (
-          <div className="fixed inset-0 z-60 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 animate-in fade-in">
-            <div className="w-full max-w-sm bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-3 shadow-2xl max-h-[80vh] flex flex-col">
-              <div className="flex items-center justify-between pb-2 border-b border-[#252D2F]">
-                <h3 className="text-sm font-bold text-[#E8E9E7]">Добавить упражнение</h3>
-                <button
-                  onClick={() => setShowAddPicker(false)}
-                  className="text-[#92999A] hover:text-[#E8E9E7]"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <input
-                type="text"
-                placeholder="Поиск по названию..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-full bg-[#080D0E] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995]"
+          <div className="fixed inset-0 z-60 bg-black/90 backdrop-blur-sm flex items-center justify-center p-3 animate-in fade-in">
+            <div className="w-full max-w-lg bg-[#080D0E] border border-[#252D2F] rounded-2xl max-h-[85vh] flex flex-col overflow-y-auto p-3 shadow-2xl">
+              <ExerciseLibraryView
+                selectionMode={true}
+                onSelectExercise={(item) => handleAddExerciseFromCatalog(item)}
+                onClose={() => setShowAddPicker(false)}
               />
-
-              <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
-                {filteredCatalog.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => handleAddExerciseFromCatalog(item)}
-                    className="w-full text-left p-2.5 bg-[#080D0E] hover:bg-[#14231b] border border-[#202729] hover:border-[#58C995] rounded-xl flex items-center justify-between transition-colors"
-                  >
-                    <div>
-                      <span className="text-xs font-semibold text-[#E8E9E7] block">
-                        {item.name}
-                      </span>
-                      <span className="text-[10px] text-[#92999A]">
-                        {item.isBodyweight ? 'Свой вес' : `${item.defaultWeight} кг`} • {item.defaultSets} × {item.defaultReps}
-                      </span>
-                    </div>
-                    <Plus className="w-4 h-4 text-[#58C995]" />
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
         )}

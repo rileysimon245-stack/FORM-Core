@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   WorkoutProgram,
   ProgramWorkoutDay,
@@ -9,8 +9,8 @@ import {
 } from '../types/workout';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { FormSelect } from './common/FormSelect';
-import { X, Plus, Trash2, ArrowRightLeft, ChevronDown, ChevronUp, BookOpen } from 'lucide-react';
-import { motion } from 'motion/react';
+import { X, Plus, Trash2, ArrowRightLeft, ChevronDown, ChevronUp, BookOpen, Copy } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
 
 interface ProgramEditorModalProps {
@@ -18,6 +18,39 @@ interface ProgramEditorModalProps {
   onSave: (program: WorkoutProgram) => void;
   onClose: () => void;
 }
+
+// Generate unique day name with " (копия)" suffix
+const generateDuplicateDayName = (originalName: string, existingDays: ProgramWorkoutDay[]): string => {
+  const trimmed = (originalName || 'День').trim();
+  const copyPattern = /^(.*?)\s*\(копия(?:\s*(\d+))?\)$/i;
+  const match = trimmed.match(copyPattern);
+
+  let base = trimmed;
+  if (match) {
+    base = match[1].trim();
+  }
+
+  const candidate = `${base} (копия)`;
+  const nameExists = existingDays.some((d) => d.dayName.trim().toLowerCase() === candidate.toLowerCase());
+
+  if (!nameExists) {
+    return candidate;
+  }
+
+  let maxIndex = 1;
+  const indexPattern = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(копия\\s*(\\d+)\\)$`, 'i');
+  existingDays.forEach((d) => {
+    const m = d.dayName.trim().match(indexPattern);
+    if (m && m[1]) {
+      const num = parseInt(m[1], 10);
+      if (num >= maxIndex) maxIndex = num + 1;
+    } else if (d.dayName.trim().toLowerCase() === candidate.toLowerCase()) {
+      if (maxIndex <= 1) maxIndex = 2;
+    }
+  });
+
+  return `${base} (копия ${maxIndex})`;
+};
 
 export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
   initialProgram,
@@ -30,8 +63,14 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
   );
   const [goal, setGoal] = useState(initialProgram?.goal || 'Развитие мышц');
   const [daysPerWeek, setDaysPerWeek] = useState(initialProgram?.daysPerWeek || 3);
-  const [workouts, setWorkouts] = useState<ProgramWorkoutDay[]>(
-    initialProgram?.workouts || [
+  const [workouts, setWorkouts] = useState<ProgramWorkoutDay[]>(() => {
+    if (initialProgram?.workouts && initialProgram.workouts.length > 0) {
+      return initialProgram.workouts.map((d, idx) => ({
+        ...d,
+        id: d.id || `day_${Date.now()}_${idx}`,
+      }));
+    }
+    return [
       {
         id: `day_${Date.now()}`,
         dayName: 'День 1',
@@ -39,8 +78,28 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
         estimatedDuration: 45,
         exercises: [],
       },
-    ]
-  );
+    ];
+  });
+
+  // Toast notification & highlight state for duplicated day
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [justDuplicatedId, setJustDuplicatedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toastMessage) return;
+    const timer = setTimeout(() => {
+      setToastMessage(null);
+    }, 2800);
+    return () => clearTimeout(timer);
+  }, [toastMessage]);
+
+  useEffect(() => {
+    if (!justDuplicatedId) return;
+    const timer = setTimeout(() => {
+      setJustDuplicatedId(null);
+    }, 2200);
+    return () => clearTimeout(timer);
+  }, [justDuplicatedId]);
 
   // Replacement modal state: { dayIndex, exIndex }
   const [replacingTarget, setReplacingTarget] = useState<{ dayIndex: number; exIndex: number } | null>(null);
@@ -48,13 +107,54 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
 
   const handleAddWorkoutDay = () => {
     const newDay: ProgramWorkoutDay = {
-      id: `day_${Date.now()}`,
+      id: `day_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       dayName: `День ${workouts.length + 1}`,
       targetMuscleGroups: [],
       estimatedDuration: 45,
       exercises: [],
     };
     setWorkouts([...workouts, newDay]);
+  };
+
+  const handleDuplicateWorkoutDay = (dayIndex: number) => {
+    const originalDay = workouts[dayIndex];
+    if (!originalDay) return;
+
+    // Generate unique name for the duplicate day
+    const newDayName = generateDuplicateDayName(originalDay.dayName, workouts);
+
+    // Deep clone exercises with all parameters
+    const clonedExercises: ProgramExerciseTemplate[] = (originalDay.exercises || []).map((ex) => ({
+      name: ex.name,
+      targetMuscle: ex.targetMuscle,
+      secondaryMuscles: ex.secondaryMuscles ? [...ex.secondaryMuscles] : [],
+      isBodyweight: Boolean(ex.isBodyweight),
+      requiredEquipment: ex.requiredEquipment,
+      sets: Number(ex.sets) || 3,
+      reps: Number(ex.reps) || 10,
+      targetWeight: Number(ex.targetWeight) || 0,
+      restSeconds: Number(ex.restSeconds) || 75,
+      technique: ex.technique || '',
+      notes: ex.notes || '',
+    }));
+
+    const newDayId = `day_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newDay: ProgramWorkoutDay = {
+      id: newDayId,
+      dayName: newDayName,
+      targetMuscleGroups: originalDay.targetMuscleGroups ? [...originalDay.targetMuscleGroups] : [],
+      estimatedDuration: originalDay.estimatedDuration || 45,
+      exercises: clonedExercises,
+    };
+
+    // Insert copy directly after the original day
+    const next = [...workouts];
+    next.splice(dayIndex + 1, 0, newDay);
+    setWorkouts(next);
+
+    // Show Toast and highlight newly created day
+    setToastMessage(`День дублирован: «${newDayName}»`);
+    setJustDuplicatedId(newDayId);
   };
 
   const handleDeleteWorkoutDay = (dayIndex: number) => {
@@ -94,7 +194,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
     setWorkouts(next);
   };
 
-  const handleSelectReplacement = (selected: ExerciseLibraryItem) => {
+  const handleSelectReplacement = (selected: any) => {
     if (!replacingTarget) return;
     const { dayIndex, exIndex } = replacingTarget;
     const next = [...workouts];
@@ -102,15 +202,15 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
 
     next[dayIndex].exercises[exIndex] = {
       name: selected.name,
-      targetMuscle: selected.primaryMuscle,
-      secondaryMuscles: selected.secondaryMuscles,
-      isBodyweight: selected.isBodyweight,
+      targetMuscle: selected.primaryMuscle || 'chest',
+      secondaryMuscles: selected.secondaryMuscles || [],
+      isBodyweight: Boolean(selected.isBodyweight),
       requiredEquipment: selected.requiredEquipment,
-      sets: prevEx.sets || selected.defaultSets,
-      reps: prevEx.reps || selected.defaultReps,
-      targetWeight: selected.isBodyweight ? 0 : (prevEx.targetWeight || selected.defaultWeight),
-      restSeconds: prevEx.restSeconds || selected.defaultRestSeconds,
-      technique: selected.technique,
+      sets: prevEx.sets || selected.defaultSets || 3,
+      reps: prevEx.reps || selected.defaultReps || 10,
+      targetWeight: selected.isBodyweight ? 0 : (prevEx.targetWeight || selected.defaultWeight || 0),
+      restSeconds: prevEx.restSeconds || selected.defaultRestSeconds || 75,
+      technique: selected.technique || '',
       notes: prevEx.notes,
     };
 
@@ -118,22 +218,22 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
     setReplacingTarget(null);
   };
 
-  const handleAddFromLibrary = (selected: ExerciseLibraryItem) => {
+  const handleAddFromLibrary = (selected: any) => {
     if (showAddLibraryPicker === null) return;
     const dayIndex = showAddLibraryPicker;
     const next = [...workouts];
 
     next[dayIndex].exercises.push({
       name: selected.name,
-      targetMuscle: selected.primaryMuscle,
-      secondaryMuscles: selected.secondaryMuscles,
-      isBodyweight: selected.isBodyweight,
+      targetMuscle: selected.primaryMuscle || 'chest',
+      secondaryMuscles: selected.secondaryMuscles || [],
+      isBodyweight: Boolean(selected.isBodyweight),
       requiredEquipment: selected.requiredEquipment,
-      sets: selected.defaultSets,
-      reps: selected.defaultReps,
-      targetWeight: selected.isBodyweight ? 0 : selected.defaultWeight,
-      restSeconds: selected.defaultRestSeconds,
-      technique: selected.technique,
+      sets: selected.defaultSets || 3,
+      reps: selected.defaultReps || 10,
+      targetWeight: selected.isBodyweight ? 0 : (selected.defaultWeight || 0),
+      restSeconds: selected.defaultRestSeconds || 75,
+      technique: selected.technique || '',
     });
 
     setWorkouts(next);
@@ -171,8 +271,37 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
         initial="initial"
         animate="animate"
         exit="exit"
-        className="w-full max-w-lg bg-[#101719] border border-[#252D2F] rounded-2xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
+        className="w-full max-w-lg bg-[#101719] border border-[#252D2F] rounded-2xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl relative"
       >
+        {/* Toast Notification: Day duplicated */}
+        <AnimatePresence>
+          {toastMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: -12, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -12, scale: 0.95 }}
+              transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
+              className="absolute top-14 left-4 right-4 z-40 mx-auto max-w-xs bg-[#14231b] border border-[#2f553f] text-[#E8E9E7] px-3 py-2 rounded-xl shadow-2xl flex items-center justify-between gap-2.5 backdrop-blur-md"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-5 h-5 rounded-md bg-[#315D4B]/40 text-[#58C995] flex items-center justify-center shrink-0">
+                  <Copy className="w-3 h-3 text-[#58C995]" />
+                </div>
+                <span className="text-xs font-bold text-[#E8E9E7] truncate">
+                  {toastMessage}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setToastMessage(null)}
+                className="text-[#92999A] hover:text-[#E8E9E7] p-0.5 cursor-pointer shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Header */}
         <div className="px-4 py-3 border-b border-[#252D2F] flex items-center justify-between">
           <h2 className="text-base font-bold text-[#E8E9E7]">
@@ -224,6 +353,8 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
                   { value: 3, label: '3 тренировки' },
                   { value: 4, label: '4 тренировки' },
                   { value: 5, label: '5 тренировок' },
+                  { value: 6, label: '6 тренировок' },
+                  { value: 7, label: '7 тренировок' },
                 ]}
               />
             </div>
@@ -250,7 +381,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
               <button
                 type="button"
                 onClick={handleAddWorkoutDay}
-                className="text-xs text-[#58C995] hover:text-[#83CBA5] flex items-center gap-1 font-semibold"
+                className="text-xs text-[#58C995] hover:text-[#83CBA5] flex items-center gap-1 font-semibold cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Добавить день</span>
@@ -258,26 +389,50 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
             </div>
 
             {workouts.map((day, dIdx) => (
-              <div
-                key={day.id || dIdx}
-                className="bg-[#171D1F] border border-[#252D2F] rounded-xl p-3 space-y-3"
+              <motion.div
+                key={day.id}
+                layout
+                initial={{ opacity: 0, y: 14, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ duration: 0.22, ease: [0.2, 0, 0, 1] }}
+                className={`bg-[#171D1F] border rounded-xl p-3 space-y-3 transition-colors ${
+                  justDuplicatedId === day.id
+                    ? 'border-[#58C995] ring-1 ring-[#58C995]/30 shadow-lg shadow-[#58C995]/10'
+                    : 'border-[#252D2F]'
+                }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <input
                     type="text"
                     value={day.dayName}
                     onChange={(e) => handleDayNameChange(dIdx, e.target.value)}
-                    className="flex-1 bg-transparent font-bold text-sm text-[#E8E9E7] border-b border-transparent focus:border-[#58C995] outline-none"
+                    placeholder="Название дня..."
+                    className="flex-1 bg-transparent font-bold text-sm text-[#E8E9E7] border-b border-transparent focus:border-[#58C995] outline-none transition-colors"
                   />
-                  {workouts.length > 1 && (
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
-                      onClick={() => handleDeleteWorkoutDay(dIdx)}
-                      className="text-[#92999A] hover:text-[#C83232] p-1"
+                      onClick={() => handleDuplicateWorkoutDay(dIdx)}
+                      className="flex items-center gap-1 px-2 py-1 bg-[#101719] hover:bg-[#1f282b] border border-[#252D2F] hover:border-[#384548] text-[#92999A] hover:text-[#58C995] rounded-lg text-[11px] font-medium transition-all active:scale-95 cursor-pointer"
+                      title="Дублировать этот день"
+                      aria-label="Дублировать тренировочный день"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Copy className="w-3.5 h-3.5 text-[#58C995]" />
+                      <span>Дублировать</span>
                     </button>
-                  )}
+                    {workouts.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteWorkoutDay(dIdx)}
+                        className="p-1.5 text-[#92999A] hover:text-[#C83232] hover:bg-[#101719] rounded-lg transition-colors cursor-pointer"
+                        title="Удалить день"
+                        aria-label="Удалить день"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Exercises list in this day */}
@@ -397,7 +552,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
                     + Добавить упражнение из библиотеки
                   </button>
                 </div>
-              </div>
+              </motion.div>
             ))}
           </div>
 

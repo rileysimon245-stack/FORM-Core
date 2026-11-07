@@ -1,0 +1,2015 @@
+{
+  "version": "2.0.0",
+  "masterImage": "file_00000000520882109999d06d603d470c_f56b1378.png",
+  "width": 1266,
+  "height": 1243,
+  "totalRegions": 118,
+  "regions": [
+    {
+      "id": 1,
+      "area": 23689,
+      "bbox": {
+        "minX": 172,
+        "minY": 229,
+        "maxX": 442,
+        "maxY": 348
+      },
+      "center": {
+        "x": 295,
+        "y": 242
+      },
+      "projection": "front",
+      "assignedMuscle": "chest_mid",
+      "status": "assigned"
+    },
+    {
+      "id": 2,
+      "area": 21996,
+      "bbox": {
+        "minX": 910,
+        "minY": 19,
+        "maxX": 1077,
+        "maxY": 399
+      },
+      "center": {
+        "x": 962,
+        "y": 35
+      },
+      "projection": "back",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 3,
+      "area": 19388,
+      "bbox": {
+        "minX": 165,
+        "minY": 553,
+        "maxX": 452,
+        "maxY": 690
+      },
+      "center": {
+        "x": 307,
+        "y": 566
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 4,
+      "area": 13569,
+      "bbox": {
+        "minX": 255,
+        "minY": 19,
+        "maxX": 362,
+        "maxY": 172
+      },
+      "center": {
+        "x": 308,
+        "y": 35
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 5,
+      "area": 11658,
+      "bbox": {
+        "minX": 850,
+        "minY": 116,
+        "maxX": 958,
+        "maxY": 397
+      },
+      "center": {
+        "x": 937,
+        "y": 162
+      },
+      "projection": "back",
+      "assignedMuscle": "traps_upper",
+      "status": "assigned"
+    },
+    {
+      "id": 6,
+      "area": 10938,
+      "bbox": {
+        "minX": 983,
+        "minY": 680,
+        "maxX": 1094,
+        "maxY": 851
+      },
+      "center": {
+        "x": 1041,
+        "y": 701
+      },
+      "projection": "back",
+      "assignedMuscle": "hamstrings",
+      "status": "assigned"
+    },
+    {
+      "id": 7,
+      "area": 10908,
+      "bbox": {
+        "minX": 840,
+        "minY": 681,
+        "maxX": 949,
+        "maxY": 855
+      },
+      "center": {
+        "x": 893,
+        "y": 702
+      },
+      "projection": "back",
+      "assignedMuscle": "hamstrings",
+      "status": "assigned"
+    },
+    {
+      "id": 8,
+      "area": 10090,
+      "bbox": {
+        "minX": 1142,
+        "minY": 393,
+        "maxX": 1242,
+        "maxY": 659
+      },
+      "center": {
+        "x": 1182,
+        "y": 449
+      },
+      "projection": "back",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 9,
+      "area": 10011,
+      "bbox": {
+        "minX": 1057,
+        "minY": 823,
+        "maxX": 1140,
+        "maxY": 1156
+      },
+      "center": {
+        "x": 1085,
+        "y": 867
+      },
+      "projection": "back",
+      "assignedMuscle": "hamstrings",
+      "status": "assigned"
+    },
+    {
+      "id": 10,
+      "area": 9894,
+      "bbox": {
+        "minX": 793,
+        "minY": 823,
+        "maxX": 876,
+        "maxY": 1155
+      },
+      "center": {
+        "x": 849,
+        "y": 868
+      },
+      "projection": "back",
+      "assignedMuscle": "hamstrings",
+      "status": "assigned"
+    },
+    {
+      "id": 11,
+      "area": 9360,
+      "bbox": {
+        "minX": 686,
+        "minY": 433,
+        "maxX": 785,
+        "maxY": 668
+      },
+      "center": {
+        "x": 749,
+        "y": 467
+      },
+      "projection": "back",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 12,
+      "area": 9316,
+      "bbox": {
+        "minX": 832,
+        "minY": 331,
+        "maxX": 948,
+        "maxY": 489
+      },
+      "center": {
+        "x": 877,
+        "y": 352
+      },
+      "projection": "back",
+      "assignedMuscle": "rhomboids",
+      "status": "assigned"
+    },
+    {
+      "id": 13,
+      "area": 9268,
+      "bbox": {
+        "minX": 979,
+        "minY": 332,
+        "maxX": 1096,
+        "maxY": 492
+      },
+      "center": {
+        "x": 1051,
+        "y": 352
+      },
+      "projection": "back",
+      "assignedMuscle": "rhomboids",
+      "status": "assigned"
+    },
+    {
+      "id": 14,
+      "area": 8541,
+      "bbox": {
+        "minX": 966,
+        "minY": 554,
+        "maxX": 1072,
+        "maxY": 692
+      },
+      "center": {
+        "x": 1002,
+        "y": 569
+      },
+      "projection": "back",
+      "assignedMuscle": "glutes",
+      "status": "assigned"
+    },
+    {
+      "id": 15,
+      "area": 8435,
+      "bbox": {
+        "minX": 857,
+        "minY": 554,
+        "maxX": 961,
+        "maxY": 689
+      },
+      "center": {
+        "x": 925,
+        "y": 569
+      },
+      "projection": "back",
+      "assignedMuscle": "glutes",
+      "status": "assigned"
+    },
+    {
+      "id": 16,
+      "area": 6697,
+      "bbox": {
+        "minX": 439,
+        "minY": 302,
+        "maxX": 533,
+        "maxY": 437
+      },
+      "center": {
+        "x": 471,
+        "y": 331
+      },
+      "projection": "front",
+      "assignedMuscle": "biceps",
+      "status": "assigned"
+    },
+    {
+      "id": 17,
+      "area": 6628,
+      "bbox": {
+        "minX": 82,
+        "minY": 303,
+        "maxX": 176,
+        "maxY": 438
+      },
+      "center": {
+        "x": 143,
+        "y": 331
+      },
+      "projection": "front",
+      "assignedMuscle": "biceps",
+      "status": "assigned"
+    },
+    {
+      "id": 18,
+      "area": 6523,
+      "bbox": {
+        "minX": 254,
+        "minY": 462,
+        "maxX": 358,
+        "maxY": 539
+      },
+      "center": {
+        "x": 306,
+        "y": 476
+      },
+      "projection": "front",
+      "assignedMuscle": "abs",
+      "status": "assigned"
+    },
+    {
+      "id": 19,
+      "area": 5473,
+      "bbox": {
+        "minX": 402,
+        "minY": 223,
+        "maxX": 510,
+        "maxY": 329
+      },
+      "center": {
+        "x": 449,
+        "y": 243
+      },
+      "projection": "front",
+      "assignedMuscle": "front_delts",
+      "status": "assigned"
+    },
+    {
+      "id": 20,
+      "area": 5469,
+      "bbox": {
+        "minX": 107,
+        "minY": 219,
+        "maxX": 215,
+        "maxY": 332
+      },
+      "center": {
+        "x": 167,
+        "y": 241
+      },
+      "projection": "front",
+      "assignedMuscle": "front_delts",
+      "status": "assigned"
+    },
+    {
+      "id": 21,
+      "area": 5408,
+      "bbox": {
+        "minX": 417,
+        "minY": 838,
+        "maxX": 461,
+        "maxY": 1059
+      },
+      "center": {
+        "x": 441,
+        "y": 888
+      },
+      "projection": "front",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 22,
+      "area": 5308,
+      "bbox": {
+        "minX": 161,
+        "minY": 839,
+        "maxX": 207,
+        "maxY": 1059
+      },
+      "center": {
+        "x": 181,
+        "y": 887
+      },
+      "projection": "front",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 23,
+      "area": 4867,
+      "bbox": {
+        "minX": 401,
+        "minY": 1051,
+        "maxX": 486,
+        "maxY": 1155
+      },
+      "center": {
+        "x": 424,
+        "y": 1081
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 24,
+      "area": 4834,
+      "bbox": {
+        "minX": 140,
+        "minY": 1051,
+        "maxX": 223,
+        "maxY": 1155
+      },
+      "center": {
+        "x": 200,
+        "y": 1081
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 25,
+      "area": 4790,
+      "bbox": {
+        "minX": 762,
+        "minY": 291,
+        "maxX": 828,
+        "maxY": 447
+      },
+      "center": {
+        "x": 806,
+        "y": 328
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 26,
+      "area": 4480,
+      "bbox": {
+        "minX": 763,
+        "minY": 221,
+        "maxX": 875,
+        "maxY": 307
+      },
+      "center": {
+        "x": 826,
+        "y": 244
+      },
+      "projection": "back",
+      "assignedMuscle": "rear_delts",
+      "status": "assigned"
+    },
+    {
+      "id": 27,
+      "area": 4416,
+      "bbox": {
+        "minX": 1055,
+        "minY": 221,
+        "maxX": 1164,
+        "maxY": 308
+      },
+      "center": {
+        "x": 1103,
+        "y": 244
+      },
+      "projection": "back",
+      "assignedMuscle": "rear_delts",
+      "status": "assigned"
+    },
+    {
+      "id": 28,
+      "area": 4240,
+      "bbox": {
+        "minX": 1025,
+        "minY": 833,
+        "maxX": 1068,
+        "maxY": 967
+      },
+      "center": {
+        "x": 1046,
+        "y": 876
+      },
+      "projection": "back",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 29,
+      "area": 4070,
+      "bbox": {
+        "minX": 866,
+        "minY": 834,
+        "maxX": 907,
+        "maxY": 967
+      },
+      "center": {
+        "x": 887,
+        "y": 878
+      },
+      "projection": "back",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 30,
+      "area": 3798,
+      "bbox": {
+        "minX": 355,
+        "minY": 691,
+        "maxX": 402,
+        "maxY": 808
+      },
+      "center": {
+        "x": 372,
+        "y": 734
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_rectus",
+      "status": "assigned"
+    },
+    {
+      "id": 31,
+      "area": 3755,
+      "bbox": {
+        "minX": 1100,
+        "minY": 291,
+        "maxX": 1151,
+        "maxY": 403
+      },
+      "center": {
+        "x": 1122,
+        "y": 328
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 32,
+      "area": 3679,
+      "bbox": {
+        "minX": 220,
+        "minY": 692,
+        "maxX": 266,
+        "maxY": 808
+      },
+      "center": {
+        "x": 248,
+        "y": 735
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_rectus",
+      "status": "assigned"
+    },
+    {
+      "id": 33,
+      "area": 3485,
+      "bbox": {
+        "minX": 251,
+        "minY": 378,
+        "maxX": 369,
+        "maxY": 421
+      },
+      "center": {
+        "x": 308,
+        "y": 394
+      },
+      "projection": "front",
+      "assignedMuscle": "abs",
+      "status": "assigned"
+    },
+    {
+      "id": 34,
+      "area": 3479,
+      "bbox": {
+        "minX": 518,
+        "minY": 387,
+        "maxX": 559,
+        "maxY": 527
+      },
+      "center": {
+        "x": 538,
+        "y": 433
+      },
+      "projection": "front",
+      "assignedMuscle": "brachialis",
+      "status": "assigned"
+    },
+    {
+      "id": 35,
+      "area": 3476,
+      "bbox": {
+        "minX": 26,
+        "minY": 571,
+        "maxX": 88,
+        "maxY": 672
+      },
+      "center": {
+        "x": 55,
+        "y": 602
+      },
+      "projection": "front",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 36,
+      "area": 3407,
+      "bbox": {
+        "minX": 528,
+        "minY": 578,
+        "maxX": 589,
+        "maxY": 672
+      },
+      "center": {
+        "x": 561,
+        "y": 603
+      },
+      "projection": "front",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 37,
+      "area": 3406,
+      "bbox": {
+        "minX": 55,
+        "minY": 386,
+        "maxX": 96,
+        "maxY": 528
+      },
+      "center": {
+        "x": 77,
+        "y": 434
+      },
+      "projection": "front",
+      "assignedMuscle": "brachialis",
+      "status": "assigned"
+    },
+    {
+      "id": 38,
+      "area": 3398,
+      "bbox": {
+        "minX": 263,
+        "minY": 152,
+        "maxX": 336,
+        "maxY": 240
+      },
+      "center": {
+        "x": 294,
+        "y": 186
+      },
+      "projection": "front",
+      "assignedMuscle": "traps_upper",
+      "status": "assigned"
+    },
+    {
+      "id": 39,
+      "area": 3269,
+      "bbox": {
+        "minX": 187,
+        "minY": 674,
+        "maxX": 243,
+        "maxY": 760
+      },
+      "center": {
+        "x": 212,
+        "y": 699
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_lateralis",
+      "status": "assigned"
+    },
+    {
+      "id": 40,
+      "area": 3253,
+      "bbox": {
+        "minX": 377,
+        "minY": 674,
+        "maxX": 433,
+        "maxY": 760
+      },
+      "center": {
+        "x": 408,
+        "y": 699
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_lateralis",
+      "status": "assigned"
+    },
+    {
+      "id": 41,
+      "area": 2997,
+      "bbox": {
+        "minX": 841,
+        "minY": 250,
+        "maxX": 909,
+        "maxY": 333
+      },
+      "center": {
+        "x": 872,
+        "y": 280
+      },
+      "projection": "back",
+      "assignedMuscle": "traps_mid",
+      "status": "assigned"
+    },
+    {
+      "id": 42,
+      "area": 2916,
+      "bbox": {
+        "minX": 1021,
+        "minY": 250,
+        "maxX": 1088,
+        "maxY": 333
+      },
+      "center": {
+        "x": 1057,
+        "y": 281
+      },
+      "projection": "back",
+      "assignedMuscle": "traps_mid",
+      "status": "assigned"
+    },
+    {
+      "id": 43,
+      "area": 2841,
+      "bbox": {
+        "minX": 858,
+        "minY": 535,
+        "maxX": 1072,
+        "maxY": 553
+      },
+      "center": {
+        "x": 964,
+        "y": 541
+      },
+      "projection": "back",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 44,
+      "area": 2485,
+      "bbox": {
+        "minX": 368,
+        "minY": 856,
+        "maxX": 405,
+        "maxY": 960
+      },
+      "center": {
+        "x": 385,
+        "y": 903
+      },
+      "projection": "front",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 45,
+      "area": 2439,
+      "bbox": {
+        "minX": 218,
+        "minY": 857,
+        "maxX": 254,
+        "maxY": 960
+      },
+      "center": {
+        "x": 238,
+        "y": 903
+      },
+      "projection": "front",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 46,
+      "area": 2388,
+      "bbox": {
+        "minX": 366,
+        "minY": 435,
+        "maxX": 409,
+        "maxY": 522
+      },
+      "center": {
+        "x": 390,
+        "y": 478
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 47,
+      "area": 2322,
+      "bbox": {
+        "minX": 206,
+        "minY": 434,
+        "maxX": 249,
+        "maxY": 524
+      },
+      "center": {
+        "x": 225,
+        "y": 477
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 48,
+      "area": 2179,
+      "bbox": {
+        "minX": 65,
+        "minY": 443,
+        "maxX": 126,
+        "maxY": 569
+      },
+      "center": {
+        "x": 100,
+        "y": 493
+      },
+      "projection": "front",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 49,
+      "area": 2170,
+      "bbox": {
+        "minX": 201,
+        "minY": 365,
+        "maxX": 245,
+        "maxY": 458
+      },
+      "center": {
+        "x": 225,
+        "y": 410
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 50,
+      "area": 2109,
+      "bbox": {
+        "minX": 203,
+        "minY": 521,
+        "maxX": 413,
+        "maxY": 557
+      },
+      "center": {
+        "x": 309,
+        "y": 546
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 51,
+      "area": 2106,
+      "bbox": {
+        "minX": 371,
+        "minY": 365,
+        "maxX": 413,
+        "maxY": 458
+      },
+      "center": {
+        "x": 390,
+        "y": 411
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 52,
+      "area": 2106,
+      "bbox": {
+        "minX": 489,
+        "minY": 442,
+        "maxX": 550,
+        "maxY": 569
+      },
+      "center": {
+        "x": 514,
+        "y": 494
+      },
+      "projection": "front",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 53,
+      "area": 2051,
+      "bbox": {
+        "minX": 1044,
+        "minY": 568,
+        "maxX": 1107,
+        "maxY": 671
+      },
+      "center": {
+        "x": 1078,
+        "y": 632
+      },
+      "projection": "back",
+      "assignedMuscle": "glutes",
+      "status": "assigned"
+    },
+    {
+      "id": 54,
+      "area": 1964,
+      "bbox": {
+        "minX": 824,
+        "minY": 568,
+        "maxX": 885,
+        "maxY": 670
+      },
+      "center": {
+        "x": 851,
+        "y": 632
+      },
+      "projection": "back",
+      "assignedMuscle": "glutes",
+      "status": "assigned"
+    },
+    {
+      "id": 55,
+      "area": 1841,
+      "bbox": {
+        "minX": 253,
+        "minY": 423,
+        "maxX": 310,
+        "maxY": 463
+      },
+      "center": {
+        "x": 281,
+        "y": 443
+      },
+      "projection": "front",
+      "assignedMuscle": "abs",
+      "status": "assigned"
+    },
+    {
+      "id": 56,
+      "area": 1827,
+      "bbox": {
+        "minX": 169,
+        "minY": 670,
+        "maxX": 198,
+        "maxY": 786
+      },
+      "center": {
+        "x": 181,
+        "y": 731
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_lateralis",
+      "status": "assigned"
+    },
+    {
+      "id": 57,
+      "area": 1806,
+      "bbox": {
+        "minX": 423,
+        "minY": 670,
+        "maxX": 450,
+        "maxY": 786
+      },
+      "center": {
+        "x": 439,
+        "y": 732
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_lateralis",
+      "status": "assigned"
+    },
+    {
+      "id": 58,
+      "area": 1693,
+      "bbox": {
+        "minX": 312,
+        "minY": 423,
+        "maxX": 362,
+        "maxY": 463
+      },
+      "center": {
+        "x": 336,
+        "y": 443
+      },
+      "projection": "front",
+      "assignedMuscle": "abs",
+      "status": "assigned"
+    },
+    {
+      "id": 59,
+      "area": 1671,
+      "bbox": {
+        "minX": 248,
+        "minY": 342,
+        "maxX": 308,
+        "maxY": 385
+      },
+      "center": {
+        "x": 277,
+        "y": 362
+      },
+      "projection": "front",
+      "assignedMuscle": "abs",
+      "status": "assigned"
+    },
+    {
+      "id": 60,
+      "area": 1668,
+      "bbox": {
+        "minX": 189,
+        "minY": 177,
+        "maxX": 258,
+        "maxY": 223
+      },
+      "center": {
+        "x": 234,
+        "y": 206
+      },
+      "projection": "front",
+      "assignedMuscle": "traps_upper",
+      "status": "assigned"
+    },
+    {
+      "id": 61,
+      "area": 1657,
+      "bbox": {
+        "minX": 171,
+        "minY": 540,
+        "maxX": 235,
+        "maxY": 637
+      },
+      "center": {
+        "x": 204,
+        "y": 579
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 62,
+      "area": 1602,
+      "bbox": {
+        "minX": 357,
+        "minY": 177,
+        "maxX": 425,
+        "maxY": 224
+      },
+      "center": {
+        "x": 380,
+        "y": 206
+      },
+      "projection": "front",
+      "assignedMuscle": "traps_upper",
+      "status": "assigned"
+    },
+    {
+      "id": 63,
+      "area": 1590,
+      "bbox": {
+        "minX": 34,
+        "minY": 442,
+        "maxX": 58,
+        "maxY": 568
+      },
+      "center": {
+        "x": 46,
+        "y": 515
+      },
+      "projection": "front",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 64,
+      "area": 1576,
+      "bbox": {
+        "minX": 1076,
+        "minY": 676,
+        "maxX": 1108,
+        "maxY": 774
+      },
+      "center": {
+        "x": 1096,
+        "y": 714
+      },
+      "projection": "back",
+      "assignedMuscle": "hamstrings",
+      "status": "assigned"
+    },
+    {
+      "id": 65,
+      "area": 1556,
+      "bbox": {
+        "minX": 312,
+        "minY": 344,
+        "maxX": 368,
+        "maxY": 385
+      },
+      "center": {
+        "x": 340,
+        "y": 363
+      },
+      "projection": "front",
+      "assignedMuscle": "abs",
+      "status": "assigned"
+    },
+    {
+      "id": 66,
+      "area": 1549,
+      "bbox": {
+        "minX": 824,
+        "minY": 285,
+        "maxX": 889,
+        "maxY": 337
+      },
+      "center": {
+        "x": 849,
+        "y": 316
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 67,
+      "area": 1527,
+      "bbox": {
+        "minX": 1039,
+        "minY": 285,
+        "maxX": 1104,
+        "maxY": 338
+      },
+      "center": {
+        "x": 1079,
+        "y": 316
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 68,
+      "area": 1479,
+      "bbox": {
+        "minX": 830,
+        "minY": 677,
+        "maxX": 859,
+        "maxY": 781
+      },
+      "center": {
+        "x": 840,
+        "y": 716
+      },
+      "projection": "back",
+      "assignedMuscle": "hamstrings",
+      "status": "assigned"
+    },
+    {
+      "id": 69,
+      "area": 1469,
+      "bbox": {
+        "minX": 556,
+        "minY": 443,
+        "maxX": 580,
+        "maxY": 567
+      },
+      "center": {
+        "x": 564,
+        "y": 514
+      },
+      "projection": "front",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 70,
+      "area": 1468,
+      "bbox": {
+        "minX": 738,
+        "minY": 298,
+        "maxX": 794,
+        "maxY": 395
+      },
+      "center": {
+        "x": 760,
+        "y": 343
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 71,
+      "area": 1363,
+      "bbox": {
+        "minX": 1132,
+        "minY": 297,
+        "maxX": 1186,
+        "maxY": 394
+      },
+      "center": {
+        "x": 1165,
+        "y": 341
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 72,
+      "area": 1295,
+      "bbox": {
+        "minX": 316,
+        "minY": 152,
+        "maxX": 353,
+        "maxY": 237
+      },
+      "center": {
+        "x": 340,
+        "y": 199
+      },
+      "projection": "front",
+      "assignedMuscle": "traps_upper",
+      "status": "assigned"
+    },
+    {
+      "id": 73,
+      "area": 1210,
+      "bbox": {
+        "minX": 215,
+        "minY": 931,
+        "maxX": 237,
+        "maxY": 1042
+      },
+      "center": {
+        "x": 223,
+        "y": 981
+      },
+      "projection": "front",
+      "assignedMuscle": "tibialis",
+      "status": "assigned"
+    },
+    {
+      "id": 74,
+      "area": 1168,
+      "bbox": {
+        "minX": 390,
+        "minY": 539,
+        "maxX": 438,
+        "maxY": 612
+      },
+      "center": {
+        "x": 414,
+        "y": 572
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 75,
+      "area": 1145,
+      "bbox": {
+        "minX": 175,
+        "minY": 325,
+        "maxX": 223,
+        "maxY": 407
+      },
+      "center": {
+        "x": 190,
+        "y": 360
+      },
+      "projection": "front",
+      "assignedMuscle": "biceps",
+      "status": "assigned"
+    },
+    {
+      "id": 76,
+      "area": 896,
+      "bbox": {
+        "minX": 1039,
+        "minY": 555,
+        "maxX": 1091,
+        "maxY": 612
+      },
+      "center": {
+        "x": 1068,
+        "y": 577
+      },
+      "projection": "back",
+      "assignedMuscle": "glutes",
+      "status": "assigned"
+    },
+    {
+      "id": 77,
+      "area": 876,
+      "bbox": {
+        "minX": 330,
+        "minY": 695,
+        "maxX": 358,
+        "maxY": 761
+      },
+      "center": {
+        "x": 345,
+        "y": 718
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_rectus",
+      "status": "assigned"
+    },
+    {
+      "id": 78,
+      "area": 875,
+      "bbox": {
+        "minX": 838,
+        "minY": 555,
+        "maxX": 890,
+        "maxY": 613
+      },
+      "center": {
+        "x": 863,
+        "y": 576
+      },
+      "projection": "back",
+      "assignedMuscle": "glutes",
+      "status": "assigned"
+    },
+    {
+      "id": 79,
+      "area": 859,
+      "bbox": {
+        "minX": 262,
+        "minY": 695,
+        "maxX": 289,
+        "maxY": 761
+      },
+      "center": {
+        "x": 275,
+        "y": 718
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_rectus",
+      "status": "assigned"
+    },
+    {
+      "id": 80,
+      "area": 782,
+      "bbox": {
+        "minX": 416,
+        "minY": 326,
+        "maxX": 439,
+        "maxY": 408
+      },
+      "center": {
+        "x": 429,
+        "y": 365
+      },
+      "projection": "front",
+      "assignedMuscle": "biceps",
+      "status": "assigned"
+    },
+    {
+      "id": 81,
+      "area": 731,
+      "bbox": {
+        "minX": 995,
+        "minY": 505,
+        "maxX": 1064,
+        "maxY": 521
+      },
+      "center": {
+        "x": 1033,
+        "y": 513
+      },
+      "projection": "back",
+      "assignedMuscle": "lowerback",
+      "status": "assigned"
+    },
+    {
+      "id": 82,
+      "area": 725,
+      "bbox": {
+        "minX": 865,
+        "minY": 503,
+        "maxX": 935,
+        "maxY": 521
+      },
+      "center": {
+        "x": 897,
+        "y": 513
+      },
+      "projection": "back",
+      "assignedMuscle": "lowerback",
+      "status": "assigned"
+    },
+    {
+      "id": 83,
+      "area": 723,
+      "bbox": {
+        "minX": 386,
+        "minY": 933,
+        "maxX": 408,
+        "maxY": 999
+      },
+      "center": {
+        "x": 398,
+        "y": 966
+      },
+      "projection": "front",
+      "assignedMuscle": "tibialis",
+      "status": "assigned"
+    },
+    {
+      "id": 84,
+      "area": 676,
+      "bbox": {
+        "minX": 865,
+        "minY": 437,
+        "maxX": 886,
+        "maxY": 497
+      },
+      "center": {
+        "x": 873,
+        "y": 467
+      },
+      "projection": "back",
+      "assignedMuscle": "lats",
+      "status": "assigned"
+    },
+    {
+      "id": 85,
+      "area": 636,
+      "bbox": {
+        "minX": 1114,
+        "minY": 390,
+        "maxX": 1160,
+        "maxY": 431
+      },
+      "center": {
+        "x": 1141,
+        "y": 412
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 86,
+      "area": 607,
+      "bbox": {
+        "minX": 960,
+        "minY": 202,
+        "maxX": 965,
+        "maxY": 503
+      },
+      "center": {
+        "x": 963,
+        "y": 365
+      },
+      "projection": "back",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 87,
+      "area": 568,
+      "bbox": {
+        "minX": 1043,
+        "minY": 440,
+        "maxX": 1063,
+        "maxY": 496
+      },
+      "center": {
+        "x": 1055,
+        "y": 468
+      },
+      "projection": "back",
+      "assignedMuscle": "lats",
+      "status": "assigned"
+    },
+    {
+      "id": 88,
+      "area": 505,
+      "bbox": {
+        "minX": 382,
+        "minY": 550,
+        "maxX": 446,
+        "maxY": 637
+      },
+      "center": {
+        "x": 407,
+        "y": 595
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 89,
+      "area": 484,
+      "bbox": {
+        "minX": 708,
+        "minY": 392,
+        "maxX": 739,
+        "maxY": 452
+      },
+      "center": {
+        "x": 725,
+        "y": 423
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 90,
+      "area": 469,
+      "bbox": {
+        "minX": 356,
+        "minY": 790,
+        "maxX": 390,
+        "maxY": 860
+      },
+      "center": {
+        "x": 372,
+        "y": 829
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_medialis",
+      "status": "assigned"
+    },
+    {
+      "id": 91,
+      "area": 465,
+      "bbox": {
+        "minX": 864,
+        "minY": 523,
+        "maxX": 953,
+        "maxY": 533
+      },
+      "center": {
+        "x": 901,
+        "y": 527
+      },
+      "projection": "back",
+      "assignedMuscle": "lowerback",
+      "status": "assigned"
+    },
+    {
+      "id": 92,
+      "area": 456,
+      "bbox": {
+        "minX": 982,
+        "minY": 523,
+        "maxX": 1066,
+        "maxY": 532
+      },
+      "center": {
+        "x": 1030,
+        "y": 527
+      },
+      "projection": "back",
+      "assignedMuscle": "lowerback",
+      "status": "assigned"
+    },
+    {
+      "id": 93,
+      "area": 419,
+      "bbox": {
+        "minX": 398,
+        "minY": 973,
+        "maxX": 408,
+        "maxY": 1043
+      },
+      "center": {
+        "x": 404,
+        "y": 1008
+      },
+      "projection": "front",
+      "assignedMuscle": "tibialis",
+      "status": "assigned"
+    },
+    {
+      "id": 94,
+      "area": 415,
+      "bbox": {
+        "minX": 232,
+        "minY": 792,
+        "maxX": 264,
+        "maxY": 862
+      },
+      "center": {
+        "x": 249,
+        "y": 831
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_medialis",
+      "status": "assigned"
+    },
+    {
+      "id": 95,
+      "area": 363,
+      "bbox": {
+        "minX": 371,
+        "minY": 353,
+        "maxX": 397,
+        "maxY": 380
+      },
+      "center": {
+        "x": 384,
+        "y": 366
+      },
+      "projection": "front",
+      "assignedMuscle": "chest_lower",
+      "status": "assigned"
+    },
+    {
+      "id": 96,
+      "area": 333,
+      "bbox": {
+        "minX": 219,
+        "minY": 353,
+        "maxX": 240,
+        "maxY": 381
+      },
+      "center": {
+        "x": 231,
+        "y": 366
+      },
+      "projection": "front",
+      "assignedMuscle": "chest_lower",
+      "status": "assigned"
+    },
+    {
+      "id": 97,
+      "area": 333,
+      "bbox": {
+        "minX": 871,
+        "minY": 470,
+        "maxX": 895,
+        "maxY": 503
+      },
+      "center": {
+        "x": 885,
+        "y": 487
+      },
+      "projection": "back",
+      "assignedMuscle": "lats",
+      "status": "assigned"
+    },
+    {
+      "id": 98,
+      "area": 332,
+      "bbox": {
+        "minX": 1041,
+        "minY": 972,
+        "maxX": 1064,
+        "maxY": 1046
+      },
+      "center": {
+        "x": 1053,
+        "y": 1004
+      },
+      "projection": "back",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 99,
+      "area": 331,
+      "bbox": {
+        "minX": 394,
+        "minY": 338,
+        "maxX": 422,
+        "maxY": 361
+      },
+      "center": {
+        "x": 410,
+        "y": 352
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 100,
+      "area": 311,
+      "bbox": {
+        "minX": 866,
+        "minY": 972,
+        "maxX": 892,
+        "maxY": 1049
+      },
+      "center": {
+        "x": 880,
+        "y": 1006
+      },
+      "projection": "back",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 101,
+      "area": 303,
+      "bbox": {
+        "minX": 101,
+        "minY": 427,
+        "maxX": 130,
+        "maxY": 454
+      },
+      "center": {
+        "x": 115,
+        "y": 439
+      },
+      "projection": "front",
+      "assignedMuscle": "brachialis",
+      "status": "assigned"
+    },
+    {
+      "id": 102,
+      "area": 290,
+      "bbox": {
+        "minX": 1035,
+        "minY": 473,
+        "maxX": 1059,
+        "maxY": 504
+      },
+      "center": {
+        "x": 1045,
+        "y": 488
+      },
+      "projection": "back",
+      "assignedMuscle": "lats",
+      "status": "assigned"
+    },
+    {
+      "id": 103,
+      "area": 284,
+      "bbox": {
+        "minX": 485,
+        "minY": 427,
+        "maxX": 513,
+        "maxY": 453
+      },
+      "center": {
+        "x": 500,
+        "y": 438
+      },
+      "projection": "front",
+      "assignedMuscle": "brachialis",
+      "status": "assigned"
+    },
+    {
+      "id": 104,
+      "area": 251,
+      "bbox": {
+        "minX": 1193,
+        "minY": 657,
+        "maxX": 1230,
+        "maxY": 675
+      },
+      "center": {
+        "x": 1208,
+        "y": 666
+      },
+      "projection": "back",
+      "assignedMuscle": "forearms",
+      "status": "assigned"
+    },
+    {
+      "id": 105,
+      "area": 222,
+      "bbox": {
+        "minX": 1137,
+        "minY": 424,
+        "maxX": 1165,
+        "maxY": 448
+      },
+      "center": {
+        "x": 1151,
+        "y": 436
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 106,
+      "area": 187,
+      "bbox": {
+        "minX": 362,
+        "minY": 90,
+        "maxX": 372,
+        "maxY": 122
+      },
+      "center": {
+        "x": 367,
+        "y": 105
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 107,
+      "area": 187,
+      "bbox": {
+        "minX": 194,
+        "minY": 358,
+        "maxX": 211,
+        "maxY": 376
+      },
+      "center": {
+        "x": 202,
+        "y": 369
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 108,
+      "area": 186,
+      "bbox": {
+        "minX": 403,
+        "minY": 360,
+        "maxX": 420,
+        "maxY": 376
+      },
+      "center": {
+        "x": 412,
+        "y": 369
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 109,
+      "area": 179,
+      "bbox": {
+        "minX": 245,
+        "minY": 90,
+        "maxX": 254,
+        "maxY": 121
+      },
+      "center": {
+        "x": 250,
+        "y": 104
+      },
+      "projection": "front",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 110,
+      "area": 178,
+      "bbox": {
+        "minX": 901,
+        "minY": 90,
+        "maxX": 910,
+        "maxY": 122
+      },
+      "center": {
+        "x": 905,
+        "y": 105
+      },
+      "projection": "back",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 111,
+      "area": 169,
+      "bbox": {
+        "minX": 1015,
+        "minY": 90,
+        "maxX": 1024,
+        "maxY": 122
+      },
+      "center": {
+        "x": 1020,
+        "y": 105
+      },
+      "projection": "back",
+      "assignedMuscle": null,
+      "status": "unassigned"
+    },
+    {
+      "id": 112,
+      "area": 166,
+      "bbox": {
+        "minX": 737,
+        "minY": 440,
+        "maxX": 761,
+        "maxY": 460
+      },
+      "center": {
+        "x": 746,
+        "y": 447
+      },
+      "projection": "back",
+      "assignedMuscle": "triceps",
+      "status": "assigned"
+    },
+    {
+      "id": 113,
+      "area": 137,
+      "bbox": {
+        "minX": 1069,
+        "minY": 1042,
+        "maxX": 1079,
+        "maxY": 1082
+      },
+      "center": {
+        "x": 1074,
+        "y": 1062
+      },
+      "projection": "back",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 114,
+      "area": 115,
+      "bbox": {
+        "minX": 853,
+        "minY": 1036,
+        "maxX": 857,
+        "maxY": 1075
+      },
+      "center": {
+        "x": 855,
+        "y": 1061
+      },
+      "projection": "back",
+      "assignedMuscle": "calves",
+      "status": "assigned"
+    },
+    {
+      "id": 115,
+      "area": 112,
+      "bbox": {
+        "minX": 197,
+        "minY": 378,
+        "maxX": 208,
+        "maxY": 394
+      },
+      "center": {
+        "x": 202,
+        "y": 387
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 116,
+      "area": 109,
+      "bbox": {
+        "minX": 407,
+        "minY": 378,
+        "maxX": 418,
+        "maxY": 394
+      },
+      "center": {
+        "x": 413,
+        "y": 387
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 117,
+      "area": 66,
+      "bbox": {
+        "minX": 386,
+        "minY": 512,
+        "maxX": 408,
+        "maxY": 524
+      },
+      "center": {
+        "x": 400,
+        "y": 518
+      },
+      "projection": "front",
+      "assignedMuscle": "obliques",
+      "status": "assigned"
+    },
+    {
+      "id": 118,
+      "area": 65,
+      "bbox": {
+        "minX": 192,
+        "minY": 801,
+        "maxX": 201,
+        "maxY": 818
+      },
+      "center": {
+        "x": 195,
+        "y": 809
+      },
+      "projection": "front",
+      "assignedMuscle": "quads_lateralis",
+      "status": "assigned"
+    }
+  ]
+}

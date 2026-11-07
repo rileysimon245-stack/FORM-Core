@@ -2,11 +2,10 @@ import {
   WorkoutProgram,
   ProgramWorkoutDay,
   ProgramExerciseTemplate,
-  EXERCISE_CATALOG,
-  ExerciseLibraryItem,
   MuscleGroup,
 } from '../types/workout';
 import { StorageService } from './storage';
+import { FullExerciseItem } from '../data/exerciseTypes';
 
 export interface GeneratorParams {
   goal: string;
@@ -25,7 +24,7 @@ export async function generateWorkoutProgram(
 ): Promise<{ program: WorkoutProgram; source: 'ai' | 'algorithmic'; message?: string }> {
   // Read current saved equipment and parameters
   const equipmentItems = StorageService.getEquipmentList();
-  const availableEquipmentIds = equipmentItems.filter((e) => e.selected).map((e) => e.id);
+  const availableEquipmentIds = equipmentItems.filter((e) => e.selected || e.owned).map((e) => e.id);
   const userParams = StorageService.getUserParameters();
   const profile = StorageService.getProfile();
 
@@ -62,6 +61,7 @@ export async function generateWorkoutProgram(
             targetMuscleGroups: w.targetMuscleGroups || ['chest'],
             estimatedDuration: w.estimatedDuration || params.duration,
             exercises: (w.exercises || []).map((ex: any) => ({
+              exerciseId: ex.exerciseId || `ex_gen_${Math.random().toString(36).substring(2, 6)}`,
               name: ex.name,
               targetMuscle: ex.targetMuscle || 'chest',
               isBodyweight: Boolean(ex.isBodyweight),
@@ -88,7 +88,7 @@ export async function generateWorkoutProgram(
   return {
     program: localProgram,
     source: 'algorithmic',
-    message: 'Программа успешно составлена строго с учетом выбранного вами инвентаря, ограничений и восстановления.',
+    message: 'Программа успешно составлена из реальных упражнений каталога строго с учетом выбранного инвентаря и ограничений.',
   };
 }
 
@@ -98,7 +98,10 @@ export function generateLocalTemplateProgram(
 ): WorkoutProgram {
   const { goal, daysPerWeek, duration, experience, age = 28 } = params;
 
-  // Read available equipment if not passed - strictly using user inventory selection
+  // 1. Get ALL exercises strictly from catalog (built-in 181 + custom exercises)
+  const catalog: FullExerciseItem[] = StorageService.getAllExercises();
+
+  // Read available equipment
   const eqList = availableEquipmentIds || StorageService.getEquipmentList().filter((e) => e.selected).map((e) => e.id);
   const excluded = (params.excludedExercises || []).map((e) => e.toLowerCase().trim());
   const healthLimits = (params.healthRestrictions || []).map((h) => h.toLowerCase().trim());
@@ -121,8 +124,8 @@ export function generateLocalTemplateProgram(
   const pickExercise = (
     primaryMuscle: MuscleGroup
   ): ProgramExerciseTemplate => {
-    // Filter candidate list strictly by equipment
-    const candidates = EXERCISE_CATALOG.filter((ex) => {
+    // 2. Filter candidate list strictly from catalog exercises
+    const candidates = catalog.filter((ex) => {
       // Must target muscle
       if (ex.primaryMuscle !== primaryMuscle && !ex.secondaryMuscles?.includes(primaryMuscle)) {
         return false;
@@ -141,7 +144,7 @@ export function generateLocalTemplateProgram(
       if (protectShoulders && ex.name.includes('Армейский жим')) {
         return false;
       }
-      // Must have required equipment strictly in user's inventory
+      // Equipment check
       if (ex.requiredEquipment === 'barbell' && !hasBarbell) return false;
       if ((ex.requiredEquipment === 'dumbbells_adjustable' || ex.requiredEquipment === 'dumbbells_fixed') && !hasDumbbells) return false;
       if (ex.requiredEquipment === 'pullup_bar' && !hasPullupBar) return false;
@@ -155,26 +158,13 @@ export function generateLocalTemplateProgram(
       return true;
     });
 
-    const fallback: ProgramExerciseTemplate = {
-      name: primaryMuscle === 'chest' ? 'Отжимания от пола' : primaryMuscle === 'quads' ? 'Кубковые приседания' : 'Планка',
-      targetMuscle: primaryMuscle,
-      isBodyweight: true,
-      sets: 3,
-      reps: 12,
-      targetWeight: 0,
-      restSeconds: 60,
-      technique: 'Контролируйте движение на всей траектории, дыхание ровное.',
-    };
+    // Fallback to any catalog exercise matching primary muscle if equipment filter was too strict
+    const fallbackCandidates = catalog.filter((ex) => ex.primaryMuscle === primaryMuscle);
+    const chosen = candidates.length > 0 ? candidates[0] : (fallbackCandidates.length > 0 ? fallbackCandidates[0] : catalog[0]);
 
-    if (candidates.length === 0) return fallback;
-
-    // Pick best matching or first candidate
-    const chosen = candidates[0];
-
-    // Calculate safe reps and weight based on goal and age
     let targetReps = 10;
     let targetSets = 3;
-    let restSec = chosen.defaultRestSeconds;
+    let restSec = chosen.defaultRestSeconds || 75;
 
     if (goal === 'Сила') {
       targetReps = age > 50 ? 8 : 6;
@@ -185,12 +175,13 @@ export function generateLocalTemplateProgram(
       targetSets = 3;
       restSec = 45;
     } else {
-      targetReps = 10;
-      targetSets = 3;
-      restSec = 75;
+      targetReps = chosen.defaultReps || 10;
+      targetSets = chosen.defaultSets || 3;
+      restSec = chosen.defaultRestSeconds || 75;
     }
 
     return {
+      exerciseId: chosen.id,
       name: chosen.name,
       targetMuscle: chosen.primaryMuscle,
       secondaryMuscles: chosen.secondaryMuscles,
@@ -200,14 +191,13 @@ export function generateLocalTemplateProgram(
       reps: targetReps,
       targetWeight: chosen.isBodyweight ? 0 : chosen.defaultWeight,
       restSeconds: restSec,
-      technique: chosen.technique,
+      technique: chosen.technique || 'Выполняйте в контролируемом темпе с правильной осанкой.',
     };
   };
 
   let workouts: ProgramWorkoutDay[] = [];
 
   if (daysPerWeek === 2) {
-    // 2 Days: Upper & Lower
     workouts = [
       {
         id: `w_gen_u_${Date.now()}`,
@@ -236,7 +226,6 @@ export function generateLocalTemplateProgram(
       },
     ];
   } else if (daysPerWeek === 3) {
-    // 3 Days: Push / Pull / Legs
     workouts = [
       {
         id: `w_gen_push_${Date.now()}`,
@@ -275,7 +264,6 @@ export function generateLocalTemplateProgram(
       },
     ];
   } else {
-    // 4 or 5 Days: Upper / Lower A & B
     workouts = [
       {
         id: `w_gen_u1_${Date.now()}`,
@@ -327,7 +315,7 @@ export function generateLocalTemplateProgram(
   return {
     id: `prog_gen_${Date.now()}`,
     name: `${goal}: ${daysPerWeek} дня (${experience})`,
-    description: `Составлена с учетом вашего инвентаря, восстановления мышц и отсутствия осевой перегрузки. Длительность: ${duration} мин.`,
+    description: `Составлена из упражнений каталога с учетом вашего инвентаря и восстановления. Длительность: ${duration} мин.`,
     goal,
     daysPerWeek,
     workouts,

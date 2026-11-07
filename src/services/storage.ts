@@ -21,7 +21,10 @@ import {
   MuscleLoadHistoryItem,
   EXERCISE_CATALOG,
   MusclePeriod,
+  ExerciseProgressPoint,
 } from '../types/workout';
+import { FullExerciseItem } from '../data/exerciseTypes';
+import { COMPREHENSIVE_FULL_CATALOG } from '../data/fullExerciseCatalog';
 
 const STORAGE_KEYS = {
   APP_INITIALIZED: 'form_app_initialized_v10',
@@ -36,6 +39,7 @@ const STORAGE_KEYS = {
   EQUIPMENT: 'form_user_equipment_v1',
   FITNESS_PARAMS: 'form_fitness_parameters_v1',
   FAVORITES: 'form_favorite_exercises_v1',
+  CUSTOM_EXERCISES: 'form_custom_exercises_v1',
   SETTINGS: 'form_app_settings_v1',
 };
 
@@ -405,22 +409,39 @@ export const StorageService = {
     return null;
   },
 
-  // Calculate Personal Record (PR) for exercise
+  // Calculate Personal Record (PR) for exercise strictly across completed workouts
   getPersonalRecord(exerciseName: string): { maxWeight: number; maxRepsAtMax: number; date: string } | null {
+    if (!exerciseName) return null;
     const sessions = this.getWorkoutSessions();
-    const cleanName = exerciseName.trim().toLowerCase();
+    const targetNorm = exerciseName.trim().toLowerCase().replace(/ё/g, 'е');
     let record: { maxWeight: number; maxRepsAtMax: number; date: string } | null = null;
 
     sessions.forEach((s) => {
-      s.exercises?.forEach((ex) => {
-        if (ex.name.trim().toLowerCase() === cleanName) {
-          ex.sets?.forEach((st) => {
-            if (st.completed && (!record || st.weightKg > record.maxWeight)) {
-              record = {
-                maxWeight: st.weightKg,
-                maxRepsAtMax: st.reps,
-                date: s.date,
-              };
+      // ONLY consider completed sessions - exclude in_progress / skipped drafts
+      if (s.status !== 'completed' || !s.exercises) return;
+
+      s.exercises.forEach((ex) => {
+        if (!ex.name || ex.skipped || !ex.sets) return;
+        const exNorm = ex.name.trim().toLowerCase().replace(/ё/g, 'е');
+        const isMatch = exNorm === targetNorm || (targetNorm.length >= 6 && (exNorm.includes(targetNorm) || targetNorm.includes(exNorm)));
+        if (isMatch) {
+          ex.sets.forEach((st) => {
+            if (st.completed) {
+              const weight = st.weightKg || 0;
+              const reps = st.reps || 0;
+              if (weight > 0 || (ex.isBodyweight && reps > 0)) {
+                const isBetterWeight = !record || weight > record.maxWeight;
+                const isSameWeightBetterReps =
+                  record && weight === record.maxWeight && reps > record.maxRepsAtMax;
+
+                if (isBetterWeight || isSameWeightBetterReps) {
+                  record = {
+                    maxWeight: weight,
+                    maxRepsAtMax: reps,
+                    date: s.date,
+                  };
+                }
+              }
             }
           });
         }
@@ -430,33 +451,208 @@ export const StorageService = {
     return record;
   },
 
-  // Exercise history for progress charts
-  getExerciseHistory(exerciseName: string): { date: string; maxWeight: number; maxReps: number; volume: number }[] {
-    const sessions = [...this.getWorkoutSessions()].reverse(); // chronological
-    const cleanName = exerciseName.trim().toLowerCase();
-    const points: { date: string; maxWeight: number; maxReps: number; volume: number }[] = [];
+  // Get all active verified personal records across all exercises
+  getAllPersonalRecords(): Record<string, { maxWeight: number; maxRepsAtMax: number; date: string }> {
+    const sessions = this.getWorkoutSessions();
+    const records: Record<string, { maxWeight: number; maxRepsAtMax: number; date: string }> = {};
 
     sessions.forEach((s) => {
-      s.exercises?.forEach((ex) => {
-        if (ex.name.trim().toLowerCase() === cleanName) {
-          let maxW = 0;
-          let maxR = 0;
-          let vol = 0;
-          ex.sets?.forEach((st) => {
-            if (st.completed) {
-              if (st.weightKg > maxW) maxW = st.weightKg;
-              if (st.reps > maxR) maxR = st.reps;
-              vol += (ex.isBodyweight ? 75 : st.weightKg) * st.reps;
+      if (s.status !== 'completed' || !s.exercises) return;
+
+      s.exercises.forEach((ex) => {
+        if (!ex.name || ex.skipped || !ex.sets) return;
+        const key = ex.name.trim();
+        let cur = records[key];
+
+        ex.sets.forEach((st) => {
+          if (!st.completed) return;
+          const weight = st.weightKg || 0;
+          const reps = st.reps || 0;
+          if (weight > 0 || (ex.isBodyweight && reps > 0)) {
+            const isBetterWeight = !cur || weight > cur.maxWeight;
+            const isSameWeightBetterReps =
+              cur && weight === cur.maxWeight && reps > cur.maxRepsAtMax;
+
+            if (isBetterWeight || isSameWeightBetterReps) {
+              records[key] = {
+                maxWeight: weight,
+                maxRepsAtMax: reps,
+                date: s.date,
+              };
+              cur = records[key];
             }
-          });
-          if (maxW > 0 || maxR > 0) {
-            points.push({
-              date: s.date.slice(5), // MM-DD
-              maxWeight: maxW,
-              maxReps: maxR,
-              volume: Math.round(vol),
-            });
           }
+        });
+      });
+    });
+
+    return records;
+  },
+
+  // Recalculates personalRecords array across all sessions chronologically with zero duplicates
+  recalculatePersonalRecordsForAllSessions(sessions: WorkoutSession[]): WorkoutSession[] {
+    const list = sessions.map((s) => ({
+      ...s,
+      exercises: s.exercises
+        ? s.exercises.map((ex) => ({
+            ...ex,
+            sets: ex.sets ? ex.sets.map((st) => ({ ...st })) : [],
+          }))
+        : [],
+    }));
+
+    // Sort chronologically: oldest first
+    const indexed = list.map((s, idx) => ({ s, originalIdx: idx }));
+    indexed.sort((a, b) => {
+      const dateA = a.s.date || '';
+      const dateB = b.s.date || '';
+      if (dateA !== dateB) return dateA.localeCompare(dateB);
+      const timeA = a.s.startTime || '00:00';
+      const timeB = b.s.startTime || '00:00';
+      if (timeA !== timeB) return timeA.localeCompare(timeB);
+      return a.originalIdx - b.originalIdx;
+    });
+
+    // Running best records: key is normalized exercise name
+    const runningBest = new Map<string, { maxWeight: number; maxRepsAtMax: number; date: string }>();
+
+    for (const item of indexed) {
+      const session = item.s;
+      // Incomplete or skipped sessions do not generate PRs
+      if (session.status !== 'completed' || !session.exercises) {
+        session.personalRecords = [];
+        continue;
+      }
+
+      const sessionPRs: PersonalRecordInfo[] = [];
+
+      for (const ex of session.exercises) {
+        if (ex.skipped || !ex.name || !ex.sets) continue;
+        const cleanName = ex.name.trim().toLowerCase();
+
+        // Find the single best completed set for this exercise in this session
+        let bestSet: { weightKg: number; reps: number } | null = null;
+        for (const st of ex.sets) {
+          if (!st.completed) continue;
+          const w = st.weightKg || 0;
+          const r = st.reps || 0;
+          if (w === 0 && r === 0) continue;
+
+          if (
+            !bestSet ||
+            w > bestSet.weightKg ||
+            (w === bestSet.weightKg && r > bestSet.reps)
+          ) {
+            bestSet = { weightKg: w, reps: r };
+          }
+        }
+
+        if (bestSet) {
+          const prev = runningBest.get(cleanName);
+          const isBetterWeight = !prev || bestSet.weightKg > prev.maxWeight;
+          const isSameWeightBetterReps =
+            prev && bestSet.weightKg === prev.maxWeight && bestSet.reps > prev.maxRepsAtMax;
+
+          // Only count as PR if it strictly beats previous record (and weight > 0 or bodyweight reps > 0)
+          if (isBetterWeight || isSameWeightBetterReps) {
+            if (bestSet.weightKg > 0 || (ex.isBodyweight && bestSet.reps > 0)) {
+              sessionPRs.push({
+                exerciseName: ex.name,
+                weightKg: bestSet.weightKg,
+                reps: bestSet.reps,
+                date: session.date,
+                isNew: true,
+              });
+              runningBest.set(cleanName, {
+                maxWeight: bestSet.weightKg,
+                maxRepsAtMax: bestSet.reps,
+                date: session.date,
+              });
+            }
+          }
+        }
+      }
+
+      session.personalRecords = sessionPRs;
+    }
+
+    return list;
+  },
+
+  // Detailed exercise history for progress charts (strictly completed workouts in chronological order)
+  getExerciseDetailedHistory(exerciseName: string): ExerciseProgressPoint[] {
+    if (!exerciseName) return [];
+    const sessions = this.getWorkoutSessions();
+    const targetNorm = exerciseName.trim().toLowerCase().replace(/ё/g, 'е');
+
+    // Filter strictly for completed sessions that have exercises
+    const completedSessions = sessions.filter(
+      (s) => s.status === 'completed' && Boolean(s.exercises) && s.exercises.length > 0
+    );
+
+    // Sort chronologically ascending: oldest first
+    completedSessions.sort((a, b) => {
+      const dateA = a.date || '';
+      const dateB = b.date || '';
+      if (dateA !== dateB) return dateA.localeCompare(dateB);
+      const timeA = a.startTime || '00:00';
+      const timeB = b.startTime || '00:00';
+      return timeA.localeCompare(timeB);
+    });
+
+    const points: ExerciseProgressPoint[] = [];
+
+    completedSessions.forEach((s) => {
+      if (!s.exercises) return;
+
+      s.exercises.forEach((ex) => {
+        if (!ex.name || ex.skipped || !ex.sets) return;
+        const exNorm = ex.name.trim().toLowerCase().replace(/ё/g, 'е');
+        const isMatch =
+          exNorm === targetNorm ||
+          (targetNorm.length >= 6 && (exNorm.includes(targetNorm) || targetNorm.includes(exNorm)));
+        if (!isMatch) return;
+
+        let maxW = 0;
+        let maxR = 0;
+        let totalR = 0;
+        let vol = 0;
+        const setsDetails: { setNumber: number; weightKg: number; reps: number }[] = [];
+
+        ex.sets.forEach((st, idx) => {
+          if (!st.completed) return;
+          const w = typeof st.weightKg === 'number' ? st.weightKg : Number(st.weightKg) || 0;
+          const r = typeof st.reps === 'number' ? st.reps : Number(st.reps) || 0;
+
+          if (w > maxW) maxW = w;
+          if (r > maxR) maxR = r;
+          totalR += r;
+          vol += w * r;
+
+          setsDetails.push({
+            setNumber: st.setNumber || idx + 1,
+            weightKg: w,
+            reps: r,
+          });
+        });
+
+        // Only include if at least 1 completed set was recorded
+        if (setsDetails.length > 0) {
+          // Format short date (DD.MM)
+          const parts = (s.date || '').split('-');
+          const displayDate = parts.length === 3 ? `${parts[2]}.${parts[1]}` : (s.date || '');
+
+          points.push({
+            date: displayDate,
+            fullDate: s.date || '',
+            maxWeight: maxW,
+            maxReps: maxR,
+            totalReps: totalR,
+            volume: Math.round(vol),
+            setsCount: setsDetails.length,
+            setsDetails,
+            sessionName: s.name || 'Тренировка',
+          });
         }
       });
     });
@@ -464,43 +660,25 @@ export const StorageService = {
     return points;
   },
 
-  // Save completed workout session and check for new PRs
+  // Exercise history for progress charts (strictly completed workouts)
+  getExerciseHistory(exerciseName: string): ExerciseProgressPoint[] {
+    return this.getExerciseDetailedHistory(exerciseName);
+  },
+
+  // Save completed workout session with full chronological PR recalculation (zero duplicates)
   saveWorkoutSession(session: WorkoutSession): void {
     const list = this.getWorkoutSessions();
 
-    // Check for personal records
-    const prs: PersonalRecordInfo[] = [];
-    session.exercises.forEach((ex) => {
-      if (!ex.isBodyweight) {
-        const prevPR = this.getPersonalRecord(ex.name);
-        ex.sets.forEach((set) => {
-          if (set.completed && set.weightKg > 0) {
-            if (!prevPR || set.weightKg > prevPR.maxWeight) {
-              prs.push({
-                exerciseName: ex.name,
-                weightKg: set.weightKg,
-                reps: set.reps,
-                date: session.date,
-                isNew: true,
-              });
-            }
-          }
-        });
-      }
-    });
-
-    const sessionWithPR: WorkoutSession = {
-      ...session,
-      personalRecords: prs,
-    };
-
     const existingIndex = list.findIndex((s) => s.id === session.id);
     if (existingIndex >= 0) {
-      list[existingIndex] = sessionWithPR;
+      list[existingIndex] = session;
     } else {
-      list.unshift(sessionWithPR);
+      list.unshift(session);
     }
-    localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(list));
+
+    // Recalculate personal records across all sessions to preserve chronological integrity and avoid duplicates
+    const updatedList = this.recalculatePersonalRecordsForAllSessions(list);
+    localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
 
     // Update activity map for that day
     this.setDayStatus(session.date, 'completed', session.name, session.totalVolumeKg);
@@ -516,7 +694,8 @@ export const StorageService = {
     const idx = list.findIndex((s) => s.id === session.id);
     if (idx >= 0) {
       list[idx] = session;
-      localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(list));
+      const updatedList = this.recalculatePersonalRecordsForAllSessions(list);
+      localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
       notifyListeners();
     }
   },
@@ -525,10 +704,13 @@ export const StorageService = {
     const list = this.getWorkoutSessions();
     const session = list.find((s) => s.id === sessionId);
     const filtered = list.filter((s) => s.id !== sessionId);
-    localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(filtered));
+
+    // Recalculate personal records for all remaining completed sessions
+    const updatedList = this.recalculatePersonalRecordsForAllSessions(filtered);
+    localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
 
     if (session) {
-      const others = filtered.filter((s) => s.date === session.date);
+      const others = updatedList.filter((s) => s.date === session.date);
       if (others.length === 0) {
         this.setDayStatus(session.date, 'none');
       }
@@ -679,23 +861,47 @@ export const StorageService = {
     const now = new Date();
     const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
+    const resetTime = Number(localStorage.getItem('form_anatomy_reset_time') || '0');
+
+    const isAfterReset = (itemDate: string) => {
+      if (!resetTime) return true;
+      const itemTs = new Date(`${itemDate}T12:00:00`).getTime();
+      return itemTs >= resetTime;
+    };
+
     const filterByPeriod = (itemDate: string) => {
       if (period === 'session') {
         return itemDate === todayIso;
       }
-      const itemTime = new Date(`${itemDate}T12:00:00`).getTime();
-      const daysDiff = (now.getTime() - itemTime) / (1000 * 60 * 60 * 24);
+      if (period === 'all') {
+        return true;
+      }
+      if (itemDate === todayIso) {
+        return true;
+      }
+      const [iy, im, id] = itemDate.split('-').map(Number);
+      const sessionDate = new Date(iy, (im || 1) - 1, id || 1);
+      const currentDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const daysDiff = Math.floor((currentDate.getTime() - sessionDate.getTime()) / (1000 * 60 * 60 * 24));
+
       if (period === '7d') {
         return daysDiff >= 0 && daysDiff <= 7;
       }
       if (period === '30d') {
         return daysDiff >= 0 && daysDiff <= 30;
       }
+      if (period === '90d') {
+        return daysDiff >= 0 && daysDiff <= 90;
+      }
       return true;
     };
 
-    const completedSessions = allSessions.filter((s) => s.status === 'completed' && filterByPeriod(s.date));
-    const completedSportSessions = allSportSessions.filter((sp) => sp.status === 'completed' && filterByPeriod(sp.date));
+    const completedSessions = allSessions.filter(
+      (s) => s.status === 'completed' && filterByPeriod(s.date) && isAfterReset(s.date)
+    );
+    const completedSportSessions = allSportSessions.filter(
+      (sp) => sp.status === 'completed' && filterByPeriod(sp.date) && isAfterReset(sp.date)
+    );
     const stats: Partial<Record<MuscleGroup, MuscleLoadStats>> = {};
 
     (Object.keys(MUSCLE_DEFINITIONS) as MuscleGroup[]).forEach((m) => {
@@ -715,35 +921,36 @@ export const StorageService = {
         s.exercises?.forEach((ex) => {
           const catalogItem = EXERCISE_CATALOG.find((cat) => cat.name.toLowerCase() === ex.name.toLowerCase());
           const secondaryMuscles = ex.secondaryMuscles || catalogItem?.secondaryMuscles;
+          const exTarget = ex.targetMuscle || catalogItem?.primaryMuscle;
           
-          let isPrimary = ex.targetMuscle === m;
+          let isPrimary = exTarget === m;
           let isSecondary = secondaryMuscles?.includes(m) || false;
 
           // Smart muscle hierarchy mapping for detailed muscle heads
           if (!isPrimary && !isSecondary) {
             const exNameLow = ex.name.toLowerCase();
             // Aliases
-            if (m === 'rear_delts' && (ex.targetMuscle === 'rearDelts' || secondaryMuscles?.includes('rearDelts'))) {
-              isPrimary = ex.targetMuscle === 'rearDelts';
+            if (m === 'rear_delts' && (exTarget === 'rearDelts' || secondaryMuscles?.includes('rearDelts'))) {
+              isPrimary = exTarget === 'rearDelts';
               isSecondary = !isPrimary;
-            } else if (m === 'rearDelts' && (ex.targetMuscle === 'rear_delts' || secondaryMuscles?.includes('rear_delts'))) {
-              isPrimary = ex.targetMuscle === 'rear_delts';
+            } else if (m === 'rearDelts' && (exTarget === 'rear_delts' || secondaryMuscles?.includes('rear_delts'))) {
+              isPrimary = exTarget === 'rear_delts';
               isSecondary = !isPrimary;
             }
             // Chest sub-heads
-            else if (m === 'chest_upper' && (ex.targetMuscle === 'chest' || secondaryMuscles?.includes('chest'))) {
+            else if (m === 'chest_upper' && (exTarget === 'chest' || secondaryMuscles?.includes('chest'))) {
               if (exNameLow.includes('наклон') || exNameLow.includes('вверх') || exNameLow.includes('incline')) {
                 isPrimary = true;
               } else {
                 isSecondary = true;
               }
-            } else if (m === 'chest_mid' && (ex.targetMuscle === 'chest' || secondaryMuscles?.includes('chest'))) {
+            } else if (m === 'chest_mid' && (exTarget === 'chest' || secondaryMuscles?.includes('chest'))) {
               if (exNameLow.includes('лежа') || exNameLow.includes('отжимания от пола') || exNameLow.includes('кроссовер')) {
                 isPrimary = true;
               } else {
                 isSecondary = true;
               }
-            } else if (m === 'chest_lower' && (ex.targetMuscle === 'chest' || secondaryMuscles?.includes('chest'))) {
+            } else if (m === 'chest_lower' && (exTarget === 'chest' || secondaryMuscles?.includes('chest'))) {
               if (exNameLow.includes('брусь') || exNameLow.includes('dips') || exNameLow.includes('вниз') || exNameLow.includes('decline')) {
                 isPrimary = true;
               } else {
@@ -751,25 +958,25 @@ export const StorageService = {
               }
             }
             // Shoulders sub-heads
-            else if (m === 'front_delts' && (ex.targetMuscle === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
+            else if (m === 'front_delts' && (exTarget === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
               if (exNameLow.includes('армей') || exNameLow.includes('вверх') || exNameLow.includes('передн') || exNameLow.includes('overhead')) {
                 isPrimary = true;
               } else {
                 isSecondary = true;
               }
-            } else if (m === 'side_delts' && (ex.targetMuscle === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
+            } else if (m === 'side_delts' && (exTarget === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
               if (exNameLow.includes('мах') || exNameLow.includes('разводк') || exNameLow.includes('боков') || exNameLow.includes('lateral')) {
                 isPrimary = true;
               } else {
                 isSecondary = true;
               }
-            } else if (m === 'rear_delts' && (ex.targetMuscle === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
+            } else if (m === 'rear_delts' && (exTarget === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
               if (exNameLow.includes('задн') || exNameLow.includes('face pull')) {
                 isPrimary = true;
               }
             }
             // Arms: Brachialis
-            else if (m === 'brachialis' && (ex.targetMuscle === 'biceps' || secondaryMuscles?.includes('biceps'))) {
+            else if (m === 'brachialis' && (exTarget === 'biceps' || secondaryMuscles?.includes('biceps'))) {
               if (exNameLow.includes('молот') || exNameLow.includes('нейтральн') || exNameLow.includes('обратн') || exNameLow.includes('hammer')) {
                 isPrimary = true;
               } else {
@@ -777,29 +984,29 @@ export const StorageService = {
               }
             }
             // Back: Traps sub-heads & Rhomboids
-            else if (m === 'traps_upper' && (ex.targetMuscle === 'traps' || secondaryMuscles?.includes('traps'))) {
+            else if (m === 'traps_upper' && (exTarget === 'traps' || secondaryMuscles?.includes('traps'))) {
               isPrimary = true;
-            } else if (m === 'traps_mid' && (ex.targetMuscle === 'traps' || secondaryMuscles?.includes('traps') || ex.targetMuscle === 'lats')) {
+            } else if (m === 'traps_mid' && (exTarget === 'traps' || secondaryMuscles?.includes('traps') || exTarget === 'lats')) {
               isSecondary = true;
-            } else if (m === 'traps_lower' && (ex.targetMuscle === 'traps' || ex.targetMuscle === 'lats' || secondaryMuscles?.includes('lats'))) {
+            } else if (m === 'traps_lower' && (exTarget === 'traps' || exTarget === 'lats' || secondaryMuscles?.includes('lats'))) {
               isSecondary = true;
-            } else if (m === 'rhomboids' && (ex.targetMuscle === 'traps' || ex.targetMuscle === 'lats' || secondaryMuscles?.includes('lats'))) {
+            } else if (m === 'rhomboids' && (exTarget === 'traps' || exTarget === 'lats' || secondaryMuscles?.includes('lats'))) {
               isSecondary = true;
             }
             // Quads sub-heads
-            else if (m === 'quads_rectus' && (ex.targetMuscle === 'quads' || secondaryMuscles?.includes('quads'))) {
+            else if (m === 'quads_rectus' && (exTarget === 'quads' || secondaryMuscles?.includes('quads'))) {
               if (exNameLow.includes('разгибан') || exNameLow.includes('выпад')) {
                 isPrimary = true;
               } else {
                 isSecondary = true;
               }
-            } else if (m === 'quads_lateralis' && (ex.targetMuscle === 'quads' || secondaryMuscles?.includes('quads'))) {
+            } else if (m === 'quads_lateralis' && (exTarget === 'quads' || secondaryMuscles?.includes('quads'))) {
               if (exNameLow.includes('присед') || exNameLow.includes('жим ногами')) {
                 isPrimary = true;
               } else {
                 isSecondary = true;
               }
-            } else if (m === 'quads_medialis' && (ex.targetMuscle === 'quads' || secondaryMuscles?.includes('quads'))) {
+            } else if (m === 'quads_medialis' && (exTarget === 'quads' || secondaryMuscles?.includes('quads'))) {
               if (exNameLow.includes('присед') || exNameLow.includes('разгибан') || exNameLow.includes('гакк')) {
                 isPrimary = true;
               } else {
@@ -878,7 +1085,7 @@ export const StorageService = {
       let finalHits = 0;
 
       if (hasRealData) {
-        effectivePercent = Math.min(100, Math.max(10, Math.round((totalEffectiveKg / 8000) * 75)));
+        effectivePercent = Math.max(10, Math.round((totalEffectiveKg / 8000) * 75));
         finalTonnage = totalEffectiveKg;
         finalHits = totalHits;
 
@@ -940,6 +1147,169 @@ export const StorageService = {
     });
 
     return stats as Record<MuscleGroup, MuscleLoadStats>;
+  },
+
+  // COMPREHENSIVE WORKOUT ANALYTICS (Real completed workouts only)
+  getWorkoutAnalytics(musclePeriod: MusclePeriod = '30d') {
+    const allSessions = this.getWorkoutSessions();
+    const completed = allSessions.filter((s) => s.status === 'completed');
+
+    // 1. Overall stats
+    const totalCompletedWorkouts = completed.length;
+    let totalCompletedSets = 0;
+    let totalVolumeKg = 0;
+    let totalDurationMinutes = 0;
+
+    completed.forEach((s) => {
+      totalVolumeKg += s.totalVolumeKg || 0;
+      totalDurationMinutes += s.durationMinutes || 0;
+      if (s.completedSets) {
+        totalCompletedSets += s.completedSets;
+      } else if (s.exercises) {
+        s.exercises.forEach((ex) => {
+          ex.sets?.forEach((st) => {
+            if (st.completed) totalCompletedSets++;
+          });
+        });
+      }
+    });
+
+    const avgDurationMinutes =
+      totalCompletedWorkouts > 0 ? Math.round(totalDurationMinutes / totalCompletedWorkouts) : 0;
+
+    const now = new Date();
+    // Monday as start of current week (ISO week)
+    const currentDayOfWeek = (now.getDay() + 6) % 7;
+    const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - currentDayOfWeek);
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    const startOfPrevWeek = new Date(startOfWeek.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const endOfPrevWeek = new Date(startOfWeek.getTime() - 1);
+
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    startOfMonth.setHours(0, 0, 0, 0);
+
+    const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const endOfPrevMonth = new Date(startOfMonth.getTime() - 1);
+
+    let weekWorkoutsCount = 0;
+    let prevWeekWorkoutsCount = 0;
+    let weekVolumeKg = 0;
+    let prevWeekVolumeKg = 0;
+
+    let monthWorkoutsCount = 0;
+    let prevMonthWorkoutsCount = 0;
+    let monthVolumeKg = 0;
+    let prevMonthVolumeKg = 0;
+
+    completed.forEach((s) => {
+      const [y, m, d] = s.date.split('-').map(Number);
+      const sessionDate = new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
+
+      // Current week vs Previous week
+      if (sessionDate >= startOfWeek) {
+        weekWorkoutsCount++;
+        weekVolumeKg += s.totalVolumeKg || 0;
+      } else if (sessionDate >= startOfPrevWeek && sessionDate <= endOfPrevWeek) {
+        prevWeekWorkoutsCount++;
+        prevWeekVolumeKg += s.totalVolumeKg || 0;
+      }
+
+      // Current month vs Previous month
+      if (sessionDate >= startOfMonth) {
+        monthWorkoutsCount++;
+        monthVolumeKg += s.totalVolumeKg || 0;
+      } else if (sessionDate >= startOfPrevMonth && sessionDate <= endOfPrevMonth) {
+        prevMonthWorkoutsCount++;
+        prevMonthVolumeKg += s.totalVolumeKg || 0;
+      }
+    });
+
+    // 2. Weekly Dynamics (last 8 weeks, chronologically ordered)
+    const weeklyDynamics: {
+      weekIndex: number;
+      label: string;
+      rangeLabel: string;
+      count: number;
+      volumeKg: number;
+      isCurrentWeek: boolean;
+    }[] = [];
+
+    for (let i = 7; i >= 0; i--) {
+      const wStart = new Date(startOfWeek.getTime() - i * 7 * 24 * 60 * 60 * 1000);
+      const wEnd = new Date(wStart.getTime() + 6 * 24 * 60 * 60 * 1000 + 23 * 3600000 + 59 * 60000);
+
+      const weekSessions = completed.filter((s) => {
+        const [y, m, d] = s.date.split('-').map(Number);
+        const sDate = new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
+        return sDate >= wStart && sDate <= wEnd;
+      });
+
+      const count = weekSessions.length;
+      const volumeKg = weekSessions.reduce((acc, s) => acc + (s.totalVolumeKg || 0), 0);
+
+      const startDayStr = `${wStart.getDate()}.${String(wStart.getMonth() + 1).padStart(2, '0')}`;
+      const endDayStr = `${wEnd.getDate()}.${String(wEnd.getMonth() + 1).padStart(2, '0')}`;
+
+      weeklyDynamics.push({
+        weekIndex: 7 - i,
+        label: i === 0 ? 'Тек.' : startDayStr,
+        rangeLabel: `${startDayStr}–${endDayStr}`,
+        count,
+        volumeKg,
+        isCurrentWeek: i === 0,
+      });
+    }
+
+    // 3. Monthly Dynamics (last 6 months, chronologically ordered)
+    const monthlyDynamics: {
+      label: string;
+      yearMonth: string;
+      count: number;
+      volumeKg: number;
+      isCurrentMonth: boolean;
+    }[] = [];
+
+    const monthNames = ['Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн', 'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'];
+    for (let i = 5; i >= 0; i--) {
+      const mDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const year = mDate.getFullYear();
+      const monthIndex = mDate.getMonth();
+      const monthPrefix = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+
+      const monthSessions = completed.filter((s) => s.date.startsWith(monthPrefix));
+      const count = monthSessions.length;
+      const volumeKg = monthSessions.reduce((acc, s) => acc + (s.totalVolumeKg || 0), 0);
+
+      monthlyDynamics.push({
+        label: monthNames[monthIndex],
+        yearMonth: monthPrefix,
+        count,
+        volumeKg,
+        isCurrentMonth: i === 0,
+      });
+    }
+
+    // 4. Muscle Stats for the requested period
+    const rawMuscleStats = this.getMuscleStats(musclePeriod);
+
+    return {
+      totalCompletedWorkouts,
+      totalCompletedSets,
+      totalVolumeKg,
+      avgDurationMinutes,
+      weekWorkoutsCount,
+      prevWeekWorkoutsCount,
+      weekVolumeKg,
+      prevWeekVolumeKg,
+      monthWorkoutsCount,
+      prevMonthWorkoutsCount,
+      monthVolumeKg,
+      prevMonthVolumeKg,
+      weeklyDynamics,
+      monthlyDynamics,
+      rawMuscleStats,
+    };
   },
 
   // Calculate detailed daily activity data for a given date
@@ -1100,6 +1470,42 @@ export const StorageService = {
     return isFav;
   },
 
+  // CUSTOM EXERCISES
+  getCustomExercises(): FullExerciseItem[] {
+    try {
+      const data = localStorage.getItem(STORAGE_KEYS.CUSTOM_EXERCISES);
+      if (data) return JSON.parse(data);
+    } catch {}
+    return [];
+  },
+
+  saveCustomExercise(exercise: FullExerciseItem): void {
+    const list = this.getCustomExercises();
+    const idx = list.findIndex(e => e.id === exercise.id);
+    if (idx >= 0) {
+      list[idx] = { ...exercise, isCustom: true };
+    } else {
+      list.push({ ...exercise, isCustom: true });
+    }
+    localStorage.setItem(STORAGE_KEYS.CUSTOM_EXERCISES, JSON.stringify(list));
+    notifyListeners();
+  },
+
+  deleteCustomExercise(exerciseId: string): void {
+    const list = this.getCustomExercises().filter(e => e.id !== exerciseId);
+    localStorage.setItem(STORAGE_KEYS.CUSTOM_EXERCISES, JSON.stringify(list));
+    // Also remove from favorites if present
+    const favs = this.getFavoriteExerciseIds().filter(id => id !== exerciseId);
+    localStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(favs));
+    notifyListeners();
+  },
+
+  // Returns all exercises: 181 built-in exercises + any user-created custom exercises
+  getAllExercises(): FullExerciseItem[] {
+    const custom = this.getCustomExercises();
+    return [...COMPREHENSIVE_FULL_CATALOG, ...custom];
+  },
+
   resetAllData(): void {
     localStorage.removeItem(STORAGE_KEYS.PROFILE);
     localStorage.removeItem(STORAGE_KEYS.PROGRAMS);
@@ -1111,6 +1517,7 @@ export const StorageService = {
     localStorage.removeItem(STORAGE_KEYS.EQUIPMENT);
     localStorage.removeItem(STORAGE_KEYS.FITNESS_PARAMS);
     localStorage.removeItem(STORAGE_KEYS.FAVORITES);
+    localStorage.removeItem(STORAGE_KEYS.CUSTOM_EXERCISES);
     localStorage.removeItem(STORAGE_KEYS.SETTINGS);
     notifyListeners();
   },

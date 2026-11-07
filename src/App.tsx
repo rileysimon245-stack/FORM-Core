@@ -11,6 +11,7 @@ import {
   WorkoutProgram,
   WorkoutSession,
   ProgramWorkoutDay,
+  ProgramSnapshot,
   MuscleGroup,
   WeeklyScheduleDay,
   SportSession,
@@ -20,6 +21,7 @@ import { tabContentVariants } from './utils/animations';
 import { BottomNavigation, TabType } from './components/BottomNavigation';
 import { OverviewTab } from './components/OverviewTab';
 import { WorkoutsTab } from './components/WorkoutsTab';
+import { AnatomyTab } from './components/AnatomyTab';
 import { ProfileTab } from './components/ProfileTab';
 import { ActiveWorkoutModal } from './components/ActiveWorkoutModal';
 import { ProgramEditorModal } from './components/ProgramEditorModal';
@@ -31,8 +33,47 @@ import { UserParametersModal } from './components/UserParametersModal';
 import { WeeklyScheduleModal } from './components/WeeklyScheduleModal';
 import { SportSessionModal } from './components/SportSessionModal';
 import { ElasticScroll } from './components/ElasticScroll';
+import { RegionProbePage } from './dev/regionProbe/RegionProbePage';
+
+function checkIsProbeMode(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const search = new URLSearchParams(window.location.search);
+    if (search.get('probe') === 'regions' || search.has('probe')) {
+      return true;
+    }
+    const hash = window.location.hash || '';
+    if (hash.includes('probe=regions') || hash.includes('probe') || hash === '#regions') {
+      return true;
+    }
+    if (window.location.href.includes('probe=regions')) {
+      return true;
+    }
+  } catch {
+    // Ignore URL parsing errors
+  }
+  return false;
+}
 
 export default function App() {
+  const [isProbeMode, setIsProbeMode] = useState<boolean>(() => checkIsProbeMode());
+
+  useEffect(() => {
+    const handleUrlChange = () => {
+      setIsProbeMode(checkIsProbeMode());
+    };
+    window.addEventListener('popstate', handleUrlChange);
+    window.addEventListener('hashchange', handleUrlChange);
+    return () => {
+      window.removeEventListener('popstate', handleUrlChange);
+      window.removeEventListener('hashchange', handleUrlChange);
+    };
+  }, []);
+
+  if (isProbeMode) {
+    return <RegionProbePage />;
+  }
+
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [currentYear, setCurrentYear] = useState<number>(2026);
 
@@ -52,6 +93,7 @@ export default function App() {
 
   // Modals state
   const [activeWorkoutSession, setActiveWorkoutSession] = useState<WorkoutSession | null>(null);
+  const [isResumedDraft, setIsResumedDraft] = useState<boolean>(false);
   const [editingProgram, setEditingProgram] = useState<WorkoutProgram | null | 'new'>(null);
   const [showProgramGenerator, setShowProgramGenerator] = useState<boolean>(false);
   const [showEquipmentModal, setShowEquipmentModal] = useState<boolean>(false);
@@ -117,10 +159,32 @@ export default function App() {
   ) => {
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    // Create an immutable snapshot of the program day and planned exercises
+    const programSnapshot: ProgramSnapshot = {
+      programId,
+      programName,
+      dayId: day.id,
+      dayName: day.dayName,
+      targetMuscleGroups: day.targetMuscleGroups ? [...day.targetMuscleGroups] : undefined,
+      plannedExercises: (day.exercises || []).map((ex) => ({
+        name: ex.name,
+        targetMuscle: ex.targetMuscle,
+        sets: ex.sets || 3,
+        reps: ex.reps || 10,
+        targetWeight: ex.isBodyweight ? 0 : (ex.targetWeight || 0),
+        isBodyweight: Boolean(ex.isBodyweight),
+        restSeconds: ex.restSeconds || 90,
+      })),
+    };
+
     const newSession: WorkoutSession = {
       id: `session_${Date.now()}`,
       programId,
       programName,
+      programDayId: day.id,
+      programDayName: day.dayName,
+      programSnapshot,
       name: day.dayName,
       date: todayStr,
       startTime: now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
@@ -144,6 +208,7 @@ export default function App() {
       })),
     };
 
+    setIsResumedDraft(false);
     setActiveWorkoutSession(newSession);
   };
 
@@ -164,6 +229,7 @@ export default function App() {
       exercises: [],
     };
 
+    setIsResumedDraft(false);
     setActiveWorkoutSession(quickSession);
   };
 
@@ -171,6 +237,7 @@ export default function App() {
   const handleSaveActiveWorkout = (completedSession: WorkoutSession) => {
     StorageService.saveWorkoutSession(completedSession);
     StorageService.clearActiveDraft();
+    setIsResumedDraft(false);
     setActiveWorkoutSession(null);
     setActiveDraft(null);
     setRecentlyCompletedDate(completedSession.date);
@@ -179,11 +246,13 @@ export default function App() {
 
   // Resume or discard draft
   const handleResumeDraft = (draft: WorkoutSession) => {
+    setIsResumedDraft(true);
     setActiveWorkoutSession(draft);
   };
 
   const handleDiscardDraft = () => {
     StorageService.clearActiveDraft();
+    setIsResumedDraft(false);
     setActiveDraft(null);
   };
 
@@ -255,38 +324,15 @@ export default function App() {
     reloadData();
   };
 
-  const tabOrder: TabType[] = ['overview', 'workouts', 'profile'];
-  const handleSwipeLeft = useCallback(() => {
-    setActiveTab((prev) => {
-      const idx = tabOrder.indexOf(prev);
-      if (idx < tabOrder.length - 1) {
-        return tabOrder[idx + 1];
-      }
-      return prev;
-    });
-  }, []);
-
-  const handleSwipeRight = useCallback(() => {
-    setActiveTab((prev) => {
-      const idx = tabOrder.indexOf(prev);
-      if (idx > 0) {
-        return tabOrder[idx - 1];
-      }
-      return prev;
-    });
-  }, []);
-
   return (
     <AnimationProvider>
-      <div className="h-[100dvh] w-full bg-[#080D0E] text-[#E8E9E7] flex justify-center selection:bg-[#58C995] selection:text-black overflow-hidden">
+      <div className="h-[100dvh] w-full bg-[#080D0E] text-[#F0F3F2] flex justify-center selection:bg-[#58C995] selection:text-black overflow-hidden">
         {/* Mobile Smartphone Frame Container */}
-        <div className="w-full max-w-md h-full bg-[#080D0E] flex flex-col relative px-4 pt-2 pb-0 border-x border-[#1a2224] shadow-2xl overflow-hidden">
+        <div className="w-full max-w-md h-full bg-[#080D0E] flex flex-col relative px-4 pt-2 pb-0 border-x border-[#1C2628] shadow-2xl overflow-hidden">
           {/* Tab Content Display with authentic iOS-style elastic scrolling */}
           <main className="flex-1 min-h-0 w-full relative flex flex-col overflow-hidden">
             <ElasticScroll
               className="flex-1 min-h-0 w-full"
-              onSwipeLeft={handleSwipeLeft}
-              onSwipeRight={handleSwipeRight}
             >
               <AnimatePresence mode="wait">
                 {activeTab === 'overview' && (
@@ -355,6 +401,19 @@ export default function App() {
                   </motion.div>
                 )}
 
+                {activeTab === 'anatomy' && (
+                  <motion.div
+                    key="anatomy"
+                    variants={tabContentVariants}
+                    initial="initial"
+                    animate="animate"
+                    exit="exit"
+                    className="w-full pb-24 pt-1"
+                  >
+                    <AnatomyTab />
+                  </motion.div>
+                )}
+
                 {activeTab === 'profile' && (
                   <motion.div
                     key="profile"
@@ -389,9 +448,11 @@ export default function App() {
               <ActiveWorkoutModal
                 key="modal-active-workout"
                 session={activeWorkoutSession}
+                isRestoredDraft={isResumedDraft}
                 onSave={handleSaveActiveWorkout}
                 onCancel={() => {
                   if (confirm('Прервать текущую тренировку? Прогресс сохранен в черновик.')) {
+                    setIsResumedDraft(false);
                     setActiveWorkoutSession(null);
                     setActiveDraft(StorageService.getActiveDraft());
                   }

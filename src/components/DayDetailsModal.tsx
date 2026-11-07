@@ -234,7 +234,7 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
                       <div>
                         <h4 className="font-bold text-[#E8E9E7]">{sess.name}</h4>
                         <span className="text-[10px] text-[#92999A]">
-                          {sess.programName || 'Силовая сессия'} • {sess.startTime || '18:00'}
+                          {(sess.programName || sess.programSnapshot?.programName || 'Силовая сессия')} • {sess.startTime || '18:00'}
                         </span>
                       </div>
                     </div>

@@ -40,7 +40,7 @@ export type MuscleGroup =
   | 'quads_lateralis'
   | 'quads_medialis';
 
-export type MusclePeriod = 'session' | '7d' | '30d';
+export type MusclePeriod = 'session' | '7d' | '30d' | '90d' | 'all';
 
 
 
@@ -382,6 +382,7 @@ export type EquipmentCategory =
   | 'kettlebells'
   | 'jump_rope'
   | 'gym_machines'
+  | 'crossover'
   | 'other';
 
 export interface EquipmentItem {
@@ -433,7 +434,7 @@ export interface WorkoutExercise {
   exerciseId: string;
   name: string;
   targetMuscle: MuscleGroup;
-  secondaryMuscles?: MuscleGroup[];
+  secondaryMuscles?: (MuscleGroup | string)[];
   isBodyweight: boolean;
   requiredEquipment?: EquipmentCategory;
   sets: ExerciseSet[];
@@ -444,9 +445,10 @@ export interface WorkoutExercise {
 }
 
 export interface ProgramExerciseTemplate {
+  exerciseId?: string;
   name: string;
   targetMuscle: MuscleGroup;
-  secondaryMuscles?: MuscleGroup[];
+  secondaryMuscles?: (MuscleGroup | string)[];
   isBodyweight: boolean;
   requiredEquipment?: EquipmentCategory;
   sets: number;
@@ -485,10 +487,44 @@ export interface PersonalRecordInfo {
   isNew?: boolean;
 }
 
+export interface ExerciseProgressPoint {
+  date: string;
+  fullDate: string;
+  maxWeight: number;
+  maxReps: number;
+  totalReps: number;
+  volume: number;
+  setsCount: number;
+  setsDetails: { setNumber: number; weightKg: number; reps: number }[];
+  sessionName: string;
+}
+
+export interface ProgramSnapshotExercise {
+  name: string;
+  targetMuscle: MuscleGroup;
+  sets: number;
+  reps: number;
+  targetWeight?: number;
+  isBodyweight?: boolean;
+  restSeconds?: number;
+}
+
+export interface ProgramSnapshot {
+  programId?: string;
+  programName?: string;
+  dayId?: string;
+  dayName?: string;
+  targetMuscleGroups?: MuscleGroup[];
+  plannedExercises?: ProgramSnapshotExercise[];
+}
+
 export interface WorkoutSession {
   id: string;
   programId?: string;
   programName?: string;
+  programDayId?: string;
+  programDayName?: string;
+  programSnapshot?: ProgramSnapshot;
   name: string;
   date: string;
   startTime: string;
@@ -714,10 +750,16 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 export interface ExerciseLibraryItem {
   id: string;
   name: string;
+  nameEn?: string;
+  categoryKey?: string;
+  categoryNameRu?: string;
+  subCategory?: string;
   primaryMuscle: MuscleGroup;
-  secondaryMuscles?: MuscleGroup[];
+  secondaryMuscles?: (MuscleGroup | string)[];
   isBodyweight: boolean;
   requiredEquipment: EquipmentCategory;
+  equipmentNameRu?: string;
+  location?: 'home' | 'gym' | 'both';
   difficulty: 'Начинающий' | 'Средний' | 'Сложный' | 'Опытный' | string;
   type: string;
   homeFriendly: boolean;
@@ -727,6 +769,7 @@ export interface ExerciseLibraryItem {
   defaultRestSeconds: number;
   technique: string;
   alternatives: string[];
+  isCustom?: boolean;
 }
 
 export const EXERCISE_CATALOG: ExerciseLibraryItem[] = [
