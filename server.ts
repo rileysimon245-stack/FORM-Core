@@ -13,7 +13,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
 
 // API endpoint for AI program generation
 app.post('/api/generate-program', async (req, res) => {
@@ -136,8 +137,8 @@ async function start() {
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`FORM app backend & client running at http://0.0.0.0:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`FORM app backend & client running at http://${HOST}:${PORT}`);
   });
 }
 

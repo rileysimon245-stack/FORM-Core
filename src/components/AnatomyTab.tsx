@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { StorageService } from '../services/storage';
+import { StorageService, normalizeMuscleKey, isSessionAfterReset } from '../services/storage';
 import {
   MUSCLE_DEFINITIONS,
   MuscleGroup,
@@ -57,7 +57,12 @@ function getEffectiveMusclePercent(
 ): number {
   if (!muscleKey || muscleKey === 'background') return 0;
 
-  const direct = stats[muscleKey as MuscleGroup]?.percent || 0;
+  const canonKey = muscleKey === 'rearDelts' ? 'rear_delts' : muscleKey;
+  let maxVal = stats[muscleKey as MuscleGroup]?.percent || stats[canonKey as MuscleGroup]?.percent || 0;
+
+  // Sync alias keys bidirectionally (rearDelts <-> rear_delts)
+  if (stats['rear_delts']) maxVal = Math.max(maxVal, stats['rear_delts'].percent);
+  if (stats['rearDelts']) maxVal = Math.max(maxVal, stats['rearDelts'].percent);
 
   const parentMap: Record<string, MuscleGroup> = {
     chest_upper: 'chest',
@@ -87,23 +92,14 @@ function getEffectiveMusclePercent(
     calves: ['tibialis'],
   };
 
-  let maxVal = direct;
-
-  // Sync alias keys (rearDelts <-> rear_delts)
-  if (muscleKey === 'rear_delts' && stats['rearDelts']) {
-    maxVal = Math.max(maxVal, stats['rearDelts'].percent);
-  } else if (muscleKey === 'rearDelts' && stats['rear_delts']) {
-    maxVal = Math.max(maxVal, stats['rear_delts'].percent);
-  }
-
-  // Parent rollup (if parent muscle has load, child inherits it)
-  const parentKey = parentMap[muscleKey];
+  // 1. Parent rollup (Parent -> Child)
+  const parentKey = parentMap[muscleKey] || parentMap[canonKey];
   if (parentKey && stats[parentKey]) {
     maxVal = Math.max(maxVal, stats[parentKey].percent);
   }
 
-  // Children rollup (if child muscle has load, parent inherits max)
-  const children = childrenMap[muscleKey];
+  // 2. Children rollup (Child -> Parent)
+  const children = childrenMap[muscleKey] || childrenMap[canonKey];
   if (children) {
     children.forEach((c) => {
       if (stats[c]) {
@@ -112,7 +108,7 @@ function getEffectiveMusclePercent(
     });
   }
 
-  // Sibling rollup (if sibling muscle has load under same parent)
+  // 3. Sibling rollup (Child -> Sibling)
   if (parentKey && childrenMap[parentKey]) {
     childrenMap[parentKey].forEach((s) => {
       if (stats[s]) {
@@ -155,6 +151,8 @@ function getDebugColorForMuscle(assignedMuscle: string | null | undefined): { ti
 }
 
 // Signature FORM Core green palette:
+// Signature FORM Core green & unbounded hyper-mint palette:
+// When a muscle is heavily strained / loaded, it becomes even mintier without limits!
 function getMuscleColorStyle(percent: number) {
   if (percent <= 0) return null;
   const t = percent / 100;
@@ -166,34 +164,34 @@ function getMuscleColorStyle(percent: number) {
 
   if (t <= 0.25) {
     const k = t / 0.25;
-    tintR = 108 - 22 * k;
-    tintG = 142 + 28 * k;
-    tintB = 112 - 12 * k;
-    alpha = 0.24 + 0.14 * k;
-  } else if (t <= 0.5) {
-    const k = (t - 0.25) / 0.25;
-    tintR = 86 - 32 * k;
-    tintG = 170 + 36 * k;
-    tintB = 100 - 15 * k;
-    alpha = 0.38 + 0.16 * k;
-  } else if (t <= 0.75) {
-    const k = (t - 0.5) / 0.25;
-    tintR = 54 - 20 * k;
-    tintG = 206 + 30 * k;
-    tintB = 85 + 25 * k;
-    alpha = 0.54 + 0.16 * k;
+    tintR = Math.round(95 - 20 * k);   // 95 -> 75
+    tintG = Math.round(155 + 35 * k);  // 155 -> 190
+    tintB = Math.round(120 + 20 * k);  // 120 -> 140
+    alpha = 0.22 + 0.18 * k;          // 0.22 -> 0.40
+  } else if (t <= 0.6) {
+    const k = (t - 0.25) / 0.35;
+    tintR = Math.round(75 - 25 * k);   // 75 -> 50
+    tintG = Math.round(190 + 25 * k);  // 190 -> 215
+    tintB = Math.round(140 + 20 * k);  // 140 -> 160
+    alpha = 0.40 + 0.25 * k;          // 0.40 -> 0.65
   } else if (t <= 1.0) {
-    const k = (t - 0.75) / 0.25;
-    tintR = 34 - 14 * k;
-    tintG = 236 + 19 * k;
-    tintB = 110 - 35 * k;
-    alpha = 0.70 + 0.14 * k;
+    const k = (t - 0.6) / 0.4;
+    tintR = Math.round(50 - 25 * k);   // 50 -> 25
+    tintG = Math.round(215 + 25 * k);  // 215 -> 240
+    tintB = Math.round(160 + 25 * k);  // 160 -> 185
+    alpha = 0.65 + 0.20 * k;          // 0.65 -> 0.85
   } else {
-    const excess = Math.min((t - 1.0) / 2.0, 1);
-    tintR = Math.max(8, 20 - 12 * excess);
-    tintG = 255;
-    tintB = Math.max(50, 75 - 20 * excess);
-    alpha = Math.min(0.92, 0.84 + 0.08 * excess);
+    // When a muscle is heavily strained (>100%), it becomes even mintier without limitations!
+    // As tension rises (t > 1.0, e.g. 120%, 150%, 200%, 300%, 500%+):
+    // Red diminishes smoothly towards 0 (pure mint, no warm cast).
+    // Green hits peak radiance (240..255).
+    // Blue expands into luminous electric neon-mint / cyan (185 -> 238).
+    // Alpha smoothly climbs towards 0.98 without artificial clamp.
+    const excess = t - 1.0;
+    tintR = Math.max(0, Math.round(25 / (1 + excess * 1.5)));
+    tintG = Math.min(255, Math.round(240 + 15 * (1 - 1 / (1 + excess * 2))));
+    tintB = Math.min(238, Math.round(185 + 50 * (1 - 1 / (1 + excess * 0.9))));
+    alpha = Math.min(0.98, 0.85 + 0.13 * (1 - 1 / (1 + excess * 0.9)));
   }
 
   return { tintR, tintG, tintB, alpha };
@@ -308,19 +306,19 @@ function getLoadColors(percent: number) {
   }
   if (percent <= 100) {
     return {
-      textColor: 'text-[#10B981]',
-      barColor: 'bg-[#059669]',
-      badgeBorder: 'border-[#146644]',
-      badgeBg: 'bg-[#0B3825]',
+      textColor: 'text-[#58C995]',
+      barColor: 'bg-[#58C995]',
+      badgeBorder: 'border-[#1E5638]',
+      badgeBg: 'bg-[#0E281B]',
       label: 'Высокая',
     };
   }
   return {
-    textColor: 'text-[#34D399]',
-    barColor: 'bg-gradient-to-r from-[#10B981] to-[#34D399]',
-    badgeBorder: 'border-[#166534]',
-    badgeBg: 'bg-[#0F3A22]',
-    label: 'Сверхнагрузка',
+    textColor: 'text-[#00FFA3]',
+    barColor: 'bg-gradient-to-r from-[#58C995] via-[#2CE89B] to-[#00FFA3]',
+    badgeBorder: 'border-[#00FFA3]/40 shadow-[0_0_12px_rgba(0,255,163,0.25)]',
+    badgeBg: 'bg-[#0A2E1D]',
+    label: percent > 150 ? 'Сверхнагрузка' : 'Максимальная',
   };
 }
 
@@ -596,9 +594,9 @@ const BENCHMARK_ASSIGNMENTS: Record<number, string | null> = {
   5: 'traps_upper',
   6: 'hamstrings', 7: 'hamstrings',
   8: 'forearms',
-  9: 'hamstrings', 10: 'hamstrings',
+  9: 'calves', 10: 'calves',
   11: 'forearms',
-  12: 'rhomboids', 13: 'rhomboids',
+  12: 'lats', 13: 'lats',
   14: 'glutes', 15: 'glutes',
   16: 'biceps', 17: 'biceps',
   18: 'abs',
@@ -612,10 +610,10 @@ const BENCHMARK_ASSIGNMENTS: Record<number, string | null> = {
   31: 'triceps',
   32: 'quads_rectus',
   33: 'abs',
-  34: 'brachialis',
+  34: 'forearms',
   35: 'forearms', 36: 'forearms',
-  37: 'brachialis',
-  38: 'traps_upper',
+  37: 'forearms',
+  38: null,
   39: 'quads_lateralis', 40: 'quads_lateralis',
   41: 'traps_mid', 42: 'traps_mid',
   43: null,
@@ -640,7 +638,7 @@ const BENCHMARK_ASSIGNMENTS: Record<number, string | null> = {
   68: 'hamstrings',
   69: 'forearms',
   70: 'triceps', 71: 'triceps',
-  72: 'traps_upper',
+  72: null,
   73: 'tibialis',
   74: null,
   75: 'biceps',
@@ -653,10 +651,10 @@ const BENCHMARK_ASSIGNMENTS: Record<number, string | null> = {
   83: 'tibialis',
   84: 'lats',
   85: 'triceps',
-  86: null,
+  86: 'traps_lower',
   87: 'lats',
   88: null,
-  89: 'triceps',
+  89: 'forearms',
   90: 'quads_medialis',
   91: 'lowerback', 92: 'lowerback',
   93: 'tibialis',
@@ -670,14 +668,102 @@ const BENCHMARK_ASSIGNMENTS: Record<number, string | null> = {
   102: 'lats',
   103: 'brachialis',
   104: 'forearms',
-  105: 'triceps',
-  106: null,
+  105: 'forearms',
+  106: 'traps_upper',
   107: 'obliques', 108: 'obliques',
-  109: null, 110: null, 111: null,
-  112: 'triceps',
+  109: 'traps_upper', 110: 'traps_upper', 111: 'traps_upper',
+  112: 'forearms',
   113: 'calves', 114: 'calves',
   115: 'obliques', 116: 'obliques', 117: 'obliques',
-  118: 'quads_lateralis'
+  118: 'quads_lateralis',
+};
+
+// Standalone Simple Highlight Layer Component
+interface AnatomyHighlightLayerProps {
+  maskCanvas: HTMLCanvasElement | null;
+  mappingData: MappingData | null;
+  muscleStats: Record<MuscleGroup, MuscleLoadStats>;
+  isTestFill: boolean;
+}
+
+export const AnatomyHighlightLayer: React.FC<AnatomyHighlightLayerProps> = ({
+  maskCanvas,
+  mappingData,
+  muscleStats,
+  isTestFill,
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !maskCanvas || !mappingData) return;
+
+    const width = mappingData.width;
+    const height = mappingData.height;
+
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, width, height);
+
+    const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
+    if (!maskCtx) return;
+    const maskData = maskCtx.getImageData(0, 0, width, height).data;
+
+    // Precompute precise dynamic mint color and alpha for each region without artificial limits
+    const regionColorMap = new Map<number, { r: number; g: number; b: number; a: number }>();
+    mappingData.regions.forEach((reg) => {
+      if (!reg.assignedMuscle || reg.assignedMuscle === 'background') return;
+
+      if (isTestFill) {
+        regionColorMap.set(reg.id, { r: 88, g: 201, b: 149, a: 0.65 });
+      } else {
+        const pct = getEffectiveMusclePercent(reg.assignedMuscle, muscleStats);
+        if (pct > 0) {
+          const style = getMuscleColorStyle(pct);
+          if (style) {
+            regionColorMap.set(reg.id, {
+              r: style.tintR,
+              g: style.tintG,
+              b: style.tintB,
+              a: style.alpha,
+            });
+          }
+        }
+      }
+    });
+
+    if (regionColorMap.size === 0) return;
+
+    const imgData = ctx.createImageData(width, height);
+    const data = imgData.data;
+
+    for (let i = 0; i < width * height; i++) {
+      const pIdx = i * 4;
+      const rId = maskData[pIdx] + (maskData[pIdx + 1] << 8);
+      if (rId === 0) continue;
+
+      const c = regionColorMap.get(rId);
+      if (c && c.a > 0) {
+        data[pIdx] = c.r;
+        data[pIdx + 1] = c.g;
+        data[pIdx + 2] = c.b;
+        data[pIdx + 3] = Math.round(c.a * 255);
+      }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+  }, [maskCanvas, mappingData, muscleStats, isTestFill]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="absolute inset-0 w-full h-full object-contain pointer-events-none select-none z-10"
+    />
+  );
 };
 
 export const AnatomyTab: React.FC = () => {
@@ -701,11 +787,214 @@ export const AnatomyTab: React.FC = () => {
   // Modal for heatmap reset confirmation
   const [showResetModal, setShowResetModal] = useState<boolean>(false);
   const [isDebugOverlayOpen, setIsDebugOverlayOpen] = useState<boolean>(false);
+  const [debugFillMode, setDebugFillMode] = useState<'data' | 'all'>('data');
 
   // Debug region interactive key editor
   const [debugEditingRegion, setDebugEditingRegion] = useState<MappingRegion | null>(null);
   const [debugSelectedKey, setDebugSelectedKey] = useState<string | null>(null);
   const [debugApplyToMirror, setDebugApplyToMirror] = useState<boolean>(true);
+
+  // Test chain state
+  const [testChainLogs, setTestChainLogs] = useState<{
+    steps: { name: string; status: 'OK' | 'ОШИБКА'; details: string }[];
+    rawSavedWorkout: string;
+    statsSession: any;
+    stats7d: any;
+    filterReport: {
+      periodFilter: { countSkipped: number; reason: string };
+      completionFilter: { countSkipped: number; reason: string };
+      keyFilter: { countSkipped: number; reason: string };
+    };
+  } | null>(null);
+
+  const runChainTest = () => {
+    const steps: { name: string; status: 'OK' | 'ОШИБКА'; details: string }[] = [];
+    const now = new Date();
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+    // a) Create test session with 1 exercise "Жим лёжа", targetMuscle "chest", 1 set 26 x 10 completed
+    const testSession: WorkoutSession = {
+      id: 'test_session_diag',
+      date: todayIso,
+      completedAt: Date.now(),
+      name: 'Тестовая тренировка (Тест цепочки)',
+      status: 'completed',
+      isTest: true,
+      exercises: [
+        {
+          name: 'Жим лёжа',
+          targetMuscle: 'chest',
+          secondaryMuscles: ['triceps', 'front_delts'],
+          isBodyweight: false,
+          sets: [
+            {
+              setNumber: 1,
+              weightKg: 26,
+              reps: 10,
+              completed: true,
+              done: true,
+              isDone: true,
+            } as any,
+          ],
+        },
+      ],
+      totalVolumeKg: 260,
+      completedSets: 1,
+      durationMinutes: 1,
+    } as any;
+
+    steps.push({
+      name: 'a) Создание тестовой тренировки',
+      status: 'OK',
+      details: 'Создано упражнение "Жим лёжа", targetMuscle="chest", 1 подход (26 кг × 10 повт, completed=true)',
+    });
+
+    // b) Save via StorageService.saveWorkoutSession
+    try {
+      StorageService.saveWorkoutSession(testSession);
+      steps.push({
+        name: 'b) Сохранение в localStorage через StorageService.saveWorkoutSession()',
+        status: 'OK',
+        details: 'Вызвана функция StorageService.saveWorkoutSession',
+      });
+    } catch (err) {
+      steps.push({
+        name: 'b) Сохранение в localStorage через StorageService.saveWorkoutSession()',
+        status: 'ОШИБКА',
+        details: `Ошибка при сохранении: ${String(err)}`,
+      });
+    }
+
+    // c) Read back from localStorage and display raw JSON
+    let rawSaved = '';
+    try {
+      const storedStr = localStorage.getItem('form_workout_sessions');
+      if (storedStr) {
+        const parsed: WorkoutSession[] = JSON.parse(storedStr);
+        const found = parsed.find((s) => s.id === 'test_session_diag' || (s as any).isTest);
+        if (found) {
+          rawSaved = JSON.stringify(found, null, 2);
+          steps.push({
+            name: 'c) Чтение из localStorage (ключ "form_workout_sessions")',
+            status: 'OK',
+            details: 'Тестовая запись успешно найдена и прочитана из localStorage.',
+          });
+        } else {
+          steps.push({
+            name: 'c) Чтение из localStorage (ключ "form_workout_sessions")',
+            status: 'ОШИБКА',
+            details: 'Тестовая тренировка не найдена в массиве form_workout_sessions',
+          });
+        }
+      } else {
+        steps.push({
+          name: 'c) Чтение из localStorage',
+          status: 'ОШИБКА',
+          details: 'Ключ "form_workout_sessions" отсутствует в localStorage',
+        });
+      }
+    } catch (err) {
+      steps.push({
+        name: 'c) Чтение из localStorage',
+        status: 'ОШИБКА',
+        details: `Ошибка чтения localStorage: ${String(err)}`,
+      });
+    }
+
+    // d) getMuscleStats for 'session' and '7d' for chest
+    const statsSession = StorageService.getMuscleStats('session');
+    const stats7d = StorageService.getMuscleStats('7d');
+    const chestSession = statsSession['chest'] || statsSession['chest_mid'];
+    const chest7d = stats7d['chest'] || stats7d['chest_mid'];
+
+    const stepDOk = Boolean(chestSession && chestSession.percent > 0 && chest7d && chest7d.percent > 0);
+    steps.push({
+      name: 'd) Расчёт getMuscleStats ("Сессия" и "7 дней") для chest',
+      status: stepDOk ? 'OK' : 'ОШИБКА',
+      details: stepDOk
+        ? `Успешно: "Сессия" percent=${chestSession.percent}%, "7d" percent=${chest7d.percent}%`
+        : `Внимание: "Сессия" percent=${chestSession?.percent || 0}%, "7d" percent=${chest7d?.percent || 0}%`,
+    });
+
+    // e) Line-by-line breakdown for each filter inside getMuscleStats
+    const allSessions = StorageService.getWorkoutSessions();
+    let periodSkipped = 0;
+    let completionSkipped = 0;
+    let keySkipped = 0;
+
+    const completedSessionsAll = allSessions.filter((s) => s.status === 'completed');
+    const latestCompletedSession = completedSessionsAll.length > 0
+      ? [...completedSessionsAll].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0]
+      : null;
+    const latestDate = latestCompletedSession ? latestCompletedSession.date : todayIso;
+
+    allSessions.forEach((s) => {
+      // Period filter for 'session'
+      if (s.date !== latestDate && s.status === 'completed') {
+        (s.exercises || []).forEach((ex) => {
+          periodSkipped += (ex.sets || []).length;
+        });
+      }
+
+      // Completion filter
+      if (s.status === 'completed') {
+        (s.exercises || []).forEach((ex) => {
+          (ex.sets || []).forEach((st: any) => {
+            const isDone = st && (st.completed === true || st.completed === 1 || st.completed === 'true' || st.done === true || st.isDone === true);
+            if (!isDone) {
+              completionSkipped++;
+            }
+          });
+        });
+      }
+
+      // Key recognition filter
+      if (s.status === 'completed') {
+        (s.exercises || []).forEach((ex) => {
+          const rawTarget = (ex.targetMuscle as string) || '';
+          const normTarget = normalizeMuscleKey(rawTarget);
+          if (!normTarget && rawTarget !== '') {
+            keySkipped += (ex.sets || []).length;
+          }
+        });
+      }
+    });
+
+    steps.push({
+      name: 'e) Детализация фильтров getMuscleStats (скольких подходов лишился расчёт)',
+      status: 'OK',
+      details: `Фильтр периода: ${periodSkipped} подх. | Фильтр выполнения: ${completionSkipped} подх. | Нераспознанные ключи: ${keySkipped} подх.`,
+    });
+
+    setTestChainLogs({
+      steps,
+      rawSavedWorkout: rawSaved || (testSession ? JSON.stringify(testSession, null, 2) : ''),
+      statsSession: chestSession,
+      stats7d: chest7d,
+      filterReport: {
+        periodFilter: {
+          countSkipped: periodSkipped,
+          reason: `Дата тренировки не совпала с датой последней сессии (${latestDate})`,
+        },
+        completionFilter: {
+          countSkipped: completionSkipped,
+          reason: 'Подход не помечен completed=true / done=true / isDone=true',
+        },
+        keyFilter: {
+          countSkipped: keySkipped,
+          reason: 'Строка целевой мышцы (targetMuscle) не сопоставилась с ключом мышцы',
+        },
+      },
+    });
+
+    reloadStats();
+  };
+
+  const clearChainTest = () => {
+    StorageService.deleteWorkoutSession('test_session_diag');
+    setTestChainLogs(null);
+    reloadStats();
+  };
 
   const [mappingData, setMappingData] = useState<MappingData | null>(null);
   const [masterImage, setMasterImage] = useState<HTMLImageElement | null>(null);
@@ -769,10 +1058,15 @@ export const AnatomyTab: React.FC = () => {
         const resJson = await fetch('/assets/aistudio/form_core_atlas_mapping.json', { cache: 'no-cache' });
         const json: MappingData = await resJson.json();
 
-        // Step 3 benchmark verification check
+        const IGNORED_HEAD_NECK_IDS = [2, 4, 106, 109, 110, 111];
+
+        // Step 3 benchmark verification check (112 valid regions, excluding 6 head/neck regions)
         const discrepancies: string[] = [];
         let matches = 0;
+        let totalChecked = 0;
         json.regions.forEach((r) => {
+          if (IGNORED_HEAD_NECK_IDS.includes(r.id)) return;
+          totalChecked++;
           const expected = BENCHMARK_ASSIGNMENTS[r.id] ?? null;
           const actual = r.assignedMuscle ?? null;
           if (expected === actual) {
@@ -787,8 +1081,8 @@ export const AnatomyTab: React.FC = () => {
         });
 
         if (discrepancies.length === 0) {
-          console.log(`Разметка совпадает с эталоном: ${matches}/118`);
-          setValidationReport(`Разметка совпадает с эталоном: ${matches}/118`);
+          console.log(`Разметка совпадает с эталоном: ${matches}/${totalChecked}`);
+          setValidationReport(`Разметка совпадает с эталоном: ${matches}/${totalChecked}`);
         } else {
           setValidationReport(`Найдено ${discrepancies.length} расхождений:\n` + discrepancies.join('\n'));
         }
@@ -836,94 +1130,12 @@ export const AnatomyTab: React.FC = () => {
     };
   }, []);
 
-  // Render thermal heatmap on offscreen buffer and crop onto visible canvas (always dual view)
+
+
+  // Render pristine master image and debug overlay labels on visible canvas
   useEffect(() => {
-    if (!masterImage || !maskCanvas || !mappingData) return;
-
-    const width = mappingData.width;
-    const height = mappingData.height;
-
-    if (!offscreenCanvasRef.current) {
-      offscreenCanvasRef.current = document.createElement('canvas');
-      offscreenCanvasRef.current.width = width;
-      offscreenCanvasRef.current.height = height;
-    }
-    const fullCanvas = offscreenCanvasRef.current;
-    const fullCtx = fullCanvas.getContext('2d', { willReadFrequently: true });
-    if (!fullCtx) return;
-
-    fullCtx.imageSmoothingEnabled = true;
-    fullCtx.clearRect(0, 0, width, height);
-    fullCtx.drawImage(masterImage, 0, 0, width, height);
-
-    const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
-    if (!maskCtx) return;
-    const maskImgData = maskCtx.getImageData(0, 0, width, height);
-    const maskData = maskImgData.data;
-
-    const imgData = fullCtx.getImageData(0, 0, width, height);
-    const data = imgData.data;
-
-    const regionStyleMap = new Map<number, { tintR: number; tintG: number; tintB: number; alpha: number }>();
-
-    if (isDebugOverlayOpen) {
-      mappingData.regions.forEach((reg) => {
-        const debugStyle = getDebugColorForMuscle(reg.assignedMuscle);
-        regionStyleMap.set(reg.id, debugStyle);
-      });
-    } else {
-      const regionPercentMap = new Map<number, number>();
-      mappingData.regions.forEach((reg) => {
-        if (reg.assignedMuscle) {
-          const p = getEffectiveMusclePercent(reg.assignedMuscle, muscleStats);
-          if (p > 0) {
-            regionPercentMap.set(reg.id, p);
-          }
-        }
-      });
-
-      regionPercentMap.forEach((pct, regId) => {
-        const style = getMuscleColorStyle(pct);
-        if (style) {
-          regionStyleMap.set(regId, style);
-        }
-      });
-    }
-
-    const lumLUT = new Float32Array(256);
-    for (let l = 0; l < 256; l++) {
-      lumLUT[l] = Math.pow(l / 128, 0.92);
-    }
-
-    for (let i = 0; i < width * height; i++) {
-      const pIdx = i * 4;
-      const rId = maskData[pIdx] + (maskData[pIdx + 1] << 8);
-      if (rId === 0) continue;
-
-      const style = regionStyleMap.get(rId);
-      if (!style) continue;
-
-      const r = data[pIdx];
-      const g = data[pIdx + 1];
-      const b = data[pIdx + 2];
-
-      const lum = Math.min(255, (r * 77 + g * 150 + b * 29) >> 8);
-      const contrastFactor = lumLUT[lum];
-
-      const modR = Math.min(255, style.tintR * contrastFactor);
-      const modG = Math.min(255, style.tintG * contrastFactor);
-      const modB = Math.min(255, style.tintB * contrastFactor);
-
-      const invAlpha = 1 - style.alpha;
-      data[pIdx] = (r * invAlpha + modR * style.alpha + 0.5) | 0;
-      data[pIdx + 1] = (g * invAlpha + modG * style.alpha + 0.5) | 0;
-      data[pIdx + 2] = (b * invAlpha + modB * style.alpha + 0.5) | 0;
-    }
-
-    fullCtx.putImageData(imgData, 0, 0);
-
     const visibleCanvas = canvasRef.current;
-    if (!visibleCanvas) return;
+    if (!visibleCanvas || !masterImage) return;
 
     visibleCanvas.width = DUAL_VIEW_CROP.width;
     visibleCanvas.height = DUAL_VIEW_CROP.height;
@@ -933,7 +1145,7 @@ export const AnatomyTab: React.FC = () => {
     visibleCtx.imageSmoothingEnabled = true;
     visibleCtx.clearRect(0, 0, DUAL_VIEW_CROP.width, DUAL_VIEW_CROP.height);
     visibleCtx.drawImage(
-      fullCanvas,
+      masterImage,
       DUAL_VIEW_CROP.cropX,
       DUAL_VIEW_CROP.cropY,
       DUAL_VIEW_CROP.width,
@@ -945,27 +1157,30 @@ export const AnatomyTab: React.FC = () => {
     );
 
     if (isDebugOverlayOpen && visibleCtx && mappingData) {
-      visibleCtx.font = 'bold 11px system-ui, sans-serif';
+      visibleCtx.font = 'bold 9.5px system-ui, sans-serif';
       visibleCtx.textAlign = 'center';
       visibleCtx.textBaseline = 'middle';
 
+      const IGNORED_HEAD_NECK_IDS = [2, 4, 106, 109, 110, 111];
+
       mappingData.regions.forEach((reg) => {
+        if (IGNORED_HEAD_NECK_IDS.includes(reg.id)) return;
         const cx = reg.center?.x ?? 0;
         const cy = reg.center?.y ?? 0;
         if (cx <= 0 || cy <= 0) return;
 
         const isUnassigned = !reg.assignedMuscle || reg.assignedMuscle === 'background';
-        const label = isUnassigned ? `#${reg.id} ⚠️ (НЕТ)` : `#${reg.id}: ${reg.assignedMuscle}`;
+        const label = isUnassigned ? `#${reg.id}:НЕТ` : `#${reg.id}:${reg.assignedMuscle}`;
 
         const textWidth = visibleCtx.measureText(label).width;
         visibleCtx.fillStyle = isUnassigned ? 'rgba(239, 68, 68, 0.95)' : 'rgba(10, 16, 18, 0.85)';
-        visibleCtx.fillRect(cx - textWidth / 2 - 4, cy - 8, textWidth + 8, 16);
+        visibleCtx.fillRect(cx - textWidth / 2 - 3, cy - 7, textWidth + 6, 14);
 
         visibleCtx.fillStyle = isUnassigned ? '#FFFFFF' : '#58C995';
         visibleCtx.fillText(label, cx, cy);
       });
     }
-  }, [masterImage, maskCanvas, mappingData, muscleStats, isDebugOverlayOpen]);
+  }, [masterImage, mappingData, isDebugOverlayOpen]);
 
   // Click on anatomy map canvas: precise pixel lookup on original maskCanvas
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -987,7 +1202,8 @@ export const AnatomyTab: React.FC = () => {
 
     const p = maskCtx.getImageData(clickX, clickY, 1, 1).data;
     const rId = p[0] + (p[1] << 8);
-    if (rId === 0) {
+    const IGNORED_HEAD_NECK_IDS = [2, 4, 106, 109, 110, 111];
+    if (rId === 0 || IGNORED_HEAD_NECK_IDS.includes(rId)) {
       setSelectedMuscle(null);
       setActiveAnchor(null);
       return;
@@ -1041,7 +1257,7 @@ export const AnatomyTab: React.FC = () => {
   };
 
   const handleConfirmReset = () => {
-    localStorage.setItem('form_anatomy_reset_time', Date.now().toString());
+    StorageService.resetMuscleStats();
     reloadStats();
     setShowResetModal(false);
     setSelectedMuscle(null);
@@ -1120,17 +1336,11 @@ export const AnatomyTab: React.FC = () => {
   const symmetryData = useMemo(() => {
     const now = new Date();
     const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const resetTime = Number(localStorage.getItem('form_anatomy_reset_time') || '0');
-
-    const isAfterReset = (itemDate: string) => {
-      if (!resetTime) return true;
-      const itemTs = new Date(`${itemDate}T12:00:00`).getTime();
-      return itemTs >= resetTime;
-    };
+    const resetTime = StorageService.getAnatomyResetTime();
 
     const sessions = allSessions.filter((s) => {
       if (s.status !== 'completed') return false;
-      if (!isAfterReset(s.date)) return false;
+      if (!isSessionAfterReset(s, resetTime)) return false;
       const sessionDate = new Date(s.date);
       if (period === 'session') {
         return s.date === todayIso;
@@ -1307,6 +1517,410 @@ export const AnatomyTab: React.FC = () => {
         </div>
       )}
 
+      {isDebugOverlayOpen && (
+        <div className="w-full bg-[#161E21] border border-[#2B3E42] rounded-2xl p-4 text-xs text-[#E8E9E7] font-mono space-y-3 shadow-2xl">
+          <div className="font-bold text-[#58C995] flex items-center justify-between border-b border-[#253538] pb-2">
+            <span className="flex items-center gap-1.5 text-sm">
+              <Bug className="w-4 h-4 text-[#E04848]" />
+              <span>🐞 Экранная диагностика нагрузки мышц</span>
+            </span>
+            <div className="flex items-center gap-2">
+              {StorageService.getAnatomyResetTime() > 0 && (
+                <span className="bg-[#2A1618] px-2 py-0.5 rounded text-[11px] text-[#EF4444] border border-[#522125] flex items-center gap-1">
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Сброс активен</span>
+                </span>
+              )}
+              <span className="bg-[#1C282B] px-2 py-0.5 rounded text-[11px] text-[#58C995] border border-[#2B3A3D]">
+                Период: {period}
+              </span>
+            </div>
+          </div>
+
+          {/* 0. Сырой JSON последней сохранённой тренировки в localStorage */}
+          <div className="bg-[#101719] p-3 rounded-xl border border-[#202C2F] space-y-1.5">
+            <div className="font-bold text-[#F0F3F2] flex items-center justify-between">
+              <span>0. Сырой JSON последней тренировки в localStorage</span>
+              <span className="text-[10px] text-[#58C995] bg-[#14261F] px-2 py-0.5 rounded border border-[#254F3E]">
+                Ключ: form_workout_sessions
+              </span>
+            </div>
+            <pre className="text-[10px] text-[#A2B5B0] bg-[#0A1012] p-2 rounded-lg border border-[#1A2528] overflow-x-auto max-h-36 whitespace-pre-wrap break-all font-mono">
+              {localStorage.getItem('form_workout_sessions')
+                ? localStorage.getItem('form_workout_sessions')!.slice(0, 1500)
+                : 'Ключ form_workout_sessions пуст (в localStorage нет сохранённых тренировок)'}
+            </pre>
+          </div>
+
+          {/* Блок Тест цепочки */}
+          <div className="bg-[#101719] p-3 rounded-xl border border-[#202C2F] space-y-2.5">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="font-bold text-[#F0F3F2] flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[#58C995]" />
+                <span>Блок «Тест цепочки»</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={runChainTest}
+                  className="px-3 py-1.5 bg-[#58C995] hover:bg-[#4EBF8A] text-[#0A1012] font-bold text-xs rounded-xl shadow-md cursor-pointer transition-all active:scale-[0.97]"
+                >
+                  🧪 Тест цепочки
+                </button>
+                {testChainLogs && (
+                  <button
+                    type="button"
+                    onClick={clearChainTest}
+                    className="px-3 py-1.5 bg-[#2A1719] hover:bg-[#3D1E22] text-[#FF6B6B] border border-[#5E272C] font-bold text-xs rounded-xl cursor-pointer transition-all active:scale-[0.97]"
+                  >
+                    🗑️ Очистить тест
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {testChainLogs ? (
+              <div className="space-y-2 text-[11px] pt-1">
+                {/* Шаги теста */}
+                <div className="space-y-1">
+                  <div className="font-semibold text-[#858E90]">Результаты шагов:</div>
+                  {testChainLogs.steps.map((st, idx) => (
+                    <div key={idx} className="bg-[#141E21] p-2 rounded-lg border border-[#223337] space-y-0.5">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-white">{st.name}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          st.status === 'OK' ? 'bg-[#142B21] text-[#58C995] border border-[#25573E]' : 'bg-[#2B1417] text-[#FF6B6B] border border-[#57252A]'
+                        }`}>
+                          {st.status}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-[#A2B5B0]">{st.details}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* c) Сырой JSON сохранённой тестовой тренировки */}
+                <div className="space-y-1">
+                  <div className="font-semibold text-[#858E90]">c) Сырой JSON прочитанной тестовой тренировки:</div>
+                  <pre className="text-[10px] text-[#58C995] bg-[#0A1012] p-2 rounded-lg border border-[#1A2528] overflow-x-auto max-h-32 whitespace-pre-wrap break-all font-mono">
+                    {testChainLogs.rawSavedWorkout.slice(0, 1500)}
+                  </pre>
+                </div>
+
+                {/* d) Вывод getMuscleStats для chest */}
+                <div className="space-y-1">
+                  <div className="font-semibold text-[#858E90]">d) Значения getMuscleStats для chest:</div>
+                  <div className="grid grid-cols-2 gap-2 text-[10px]">
+                    <div className="bg-[#141E21] p-2 rounded-lg border border-[#223337] space-y-0.5">
+                      <div className="font-bold text-[#58C995]">Период «Сессия»:</div>
+                      <div>percent: <strong>{testChainLogs.statsSession?.percent ?? 0}%</strong></div>
+                      <div>hasData: <strong>{String(testChainLogs.statsSession?.hasData ?? false)}</strong></div>
+                      <div>setsCount: <strong>{testChainLogs.statsSession?.setsCount ?? 0}</strong></div>
+                      <div>weeklyTonnageKg: <strong>{testChainLogs.statsSession?.weeklyTonnageKg ?? 0} кг</strong></div>
+                    </div>
+                    <div className="bg-[#141E21] p-2 rounded-lg border border-[#223337] space-y-0.5">
+                      <div className="font-bold text-[#58C995]">Период «7 дней»:</div>
+                      <div>percent: <strong>{testChainLogs.stats7d?.percent ?? 0}%</strong></div>
+                      <div>hasData: <strong>{String(testChainLogs.stats7d?.hasData ?? false)}</strong></div>
+                      <div>setsCount: <strong>{testChainLogs.stats7d?.setsCount ?? 0}</strong></div>
+                      <div>weeklyTonnageKg: <strong>{testChainLogs.stats7d?.weeklyTonnageKg ?? 0} кг</strong></div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* e) Строки каждого фильтра getMuscleStats */}
+                <div className="space-y-1 pt-1 border-t border-[#223337]">
+                  <div className="font-semibold text-[#858E90]">e) Отчёт по фильтрам (сколько подходов пропущено и почему):</div>
+                  <div className="space-y-1 text-[10px]">
+                    <div className="bg-[#182326] p-2 rounded-lg border border-[#2B3A3D] text-[#C2C8C9]">
+                      • <strong>Фильтр периода:</strong> пропустил <span className="text-[#FF6B6B] font-bold">{testChainLogs.filterReport.periodFilter.countSkipped}</span> подходов — {testChainLogs.filterReport.periodFilter.reason}
+                    </div>
+                    <div className="bg-[#182326] p-2 rounded-lg border border-[#2B3A3D] text-[#C2C8C9]">
+                      • <strong>Фильтр выполнения:</strong> пропустил <span className="text-[#FF6B6B] font-bold">{testChainLogs.filterReport.completionFilter.countSkipped}</span> подходов — {testChainLogs.filterReport.completionFilter.reason}
+                    </div>
+                    <div className="bg-[#182326] p-2 rounded-lg border border-[#2B3A3D] text-[#C2C8C9]">
+                      • <strong>Фильтр ключа мышцы:</strong> пропустил <span className="text-[#FF6B6B] font-bold">{testChainLogs.filterReport.keyFilter.countSkipped}</span> подходов — {testChainLogs.filterReport.keyFilter.reason}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-[11px] text-[#858E90] italic">
+                Нажмите кнопку «Тест цепочки» для пошаговой проверки сохранения, чтения и расчёта нагрузки.
+              </div>
+            )}
+          </div>
+
+          {/* 1 & 2. Последняя тренировка и детали упражнений */}
+          {(() => {
+            const completedSessions = StorageService.getWorkoutSessions().filter((s) => s.status === 'completed');
+            const last = completedSessions.length > 0
+              ? [...completedSessions].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0]
+              : null;
+
+            if (!last) {
+              return (
+                <div className="p-2.5 bg-[#251416] border border-[#592328] rounded-xl text-[#FF6B6B]">
+                  1. Последняя тренировка: НЕТ ЗАВЕРШЁННЫХ ТРЕНИРОВОК
+                </div>
+              );
+            }
+
+            const totalCompletedSets = (last.exercises || []).reduce((acc, ex) => {
+              const sets = ex.sets || [];
+              const done = sets.filter(
+                (st: any) =>
+                  st &&
+                  (st.completed === true ||
+                    st.completed === 1 ||
+                    st.completed === 'true' ||
+                    st.done === true ||
+                    st.isDone === true)
+              ).length;
+              return acc + done;
+            }, 0);
+
+            return (
+              <div className="space-y-2 bg-[#101719] p-3 rounded-xl border border-[#202C2F]">
+                <div className="font-bold text-[#F0F3F2]">
+                  1. Последняя тренировка ({last.date}): <span className="text-[#58C995]">{last.name}</span>
+                </div>
+                <div className="text-[11px] text-[#9AA3A5]">
+                  Упражнений: {last.exercises?.length || 0} | Выполненных подходов: <strong className="text-[#58C995]">{totalCompletedSets}</strong> | Тоннаж: {last.totalVolumeKg || 0} кг
+                </div>
+
+                <div className="pt-1 space-y-1 text-[11px]">
+                  <div className="font-semibold text-[#858E90]">2. Упражнения в тренировке:</div>
+                  {(last.exercises || []).map((ex, i) => {
+                    const cat = EXERCISE_CATALOG.find((c) => c.name.toLowerCase() === ex.name.toLowerCase());
+                    const primary = ex.targetMuscle || cat?.primaryMuscle || 'не указан';
+                    const secondaries = ex.secondaryMuscles || cat?.secondaryMuscles || [];
+                    const doneSets = (ex.sets || []).filter(
+                      (st: any) =>
+                        st &&
+                        (st.completed === true ||
+                          st.completed === 1 ||
+                          st.completed === 'true' ||
+                          st.done === true ||
+                          st.isDone === true)
+                    ).length;
+                    return (
+                      <div key={i} className="pl-2 border-l-2 border-[#2A5943] text-[#C2C8C9]">
+                        • <strong className="text-white">{ex.name}</strong> ({doneSets} подходов) —
+                        Основа: <span className="text-[#58C995] font-bold">{primary}</span> | Вспомог: <span className="text-[#858E90]">{secondaries.length > 0 ? secondaries.join(', ') : 'нет'}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 3. getMuscleStats с percent > 0 */}
+          <div className="bg-[#101719] p-3 rounded-xl border border-[#202C2F] space-y-1">
+            <div className="font-bold text-[#F0F3F2]">
+              3. Результат getMuscleStats ({period}) с percent &gt; 0:
+            </div>
+            <div className="text-[11px] text-[#58C995] break-words">
+              {(() => {
+                const active = Object.entries(muscleStats)
+                  .filter(([_, st]) => st && st.percent > 0)
+                  .map(([k, st]) => `${k}: ${st.percent}%`);
+                return active.length > 0 ? active.join(' | ') : 'Нет мышц с нагрузкой > 0%';
+              })()}
+            </div>
+          </div>
+
+          {/* 4. Точечная диагностика выбранной мышцы */}
+          {(() => {
+            const diagTargetKey = selectedMuscle || 'chest_mid';
+            const diag = StorageService.getDetailedMuscleDiagnostics(diagTargetKey, period);
+
+            return (
+              <div className="bg-[#101719] p-3 rounded-xl border border-[#202C2F] space-y-2">
+                <div className="flex items-center justify-between font-bold text-[#F0F3F2] border-b border-[#253538] pb-1.5">
+                  <span className="text-white">
+                    4. Точечная диагностика: <span className="text-[#58C995] font-bold">{diag.muscleNameRu} ({diag.muscleKey})</span>
+                  </span>
+                  <span className="text-[11px] text-[#858E90]">
+                    Нажмите на мышцу на теле для выбора
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                  <div className="bg-[#182326] p-2 rounded-lg border border-[#253538]">
+                    <div className="text-[#858E90]">Найдено подходов:</div>
+                    <div className="text-white font-bold text-sm">{diag.totalSetsFound}</div>
+                  </div>
+                  <div className="bg-[#182326] p-2 rounded-lg border border-[#253538]">
+                    <div className="text-[#858E90]">Выполнено подходов:</div>
+                    <div className="text-[#58C995] font-bold text-sm">{diag.completedSetsFound}</div>
+                  </div>
+                  <div className="bg-[#182326] p-2 rounded-lg border border-[#253538]">
+                    <div className="text-[#858E90]">Итоговый тоннаж:</div>
+                    <div className="text-white font-bold text-sm">{diag.totalEffectiveTonnage} кг</div>
+                  </div>
+                  <div className="bg-[#182326] p-2 rounded-lg border border-[#253538]">
+                    <div className="text-[#858E90]">Расчитанный Percent:</div>
+                    <div className={diag.effectivePercent > 0 ? 'text-[#58C995] font-bold text-sm' : 'text-[#EF4444] font-bold text-sm'}>
+                      {diag.effectivePercent}%
+                    </div>
+                  </div>
+                </div>
+
+                {diag.zeroReason && (
+                  <div className="p-2 bg-[#2E181B] border border-[#6B2A30] rounded-lg text-[#FF8585] text-[11px] font-semibold flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-[#EF4444]" />
+                    <span>Причина нуля (0%): <strong>{diag.zeroReason}</strong></span>
+                  </div>
+                )}
+
+                <div className="text-[10px] text-[#858E90]">
+                  Проверка флага выполнения: <code className="text-[#58C995]">{diag.completedFieldUsed}</code>
+                </div>
+
+                {diag.setsDetails.length > 0 ? (
+                  <div className="max-h-48 overflow-y-auto space-y-1 pt-1">
+                    <div className="font-semibold text-[#858E90] text-[11px]">Найденные подходы:</div>
+                    <div className="grid grid-cols-[80px_1fr_70px_70px_70px_70px] gap-1 pb-1 border-b border-[#253538] font-bold text-[#858E90] text-[10px]">
+                      <span>Дата</span>
+                      <span>Упражнение</span>
+                      <span>Вес (кг)</span>
+                      <span>Повторы</span>
+                      <span>Флаг</span>
+                      <span>Тоннаж</span>
+                    </div>
+                    {diag.setsDetails.map((st, i) => (
+                      <div key={i} className="grid grid-cols-[80px_1fr_70px_70px_70px_70px] gap-1 items-center py-0.5 border-b border-[#1A2427]/60 text-[10px]">
+                        <span className="text-[#858E90]">{st.sessionDate}</span>
+                        <span className="text-white truncate" title={`${st.exerciseName} | ${st.normPrimary}`}>
+                          {st.exerciseName}
+                        </span>
+                        <span className="text-[#C2C8C9]">
+                          {st.usedWeightKg} {st.isBodyweightFallback ? '(свой)' : ''}
+                        </span>
+                        <span className="text-[#C2C8C9]">{st.reps}</span>
+                        <span className={st.isCompleted ? 'text-[#58C995] font-bold' : 'text-[#EF4444]'}>
+                          {st.isCompleted ? '✓ done' : '✗ skip'}
+                        </span>
+                        <span className="text-[#58C995] font-bold">+{st.tonnageContribution}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-[#858E90] italic py-1">
+                    Подходов этой мышцы в сохранённых тренировках за период не найдено.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* 1. Кнопки теста слоя заливки */}
+          <div className="flex items-center gap-2 bg-[#101719] p-3 rounded-xl border border-[#202C2F] flex-wrap">
+            <span className="font-bold text-[#F0F3F2]">Тест слоя заливки:</span>
+            <button
+              type="button"
+              onClick={() => setDebugFillMode('all')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                debugFillMode === 'all'
+                  ? 'bg-[#58C995] text-[#0A1012] shadow-md shadow-[#58C995]/30'
+                  : 'bg-[#1C2628] text-[#9AA3A5] hover:text-white border border-[#2A3638]'
+              }`}
+            >
+              Залить всё (тест 0.6)
+            </button>
+            <button
+              type="button"
+              onClick={() => setDebugFillMode('data')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                debugFillMode === 'data'
+                  ? 'bg-[#58C995] text-[#0A1012] shadow-md shadow-[#58C995]/30'
+                  : 'bg-[#1C2628] text-[#9AA3A5] hover:text-white border border-[#2A3638]'
+              }`}
+            >
+              Залить по данным
+            </button>
+          </div>
+
+          {/* 4 & 5. Таблица регионов карты и расхождений */}
+          {mappingData && (() => {
+            const definedKeys = new Set(Object.keys(MUSCLE_DEFINITIONS));
+            const missingKeys = new Set<string>();
+
+            const regionRows = mappingData.regions.map((r) => {
+              const regKey = r.assignedMuscle;
+              if (regKey && regKey !== 'background' && !definedKeys.has(regKey as any)) {
+                missingKeys.add(regKey);
+              }
+              const pct = getEffectiveMusclePercent(regKey, muscleStats);
+
+              let styleObj = debugFillMode === 'all' && regKey && regKey !== 'background'
+                ? { tintR: 88, tintG: 201, tintB: 149, alpha: 0.6 }
+                : getMuscleColorStyle(pct);
+
+              const fillStr = styleObj ? `rgb(${styleObj.tintR}, ${styleObj.tintG}, ${styleObj.tintB})` : 'none';
+              const alphaStr = styleObj ? styleObj.alpha.toFixed(2) : '0.00';
+              const rgbaStr = styleObj ? `rgba(${styleObj.tintR}, ${styleObj.tintG}, ${styleObj.tintB}, ${alphaStr})` : 'нейтральный';
+              const appliedStyle = styleObj
+                ? `fill: ${fillStr}; opacity: ${alphaStr}; display: block; mix-blend-mode: normal`
+                : 'fill: none; opacity: 0; display: block; mix-blend-mode: normal';
+
+              return {
+                id: r.id,
+                regKey: regKey || 'null',
+                pct,
+                rgbaStr,
+                appliedStyle,
+              };
+            });
+
+            const totalLoaded = regionRows.filter((r) => r.pct > 0).length;
+
+            return (
+              <div className="bg-[#101719] p-3 rounded-xl border border-[#202C2F] space-y-2">
+                <div className="font-bold text-[#F0F3F2] flex items-center justify-between">
+                  <span>2. Таблица регионов и применённых стилей ({mappingData.regions.length} регионов):</span>
+                  <span className="text-[#858E90] text-[11px]">
+                    Режим: <strong className="text-[#58C995]">{debugFillMode === 'all' ? 'ЗАЛИТЬ ВСЁ' : 'ПО ДАННЫМ'}</strong> | С нагрузкой: <strong className="text-[#58C995]">{totalLoaded}</strong>
+                  </span>
+                </div>
+
+                {/* Расхождения ключей */}
+                <div className="text-[11px] border-b border-[#202C2F] pb-2">
+                  <span className="font-bold text-[#E8E9E7]">Расхождения ключей регионов (нет в MUSCLE_DEFINITIONS): </span>
+                  {missingKeys.size > 0 ? (
+                    <span className="text-[#E04848] font-bold">{[...missingKeys].join(', ')}</span>
+                  ) : (
+                    <span className="text-[#58C995] font-bold">0 расхождений (все ключи валидны)</span>
+                  )}
+                </div>
+
+                {/* Таблица регионов */}
+                <div className="max-h-56 overflow-y-auto space-y-1 text-[11px] pr-1 font-mono">
+                  <div className="grid grid-cols-[36px_110px_60px_130px_1fr] gap-1 pb-1 border-b border-[#253538] font-bold text-[#858E90] sticky top-0 bg-[#101719]">
+                    <span>ID</span>
+                    <span>Ключ</span>
+                    <span>Percent</span>
+                    <span>Цвет / Alpha</span>
+                    <span>Применённый стиль</span>
+                  </div>
+                  {regionRows.map((r) => (
+                    <div key={r.id} className="grid grid-cols-[36px_110px_60px_130px_1fr] gap-1 items-center py-0.5 border-b border-[#1A2427]/60">
+                      <span className="text-[#858E90]">#{r.id}</span>
+                      <span className="text-white truncate" title={r.regKey}>{r.regKey}</span>
+                      <span className={r.pct > 0 ? 'text-[#58C995] font-bold' : 'text-[#6E7B7D]'}>{r.pct}%</span>
+                      <span className="text-[#C2C8C9] truncate" title={r.rgbaStr}>{r.rgbaStr}</span>
+                      <span className="text-[#858E90] truncate text-[10px]" title={r.appliedStyle}>{r.appliedStyle}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {/* Anatomical Models Container: Maximally large, dual models side-by-side */}
       <div className="w-full bg-[#121A1C] rounded-2xl p-0 shadow-2xl flex flex-col items-center justify-center overflow-hidden border border-[#1C2628]">
         <div className="w-full max-w-[720px] md:max-w-[780px] mx-auto relative rounded-xl overflow-hidden bg-[#0A1012] flex items-center justify-center shadow-xl">
@@ -1323,6 +1937,14 @@ export const AnatomyTab: React.FC = () => {
             onClick={handleCanvasClick}
             className="w-full h-auto max-h-[52vh] min-h-[280px] block object-contain cursor-pointer select-none"
             title="Нажмите на любую мышцу на теле (спереди или сзади), чтобы открыть её карточку"
+          />
+
+          {/* Standalone Simple Highlight Layer */}
+          <AnatomyHighlightLayer
+            maskCanvas={maskCanvas}
+            mappingData={mappingData}
+            muscleStats={muscleStats}
+            isTestFill={debugFillMode === 'all'}
           />
 
           {/* SVG Overlay: Precise indicator on selected muscle */}
@@ -1959,12 +2581,12 @@ export const AnatomyTab: React.FC = () => {
       {/* Confirmation Modal for Resetting Heatmap */}
       <AnimatePresence>
         {showResetModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3.5 sm:p-5 bg-black/85 backdrop-blur-md select-none font-sans">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-[#101719] border border-[#252D2F] rounded-2xl p-5 max-w-sm w-full space-y-4 shadow-2xl text-left"
+              className="bg-[#11171A] border border-[#253338] rounded-[28px] p-6 max-w-sm w-full space-y-4 shadow-2xl text-left"
             >
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-[#2A1215] border border-[#521B20] flex items-center justify-center text-[#EF4444] shrink-0">

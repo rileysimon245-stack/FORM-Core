@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { X, Check, AlertCircle, Dumbbell, Play, Plus, Swords, Trophy, Zap, Bike, Waves, Activity, Moon, Trash2, Edit3, Calendar } from 'lucide-react';
 import { WorkoutSession, SportSession, SPORT_DEFINITIONS, SportType, WeeklyScheduleDay } from '../types/workout';
-import { motion } from 'motion/react';
-import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
+import { Modal } from './common/Modal';
 
 interface DayDetailsModalProps {
   dateStr: string;
@@ -83,40 +82,41 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
   const totalSessionsCount = strengthSessions.length + sportSessions.length;
 
   return (
-    <motion.div
-      variants={modalBackdropVariants}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-      className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-end sm:items-center justify-center p-3"
-    >
-      <motion.div
-        variants={modalDialogVariants}
-        initial="initial"
-        animate="animate"
-        exit="exit"
-        className="w-full max-w-md bg-[#101719] border border-[#252D2F] rounded-2xl p-4 space-y-4 max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between pb-2 border-b border-[#252D2F] shrink-0">
-          <div>
-            <span className="text-[11px] text-[#92999A] block font-medium capitalize">
-              {formatDateRu(dateStr)}
-            </span>
-            <h3 className="text-base font-bold text-[#E8E9E7]">
-              Активность дня ({totalSessionsCount} сессий)
-            </h3>
-          </div>
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title={`Активность дня (${totalSessionsCount})`}
+      subtitle={formatDateRu(dateStr)}
+      maxWidth="max-w-md"
+      footer={
+        <div className="grid grid-cols-2 gap-2 w-full">
           <button
-            onClick={onClose}
-            className="text-[#92999A] hover:text-[#E8E9E7] p-1 transition-colors"
+            type="button"
+            onClick={() => {
+              onAddSportSession(dateStr);
+              onClose();
+            }}
+            className="py-2.5 px-3 bg-[#182327] hover:bg-[#202E34] border border-[#253338] text-[#E8E9E7] text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            <Plus className="w-3.5 h-3.5 text-[#58C995]" />
+            <span>+ Бокс / Спорт</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              onStartWorkoutForDay();
+              onClose();
+            }}
+            className="py-2.5 px-3 bg-[#58C995] hover:bg-[#68d7a4] text-black text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-colors shadow-md cursor-pointer"
+          >
+            <Play className="w-3.5 h-3.5 fill-black" />
+            <span>Силовая сессия</span>
           </button>
         </div>
-
-        {/* Scrollable Activities List */}
-        <div className="flex-1 overflow-y-auto space-y-3 pr-1 text-xs">
+      }
+    >
+      <div className="space-y-3">
           {/* Current Day Status Badge */}
           <div className="p-2.5 bg-[#080D0E] rounded-xl border border-[#202729] flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -371,34 +371,6 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
             </div>
           )}
         </div>
-
-        {/* Footer Actions */}
-        <div className="space-y-2 pt-2 border-t border-[#252D2F] shrink-0">
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => {
-                onAddSportSession(dateStr);
-                onClose();
-              }}
-              className="py-2.5 px-3 bg-[#101719] hover:bg-[#1a2326] border border-[#252D2F] text-[#E8E9E7] text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5 text-[#58C995]" />
-              <span>+ Бокс / Спорт</span>
-            </button>
-
-            <button
-              onClick={() => {
-                onStartWorkoutForDay();
-                onClose();
-              }}
-              className="py-2.5 px-3 bg-[#58C995] hover:bg-[#68d7a4] text-black text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-colors shadow-md cursor-pointer"
-            >
-              <Play className="w-3.5 h-3.5 fill-black" />
-              <span>Силовая сессия</span>
-            </button>
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
+    </Modal>
   );
 };

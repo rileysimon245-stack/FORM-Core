@@ -155,7 +155,7 @@
         "y": 867
       },
       "projection": "back",
-      "assignedMuscle": "hamstrings",
+      "assignedMuscle": "calves",
       "status": "assigned"
     },
     {
@@ -172,7 +172,7 @@
         "y": 868
       },
       "projection": "back",
-      "assignedMuscle": "hamstrings",
+      "assignedMuscle": "calves",
       "status": "assigned"
     },
     {
@@ -206,7 +206,7 @@
         "y": 352
       },
       "projection": "back",
-      "assignedMuscle": "rhomboids",
+      "assignedMuscle": "lats",
       "status": "assigned"
     },
     {
@@ -223,7 +223,7 @@
         "y": 352
       },
       "projection": "back",
-      "assignedMuscle": "rhomboids",
+      "assignedMuscle": "lats",
       "status": "assigned"
     },
     {
@@ -580,7 +580,7 @@
         "y": 433
       },
       "projection": "front",
-      "assignedMuscle": "brachialis",
+      "assignedMuscle": "forearms",
       "status": "assigned"
     },
     {
@@ -631,7 +631,7 @@
         "y": 434
       },
       "projection": "front",
-      "assignedMuscle": "brachialis",
+      "assignedMuscle": "forearms",
       "status": "assigned"
     },
     {
@@ -648,8 +648,8 @@
         "y": 186
       },
       "projection": "front",
-      "assignedMuscle": "traps_upper",
-      "status": "assigned"
+      "assignedMuscle": null,
+      "status": "unassigned"
     },
     {
       "id": 39,
@@ -1226,8 +1226,8 @@
         "y": 199
       },
       "projection": "front",
-      "assignedMuscle": "traps_upper",
-      "status": "assigned"
+      "assignedMuscle": null,
+      "status": "unassigned"
     },
     {
       "id": 73,
@@ -1464,8 +1464,8 @@
         "y": 365
       },
       "projection": "back",
-      "assignedMuscle": null,
-      "status": "unassigned"
+      "assignedMuscle": "traps_lower",
+      "status": "assigned"
     },
     {
       "id": 87,
@@ -1515,7 +1515,7 @@
         "y": 423
       },
       "projection": "back",
-      "assignedMuscle": "triceps",
+      "assignedMuscle": "forearms",
       "status": "assigned"
     },
     {
@@ -1787,7 +1787,7 @@
         "y": 436
       },
       "projection": "back",
-      "assignedMuscle": "triceps",
+      "assignedMuscle": "forearms",
       "status": "assigned"
     },
     {
@@ -1906,7 +1906,7 @@
         "y": 447
       },
       "projection": "back",
-      "assignedMuscle": "triceps",
+      "assignedMuscle": "forearms",
       "status": "assigned"
     },
     {

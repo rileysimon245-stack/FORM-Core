@@ -22,6 +22,8 @@ import {
   EXERCISE_CATALOG,
   MusclePeriod,
   ExerciseProgressPoint,
+  ProgramStatus,
+  ProgramCompletionStats,
 } from '../types/workout';
 import { FullExerciseItem } from '../data/exerciseTypes';
 import { COMPREHENSIVE_FULL_CATALOG } from '../data/fullExerciseCatalog';
@@ -41,7 +43,59 @@ const STORAGE_KEYS = {
   FAVORITES: 'form_favorite_exercises_v1',
   CUSTOM_EXERCISES: 'form_custom_exercises_v1',
   SETTINGS: 'form_app_settings_v1',
+  ANATOMY_RESET_TIME: 'form_anatomy_reset_time',
+  ACTIVE_DIRECTION: 'form_active_direction_v1',
 };
+
+export function isSessionAfterReset(
+  session: {
+    date: string;
+    startTime?: string;
+    endTime?: string;
+    id?: string;
+    completedAt?: number;
+  },
+  resetTime: number
+): boolean {
+  if (!resetTime || resetTime <= 0) return true;
+
+  // 1. Explicit completion timestamp
+  if (typeof session.completedAt === 'number' && session.completedAt > 0) {
+    return session.completedAt >= resetTime;
+  }
+
+  // 2. ID with embedded timestamp (e.g. session_1731000000000 or sport_1731000000000)
+  if (session.id) {
+    const match = session.id.match(/(?:session|sport)[_-](\d{12,14})/);
+    if (match) {
+      const idTs = Number(match[1]);
+      if (!isNaN(idTs) && idTs > 0) {
+        return idTs >= resetTime;
+      }
+    }
+  }
+
+  // 3. Time string (endTime or startTime)
+  const timeStr = session.endTime || session.startTime;
+  if (timeStr && /^\d{1,2}:\d{2}/.test(timeStr)) {
+    const [hh, mm] = timeStr.split(':').map((v) => v.padStart(2, '0'));
+    const sessionTs = new Date(`${session.date}T${hh}:${mm}:00`).getTime();
+    if (!isNaN(sessionTs)) {
+      return sessionTs >= resetTime;
+    }
+  }
+
+  // 4. Date comparison with reset day
+  const resetDate = new Date(resetTime);
+  const resetIso = `${resetDate.getFullYear()}-${String(resetDate.getMonth() + 1).padStart(2, '0')}-${String(resetDate.getDate()).padStart(2, '0')}`;
+
+  if (session.date > resetIso) return true;
+  if (session.date < resetIso) return false;
+
+  // If session is on the reset day but has no post-reset timestamp,
+  // it was created prior to the user hitting reset.
+  return false;
+}
 
 // Clean empty profile with zero fake parameters
 const DEFAULT_PROFILE: UserProfile = {
@@ -54,96 +108,34 @@ const DEFAULT_PROFILE: UserProfile = {
   streakDays: 0,
 };
 
-// Catalog presets available for user to optionally import (not pre-injected into personal list)
-export const CATALOG_PRESET_PROGRAMS: WorkoutProgram[] = [
-  {
-    id: 'prog_push_pull_legs',
-    name: 'Push / Pull / Legs (Сила + Масса)',
-    description: 'Классический трехдневный сплит с акцентом на базовые многосуставные движения и гипертрофию.',
-    goal: 'Набор массы',
-    daysPerWeek: 3,
-    isCustom: false,
-    createdAt: '2026-01-10',
-    workouts: [
-      {
-        id: 'w_push',
-        dayName: 'День 1: Push (Грудь, Плечи, Трицепс)',
-        targetMuscleGroups: ['chest', 'shoulders', 'triceps'],
-        estimatedDuration: 55,
-        exercises: [
-          { name: 'Жим штанги лежа', targetMuscle: 'chest', isBodyweight: false, sets: 4, reps: 8, targetWeight: 85, restSeconds: 90, notes: 'Лопатки сведены, пауза в нижней точке' },
-          { name: 'Жим гантелей на наклонной', targetMuscle: 'chest', isBodyweight: false, sets: 3, reps: 10, targetWeight: 28, restSeconds: 75 },
-          { name: 'Армейский жим стоя', targetMuscle: 'shoulders', isBodyweight: false, sets: 3, reps: 8, targetWeight: 50, restSeconds: 90 },
-          { name: 'Махи гантелями в стороны', targetMuscle: 'shoulders', isBodyweight: false, sets: 4, reps: 12, targetWeight: 14, restSeconds: 60 },
-          { name: 'Французский жим со штангой', targetMuscle: 'triceps', isBodyweight: false, sets: 3, reps: 10, targetWeight: 35, restSeconds: 60 },
-          { name: 'Отжимания на брусьях', targetMuscle: 'triceps', isBodyweight: true, sets: 3, reps: 12, targetWeight: 0, restSeconds: 75 },
-        ],
-      },
-      {
-        id: 'w_pull',
-        dayName: 'День 2: Pull (Спина, Задние дельты, Бицепс)',
-        targetMuscleGroups: ['lats', 'rearDelts', 'biceps', 'traps'],
-        estimatedDuration: 60,
-        exercises: [
-          { name: 'Подтягивания широким хватом', targetMuscle: 'lats', isBodyweight: true, sets: 4, reps: 10, targetWeight: 0, restSeconds: 90 },
-          { name: 'Тяга штанги в наклоне', targetMuscle: 'lats', isBodyweight: false, sets: 4, reps: 8, targetWeight: 75, restSeconds: 90 },
-          { name: 'Тяга верхнего блока к груди', targetMuscle: 'lats', isBodyweight: false, sets: 3, reps: 10, targetWeight: 65, restSeconds: 75 },
-          { name: 'Махи на заднюю дельту в наклоне', targetMuscle: 'rearDelts', isBodyweight: false, sets: 4, reps: 12, targetWeight: 12, restSeconds: 60 },
-          { name: 'Подъем штанги на бицепс', targetMuscle: 'biceps', isBodyweight: false, sets: 3, reps: 10, targetWeight: 35, restSeconds: 60 },
-          { name: 'Молотковые сгибания', targetMuscle: 'biceps', isBodyweight: false, sets: 3, reps: 12, targetWeight: 16, restSeconds: 60 },
-        ],
-      },
-      {
-        id: 'w_legs',
-        dayName: 'День 3: Legs & Core (Ноги, Пресс)',
-        targetMuscleGroups: ['quads', 'hamstrings', 'glutes', 'calves', 'abs'],
-        estimatedDuration: 65,
-        exercises: [
-          { name: 'Приседания со штангой', targetMuscle: 'quads', isBodyweight: false, sets: 4, reps: 8, targetWeight: 110, restSeconds: 120, notes: 'Глубокий сед ниже параллели' },
-          { name: 'Румынская тяга с гантелями', targetMuscle: 'hamstrings', isBodyweight: false, sets: 3, reps: 10, targetWeight: 32, restSeconds: 90 },
-          { name: 'Жим ногами в тренажере', targetMuscle: 'quads', isBodyweight: false, sets: 3, reps: 12, targetWeight: 180, restSeconds: 90 },
-          { name: 'Подъемы на носки стоя (икры)', targetMuscle: 'calves', isBodyweight: false, sets: 4, reps: 15, targetWeight: 60, restSeconds: 60 },
-          { name: 'Подъем ног в висе', targetMuscle: 'abs', isBodyweight: true, sets: 3, reps: 15, targetWeight: 0, restSeconds: 60 },
-        ],
-      },
-    ],
-  },
-  {
-    id: 'prog_upper_lower',
-    name: 'Upper / Lower (Верх и Низ 4 дня)',
-    description: 'Оптимальный сплит для высокой частоты проработки каждой мышечной группы дважды в неделю.',
-    goal: 'Сила и баланс',
-    daysPerWeek: 4,
-    isCustom: false,
-    createdAt: '2026-02-01',
-    workouts: [
-      {
-        id: 'w_upper_a',
-        dayName: 'Верх А: Силовой акцент (Грудь и Спина)',
-        targetMuscleGroups: ['chest', 'lats', 'shoulders', 'biceps', 'triceps'],
-        estimatedDuration: 55,
-        exercises: [
-          { name: 'Жим штанги лежа', targetMuscle: 'chest', isBodyweight: false, sets: 4, reps: 6, targetWeight: 90, restSeconds: 120 },
-          { name: 'Тяга штанги в наклоне', targetMuscle: 'lats', isBodyweight: false, sets: 4, reps: 6, targetWeight: 80, restSeconds: 120 },
-          { name: 'Армейский жим стоя', targetMuscle: 'shoulders', isBodyweight: false, sets: 3, reps: 8, targetWeight: 50, restSeconds: 90 },
-          { name: 'Подтягивания широким хватом', targetMuscle: 'lats', isBodyweight: true, sets: 3, reps: 8, targetWeight: 0, restSeconds: 90 },
-        ],
-      },
-      {
-        id: 'w_lower_a',
-        dayName: 'Низ А: Квадрицепсы и Икры',
-        targetMuscleGroups: ['quads', 'calves', 'abs'],
-        estimatedDuration: 50,
-        exercises: [
-          { name: 'Приседания со штангой', targetMuscle: 'quads', isBodyweight: false, sets: 4, reps: 8, targetWeight: 100, restSeconds: 120 },
-          { name: 'Выпады с гантелями', targetMuscle: 'quads', isBodyweight: false, sets: 3, reps: 10, targetWeight: 20, restSeconds: 75 },
-          { name: 'Подъемы на носки стоя (икры)', targetMuscle: 'calves', isBodyweight: false, sets: 4, reps: 15, targetWeight: 50, restSeconds: 60 },
-          { name: 'Скручивания на скамье', targetMuscle: 'abs', isBodyweight: true, sets: 3, reps: 20, targetWeight: 0, restSeconds: 45 },
-        ],
-      },
-    ],
-  },
-];
+// No built-in or preset programs: all programs must be created by the user
+export function isBuiltinPresetProgram(program: WorkoutProgram | any): boolean {
+  if (!program) return false;
+  // If explicitly marked as not custom
+  if (program.isCustom === false) return true;
+  // Known built-in preset IDs
+  const knownPresetIds = new Set([
+    'prog_push_pull_legs',
+    'prog_upper_lower',
+    'prog_classic_split',
+    'prog_full_body',
+    'prog_full_body_starter',
+    'prog_bro_split',
+    'prog_hypertrophy',
+  ]);
+  if (knownPresetIds.has(program.id)) return true;
+  // Known preset program names
+  const knownPresetNames = new Set([
+    'Push / Pull / Legs (Сила + Масса)',
+    'Upper / Lower (Верх и Низ 4 дня)',
+    'Классический сплит',
+    'Full Body для начинающих',
+  ]);
+  if (knownPresetNames.has(program.name)) return true;
+  return false;
+}
+
+export const CATALOG_PRESET_PROGRAMS: WorkoutProgram[] = [];
 
 // Clean initial activity map (starts empty)
 function generateInitial2026Activity(): Record<string, 'completed' | 'skipped' | 'none'> {
@@ -176,6 +168,129 @@ function notifyListeners() {
       console.error('Listener callback error:', e);
     }
   });
+}
+
+export function normalizeMuscleKey(rawKey?: string | null): MuscleGroup | null {
+  if (!rawKey) return null;
+  const clean = rawKey.trim().toLowerCase();
+
+  const map: Record<string, MuscleGroup> = {
+    // Chest
+    'грудные (общие)': 'chest',
+    'грудные': 'chest',
+    'грудь': 'chest',
+    'верх груди': 'chest_upper',
+    'верхняя часть груди': 'chest_upper',
+    'средняя часть груди': 'chest_mid',
+    'низ груди': 'chest_lower',
+    'нижняя часть груди': 'chest_lower',
+    'chest': 'chest',
+    'chest_upper': 'chest_upper',
+    'chest_mid': 'chest_mid',
+    'chest_lower': 'chest_lower',
+
+    // Shoulders
+    'плечи': 'shoulders',
+    'дельты': 'shoulders',
+    'передняя дельта': 'front_delts',
+    'передние дельты': 'front_delts',
+    'боковая дельта': 'side_delts',
+    'средняя дельта': 'side_delts',
+    'боковые дельты': 'side_delts',
+    'средние дельты': 'side_delts',
+    'задняя дельта': 'rear_delts',
+    'задние дельты': 'rear_delts',
+    'shoulders': 'shoulders',
+    'front_delts': 'front_delts',
+    'side_delts': 'side_delts',
+    'rear_delts': 'rear_delts',
+    'reardelts': 'rear_delts',
+
+    // Arms
+    'бицепс': 'biceps',
+    'двуглавая мышца плеча': 'biceps',
+    'плечевая мышца': 'brachialis',
+    'брахиалис': 'brachialis',
+    'трицепс': 'triceps',
+    'трехглавая мышца плеча': 'triceps',
+    'предплечья': 'forearms',
+    'предплечье': 'forearms',
+    'biceps': 'biceps',
+    'brachialis': 'brachialis',
+    'triceps': 'triceps',
+    'forearms': 'forearms',
+
+    // Back & Traps
+    'широчайшие': 'lats',
+    'широчайшие мышцы спины': 'lats',
+    'спина': 'lats',
+    'трапеция': 'traps',
+    'трапеции': 'traps',
+    'верх трапеции': 'traps_upper',
+    'середина трапеции': 'traps_mid',
+    'низ трапеции': 'traps_lower',
+    'ромбовидные': 'rhomboids',
+    'поясница': 'lowerback',
+    'разгибатели спины': 'lowerback',
+    'lats': 'lats',
+    'traps': 'traps',
+    'traps_upper': 'traps_upper',
+    'traps_mid': 'traps_mid',
+    'traps_lower': 'traps_lower',
+    'rhomboids': 'rhomboids',
+    'lowerback': 'lowerback',
+
+    // Core
+    'пресс': 'abs',
+    'прямая мышца живота': 'abs',
+    'косые': 'obliques',
+    'косые мышцы живота': 'obliques',
+    'abs': 'abs',
+    'obliques': 'obliques',
+
+    // Legs
+    'ягодицы': 'glutes',
+    'ягодичные': 'glutes',
+    'квадрицепс': 'quads',
+    'квадрицепсы': 'quads',
+    'четырехглавая мышца бедра': 'quads',
+    'прямая мышца бедра': 'quads_rectus',
+    'латеральная мышца бедра': 'quads_lateralis',
+    'медиальная мышца бедра': 'quads_medialis',
+    'бицепс бедра': 'hamstrings',
+    'задняя поверхность бедра': 'hamstrings',
+    'икры': 'calves',
+    'икроножная': 'calves',
+    'передняя большеберцовая': 'tibialis',
+    'glutes': 'glutes',
+    'quads': 'quads',
+    'quads_rectus': 'quads_rectus',
+    'quads_lateralis': 'quads_lateralis',
+    'quads_medialis': 'quads_medialis',
+    'hamstrings': 'hamstrings',
+    'calves': 'calves',
+    'tibialis': 'tibialis',
+  };
+
+  if (map[clean]) return map[clean];
+  if (clean in MUSCLE_DEFINITIONS) return clean as MuscleGroup;
+  return null;
+}
+
+export function getBodyweightEquivalentKg(userWeightKg?: number): number {
+  return userWeightKg && userWeightKg > 0 ? Math.round(userWeightKg * 0.5) : 25;
+}
+
+export function isSetCompleted(st: any): boolean {
+  if (!st) return false;
+  return (
+    st.completed === true ||
+    st.completed === 1 ||
+    st.completed === 'true' ||
+    st.done === true ||
+    st.isDone === true ||
+    Boolean(st.completed)
+  );
 }
 
 export const StorageService = {
@@ -240,7 +355,27 @@ export const StorageService = {
       this.checkAndPurgeLegacyData();
       const data = localStorage.getItem(STORAGE_KEYS.PROGRAMS);
       if (data !== null) {
-        return JSON.parse(data);
+        const parsed = JSON.parse(data);
+        if (Array.isArray(parsed)) {
+          // Strictly keep only user-created programs, removing any built-in/preset/demo programs
+          const userOnly = parsed.filter((p) => p && !isBuiltinPresetProgram(p));
+          let changed = userOnly.length !== parsed.length;
+          const normalized = userOnly.map((p) => {
+            if (!p.status || !p.iterationCount) {
+              changed = true;
+              return {
+                ...p,
+                status: (p.status as ProgramStatus) || 'active',
+                iterationCount: p.iterationCount || 1,
+              };
+            }
+            return p;
+          });
+          if (changed) {
+            localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(normalized));
+          }
+          return normalized;
+        }
       }
       return [];
     } catch {
@@ -250,14 +385,78 @@ export const StorageService = {
 
   saveProgram(program: WorkoutProgram): void {
     const list = this.getPrograms();
-    const index = list.findIndex((p) => p.id === program.id);
+    // Ensure saved program is marked as user custom program and has status
+    const sanitized: WorkoutProgram = {
+      ...program,
+      isCustom: true,
+      status: program.status || 'active',
+      iterationCount: program.iterationCount || 1,
+    };
+    const index = list.findIndex((p) => p.id === sanitized.id);
     if (index >= 0) {
-      list[index] = program;
+      list[index] = sanitized;
     } else {
-      list.unshift(program);
+      list.unshift(sanitized);
     }
     localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
+  },
+
+  getActiveDirection(): 'programs' | 'mobility' | null {
+    try {
+      const val = localStorage.getItem(STORAGE_KEYS.ACTIVE_DIRECTION);
+      if (val === 'programs' || val === 'mobility') return val;
+      return null;
+    } catch {
+      return null;
+    }
+  },
+
+  setActiveDirection(dir: 'programs' | 'mobility' | null): void {
+    try {
+      if (dir) {
+        localStorage.setItem(STORAGE_KEYS.ACTIVE_DIRECTION, dir);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.ACTIVE_DIRECTION);
+      }
+      notifyListeners();
+    } catch {}
+  },
+
+  addProgramFromCatalog(catalogProgram: WorkoutProgram): WorkoutProgram {
+    const list = this.getPrograms();
+    // Check if user already has this exact program
+    const existing = list.find(
+      (p) => p.name.trim().toLowerCase() === catalogProgram.name.trim().toLowerCase()
+    );
+    if (existing) {
+      // If already added, ensure it is active
+      const activated = this.updateProgramStatus(existing.id, 'active');
+      if (catalogProgram.direction) {
+        this.setActiveDirection(catalogProgram.direction);
+      }
+      return activated || existing;
+    }
+
+    const cloned: WorkoutProgram = {
+      ...catalogProgram,
+      id: `prog_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      isCustom: true,
+      status: 'active',
+      iterationCount: 1,
+      createdAt: new Date().toISOString().split('T')[0],
+      workouts: catalogProgram.workouts.map((w, wIdx) => ({
+        ...w,
+        id: `w_${Date.now()}_${wIdx}`,
+        exercises: w.exercises.map((e) => ({ ...e })),
+      })),
+    };
+
+    this.saveProgram(cloned);
+    if (cloned.direction) {
+      this.setActiveDirection(cloned.direction);
+    }
+    return cloned;
   },
 
   duplicateProgram(programId: string): WorkoutProgram | null {
@@ -270,6 +469,8 @@ export const StorageService = {
       id: `prog_copy_${Date.now()}`,
       name: `${target.name} (Копия)`,
       isCustom: true,
+      status: 'active',
+      iterationCount: 1,
       createdAt: new Date().toISOString().split('T')[0],
       workouts: target.workouts.map((w, idx) => ({
         ...w,
@@ -285,6 +486,129 @@ export const StorageService = {
 
   deleteProgram(programId: string): void {
     const list = this.getPrograms().filter((p) => p.id !== programId);
+    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    notifyListeners();
+  },
+
+  calculateProgramStats(programId: string): ProgramCompletionStats {
+    const list = this.getPrograms();
+    const target = list.find((p) => p.id === programId);
+    const sessions = this.getWorkoutSessions().filter(
+      (s) =>
+        s.status === 'completed' &&
+        (s.programId === programId || (target && s.programName === target.name))
+    );
+
+    const totalWorkoutsCompleted = sessions.length;
+    const totalVolumeKg = sessions.reduce((sum, s) => sum + (s.totalVolumeKg || 0), 0);
+    const totalDurationMinutes = sessions.reduce((sum, s) => sum + (s.durationMinutes || 0), 0);
+
+    let personalRecordsCount = 0;
+    sessions.forEach((s) => {
+      if (Array.isArray(s.personalRecords)) {
+        personalRecordsCount += s.personalRecords.length;
+      }
+    });
+
+    return {
+      completedAt: new Date().toISOString(),
+      totalWorkoutsCompleted,
+      totalVolumeKg,
+      totalDurationMinutes,
+      personalRecordsCount,
+    };
+  },
+
+  updateProgramStatus(
+    programId: string,
+    status: ProgramStatus,
+    extra?: Partial<WorkoutProgram>
+  ): WorkoutProgram | null {
+    const list = this.getPrograms();
+    const index = list.findIndex((p) => p.id === programId);
+    if (index === -1) return null;
+
+    const current = list[index];
+    const nowIso = new Date().toISOString();
+    const updated: WorkoutProgram = {
+      ...current,
+      ...extra,
+      status,
+      ...(status === 'paused' ? { pausedAt: nowIso } : {}),
+      ...(status === 'completed' ? { completedAt: nowIso } : {}),
+      ...(status === 'archived' ? { archivedAt: nowIso } : {}),
+    };
+    list[index] = updated;
+    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    notifyListeners();
+    return updated;
+  },
+
+  completeProgram(programId: string, summaryNote?: string): WorkoutProgram | null {
+    const stats = this.calculateProgramStats(programId);
+    if (summaryNote) {
+      stats.summaryNote = summaryNote;
+    }
+    return this.updateProgramStatus(programId, 'completed', {
+      completionStats: stats,
+    });
+  },
+
+  pauseProgram(programId: string): WorkoutProgram | null {
+    return this.updateProgramStatus(programId, 'paused');
+  },
+
+  resumeProgram(programId: string): WorkoutProgram | null {
+    return this.updateProgramStatus(programId, 'active');
+  },
+
+  archiveProgram(programId: string): WorkoutProgram | null {
+    return this.updateProgramStatus(programId, 'archived');
+  },
+
+  repeatProgram(programId: string): WorkoutProgram | null {
+    const list = this.getPrograms();
+    const target = list.find((p) => p.id === programId);
+    if (!target) return null;
+    const nextIteration = (target.iterationCount || 1) + 1;
+    return this.updateProgramStatus(programId, 'active', {
+      iterationCount: nextIteration,
+      pausedAt: undefined,
+      archivedAt: undefined,
+    });
+  },
+
+  updateProgramGoal(programId: string, newGoal: string): WorkoutProgram | null {
+    const list = this.getPrograms();
+    const index = list.findIndex((p) => p.id === programId);
+    if (index === -1) return null;
+    list[index] = {
+      ...list[index],
+      goal: newGoal,
+    };
+    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    notifyListeners();
+    return list[index];
+  },
+
+  replaceProgram(oldProgramId: string, newProgramId: string, archiveOld: boolean = true): void {
+    const list = this.getPrograms();
+    const oldIdx = list.findIndex((p) => p.id === oldProgramId);
+    const newIdx = list.findIndex((p) => p.id === newProgramId);
+    const nowIso = new Date().toISOString();
+    if (oldIdx !== -1 && archiveOld) {
+      list[oldIdx] = {
+        ...list[oldIdx],
+        status: 'archived',
+        archivedAt: nowIso,
+      };
+    }
+    if (newIdx !== -1) {
+      list[newIdx] = {
+        ...list[newIdx],
+        status: 'active',
+      };
+    }
     localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
   },
@@ -324,6 +648,7 @@ export const StorageService = {
 
     const prepared: SportSession = {
       ...session,
+      completedAt: session.completedAt || (session.status === 'completed' ? Date.now() : undefined),
       loadScore,
     };
 
@@ -667,6 +992,9 @@ export const StorageService = {
 
   // Save completed workout session with full chronological PR recalculation (zero duplicates)
   saveWorkoutSession(session: WorkoutSession): void {
+    if (!session.completedAt && session.status === 'completed') {
+      session.completedAt = Date.now();
+    }
     const list = this.getWorkoutSessions();
 
     const existingIndex = list.findIndex((s) => s.id === session.id);
@@ -853,25 +1181,194 @@ export const StorageService = {
     };
   },
 
+  getDetailedMuscleDiagnostics(muscleKey: MuscleGroup, period: MusclePeriod = '7d') {
+    const allSessions = this.getWorkoutSessions();
+    const userProfile = this.getProfile();
+    const fallbackWeight = getBodyweightEquivalentKg(userProfile.weightKg);
+
+    const now = new Date();
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const resetTime = this.getAnatomyResetTime();
+
+    const completedSessionsAll = allSessions.filter((s) => s.status === 'completed');
+    const latestCompletedSession = completedSessionsAll.length > 0
+      ? [...completedSessionsAll].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0]
+      : null;
+    const latestSessionDate = latestCompletedSession ? latestCompletedSession.date : todayIso;
+
+    const filterByPeriod = (itemDate: string) => {
+      if (period === 'session') {
+        return itemDate === latestSessionDate;
+      }
+      if (period === 'all') return true;
+      if (itemDate === todayIso) return true;
+      const [iy, im, id] = itemDate.split('-').map(Number);
+      const sessionDate = new Date(iy, (im || 1) - 1, id || 1);
+      const currentDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const daysDiff = Math.floor((currentDate.getTime() - sessionDate.getTime()) / (1000 * 60 * 60 * 24));
+
+      if (period === '7d') return daysDiff >= 0 && daysDiff <= 7;
+      if (period === '30d') return daysDiff >= 0 && daysDiff <= 30;
+      if (period === '90d') return daysDiff >= 0 && daysDiff <= 90;
+      return true;
+    };
+
+    const periodSessions = allSessions.filter(
+      (s) => s.status === 'completed' && filterByPeriod(s.date) && isSessionAfterReset(s, resetTime)
+    );
+
+    let totalSetsFound = 0;
+    let completedSetsFound = 0;
+    const setsDetails: Array<{
+      sessionDate: string;
+      sessionName: string;
+      exerciseName: string;
+      rawPrimary: string;
+      normPrimary: string;
+      rawSecondaries: string[];
+      normSecondaries: string[];
+      isPrimary: boolean;
+      isSecondary: boolean;
+      setNumber: number;
+      weightKg: number;
+      usedWeightKg: number;
+      isBodyweightFallback: boolean;
+      reps: number;
+      isCompleted: boolean;
+      tonnageContribution: number;
+    }> = [];
+
+    periodSessions.forEach((s) => {
+      s.exercises?.forEach((ex) => {
+        const catalogItem = EXERCISE_CATALOG.find((cat) => cat.name.toLowerCase() === ex.name.toLowerCase());
+        const rawPrimary = ex.targetMuscle || catalogItem?.primaryMuscle || '';
+        const normPrimary = normalizeMuscleKey(rawPrimary);
+        const normPrimaryDisplay = normPrimary || (rawPrimary ? `не распознан: ${rawPrimary}` : 'не указан');
+
+        const rawSecondaries = ex.secondaryMuscles || catalogItem?.secondaryMuscles || [];
+        const normSecondaries = rawSecondaries.map((k) => normalizeMuscleKey(k) || `не распознан: ${k}`);
+
+        const m = muscleKey;
+        let isPrimary = normPrimary === m;
+        let isSecondary = normSecondaries.includes(m);
+
+        if (!isPrimary && !isSecondary) {
+          const exNameLow = ex.name.toLowerCase();
+          if (m === 'chest' && (normPrimary?.startsWith('chest') || normSecondaries.some((sec) => sec.startsWith('chest')))) {
+            isPrimary = true;
+          } else if (normPrimary === 'chest' || normSecondaries.includes('chest')) {
+            if (m === 'chest_upper' && (exNameLow.includes('наклон') || exNameLow.includes('вверх') || exNameLow.includes('incline'))) isPrimary = true;
+            else if (m === 'chest_mid' && (exNameLow.includes('лежа') || exNameLow.includes('отжимания') || exNameLow.includes('кроссовер'))) isPrimary = true;
+            else if (m === 'chest_lower' && (exNameLow.includes('брусь') || exNameLow.includes('dips') || exNameLow.includes('вниз'))) isPrimary = true;
+            else if (m.startsWith('chest_')) isSecondary = true;
+          } else if (normPrimary === 'shoulders' || normSecondaries.includes('shoulders')) {
+            if (m === 'front_delts' && (exNameLow.includes('армей') || exNameLow.includes('вверх') || exNameLow.includes('передн'))) isPrimary = true;
+            else if (m === 'side_delts' && (exNameLow.includes('мах') || exNameLow.includes('боков'))) isPrimary = true;
+            else if (m === 'rear_delts' && (exNameLow.includes('задн') || exNameLow.includes('face pull'))) isPrimary = true;
+            else if (m.endsWith('_delts')) isSecondary = true;
+          } else if (m === 'shoulders' && (normPrimary?.endsWith('_delts') || normSecondaries.some((sec) => sec.endsWith('_delts')))) {
+            isPrimary = true;
+          } else if (normPrimary === 'quads' || normSecondaries.includes('quads')) {
+            if (m.startsWith('quads_')) isSecondary = true;
+          } else if (m === 'quads' && (normPrimary?.startsWith('quads_') || normSecondaries.some((sec) => sec.startsWith('quads_')))) {
+            isPrimary = true;
+          }
+        }
+
+        if (isPrimary || isSecondary) {
+          const multiplier = isPrimary ? 1.0 : 0.45;
+          (ex.sets || []).forEach((st: any, idx) => {
+            totalSetsFound++;
+            const completed = isSetCompleted(st);
+            if (completed) {
+              completedSetsFound++;
+            }
+            const rawW = Number(st.weightKg);
+            const isBodyweightFallback = !(rawW > 0);
+            const usedWeightKg = rawW > 0 ? rawW : fallbackWeight;
+            const reps = Number(st.reps) || 0;
+            const tonnageContribution = completed ? Math.round(usedWeightKg * reps * multiplier) : 0;
+
+            setsDetails.push({
+              sessionDate: s.date,
+              sessionName: s.name,
+              exerciseName: ex.name,
+              rawPrimary,
+              normPrimary: normPrimaryDisplay,
+              rawSecondaries,
+              normSecondaries,
+              isPrimary,
+              isSecondary,
+              setNumber: st.setNumber || idx + 1,
+              weightKg: rawW || 0,
+              usedWeightKg,
+              isBodyweightFallback,
+              reps,
+              isCompleted: completed,
+              tonnageContribution,
+            });
+          });
+        }
+      });
+    });
+
+    const totalTonnage = setsDetails.reduce((acc, set) => acc + set.tonnageContribution, 0);
+    const effectivePercent = completedSetsFound > 0 ? Math.max(10, Math.round((totalTonnage / 8000) * 75)) : 0;
+
+    let zeroReason: string | null = null;
+    if (periodSessions.length === 0) {
+      if (resetTime > 0) {
+        zeroReason = 'статистика сброшена кнопкой "Сбросить" (все тренировки завершены до момента сброса)';
+      } else {
+        zeroReason = 'подходы вне периода (нет сохранённых завершённых тренировок за выбранный период)';
+      }
+    } else if (setsDetails.length === 0) {
+      zeroReason = 'ключ мышцы не распознан / не найден в сохранённых упражнениях';
+    } else if (completedSetsFound === 0) {
+      zeroReason = 'нет выполненных подходов (все подходы не помечены выполненными)';
+    } else if (totalTonnage === 0) {
+      zeroReason = 'вес равен 0 и повторы равны 0';
+    }
+
+    const def = MUSCLE_DEFINITIONS[muscleKey];
+
+    return {
+      muscleKey,
+      muscleNameRu: def ? def.nameRu : muscleKey,
+      period,
+      latestSessionDate,
+      totalCompletedSessionsInPeriod: periodSessions.length,
+      totalSetsFound,
+      completedSetsFound,
+      completedFieldUsed: 'st.completed === true | 1 | "true" | st.done === true | st.isDone === true',
+      setsDetails,
+      totalEffectiveTonnage: totalTonnage,
+      effectivePercent,
+      zeroReason,
+    };
+  },
+
   // REAL MUSCLE IMPACT: Combines Strength sets + Multi-sport sessions
   getMuscleStats(period: MusclePeriod = '7d'): Record<MuscleGroup, MuscleLoadStats> {
     const allSessions = this.getWorkoutSessions();
     const allSportSessions = this.getSportSessions();
+    const userProfile = this.getProfile();
+    const fallbackWeight = getBodyweightEquivalentKg(userProfile.weightKg);
 
     const now = new Date();
     const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-    const resetTime = Number(localStorage.getItem('form_anatomy_reset_time') || '0');
+    const resetTime = this.getAnatomyResetTime();
 
-    const isAfterReset = (itemDate: string) => {
-      if (!resetTime) return true;
-      const itemTs = new Date(`${itemDate}T12:00:00`).getTime();
-      return itemTs >= resetTime;
-    };
+    const completedSessionsAll = allSessions.filter((s) => s.status === 'completed');
+    const latestCompletedSession = completedSessionsAll.length > 0
+      ? [...completedSessionsAll].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0]
+      : null;
+    const latestSessionDate = latestCompletedSession ? latestCompletedSession.date : todayIso;
 
     const filterByPeriod = (itemDate: string) => {
       if (period === 'session') {
-        return itemDate === todayIso;
+        return itemDate === latestSessionDate;
       }
       if (period === 'all') {
         return true;
@@ -897,10 +1394,10 @@ export const StorageService = {
     };
 
     const completedSessions = allSessions.filter(
-      (s) => s.status === 'completed' && filterByPeriod(s.date) && isAfterReset(s.date)
+      (s) => s.status === 'completed' && filterByPeriod(s.date) && isSessionAfterReset(s, resetTime)
     );
     const completedSportSessions = allSportSessions.filter(
-      (sp) => sp.status === 'completed' && filterByPeriod(sp.date) && isAfterReset(sp.date)
+      (sp) => sp.status === 'completed' && filterByPeriod(sp.date) && isSessionAfterReset(sp, resetTime)
     );
     const stats: Partial<Record<MuscleGroup, MuscleLoadStats>> = {};
 
@@ -919,113 +1416,86 @@ export const StorageService = {
         let sessionMuscleSets = 0;
 
         s.exercises?.forEach((ex) => {
-          const catalogItem = EXERCISE_CATALOG.find((cat) => cat.name.toLowerCase() === ex.name.toLowerCase());
-          const secondaryMuscles = ex.secondaryMuscles || catalogItem?.secondaryMuscles;
-          const exTarget = ex.targetMuscle || catalogItem?.primaryMuscle;
-          
-          let isPrimary = exTarget === m;
-          let isSecondary = secondaryMuscles?.includes(m) || false;
+          const exCleanName = (ex.name || '').trim().toLowerCase();
+          const catalogItem = EXERCISE_CATALOG.find(
+            (cat) => cat.id === ex.exerciseId || cat.name.trim().toLowerCase() === exCleanName
+          );
+          const rawPrimary = ex.targetMuscle || catalogItem?.primaryMuscle;
+          const normPrimary = normalizeMuscleKey(rawPrimary);
 
-          // Smart muscle hierarchy mapping for detailed muscle heads
+          const rawSecondaries = ex.secondaryMuscles || catalogItem?.secondaryMuscles || [];
+          const normSecondaries = rawSecondaries.map((k) => normalizeMuscleKey(k)).filter(Boolean) as MuscleGroup[];
+
+          let isPrimary = normPrimary === m || ((m === 'rear_delts' || m === 'rearDelts') && (normPrimary === 'rear_delts' || normPrimary === 'rearDelts'));
+          let isSecondary = normSecondaries.includes(m) || ((m === 'rear_delts' || m === 'rearDelts') && (normSecondaries.includes('rear_delts') || normSecondaries.includes('rearDelts')));
+
+          // Smart muscle hierarchy mapping for detailed muscle heads & rollups
           if (!isPrimary && !isSecondary) {
-            const exNameLow = ex.name.toLowerCase();
-            // Aliases
-            if (m === 'rear_delts' && (exTarget === 'rearDelts' || secondaryMuscles?.includes('rearDelts'))) {
-              isPrimary = exTarget === 'rearDelts';
-              isSecondary = !isPrimary;
-            } else if (m === 'rearDelts' && (exTarget === 'rear_delts' || secondaryMuscles?.includes('rear_delts'))) {
-              isPrimary = exTarget === 'rear_delts';
-              isSecondary = !isPrimary;
-            }
-            // Chest sub-heads
-            else if (m === 'chest_upper' && (exTarget === 'chest' || secondaryMuscles?.includes('chest'))) {
-              if (exNameLow.includes('наклон') || exNameLow.includes('вверх') || exNameLow.includes('incline')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
-              }
-            } else if (m === 'chest_mid' && (exTarget === 'chest' || secondaryMuscles?.includes('chest'))) {
-              if (exNameLow.includes('лежа') || exNameLow.includes('отжимания от пола') || exNameLow.includes('кроссовер')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
-              }
-            } else if (m === 'chest_lower' && (exTarget === 'chest' || secondaryMuscles?.includes('chest'))) {
-              if (exNameLow.includes('брусь') || exNameLow.includes('dips') || exNameLow.includes('вниз') || exNameLow.includes('decline')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
+            const exNameLow = exCleanName;
+
+            // Chest mapping
+            if (m === 'chest' && (normPrimary?.startsWith('chest') || normSecondaries.some((sec) => sec.startsWith('chest')))) {
+              if (normPrimary?.startsWith('chest')) isPrimary = true;
+              else isSecondary = true;
+            } else if (normPrimary === 'chest' || normSecondaries.includes('chest')) {
+              const isPrim = normPrimary === 'chest';
+              if (m === 'chest_upper' && (exNameLow.includes('наклон') || exNameLow.includes('вверх') || exNameLow.includes('incline'))) {
+                if (isPrim) isPrimary = true; else isSecondary = true;
+              } else if (m === 'chest_mid' && (exNameLow.includes('лежа') || exNameLow.includes('отжимания') || exNameLow.includes('кроссовер'))) {
+                if (isPrim) isPrimary = true; else isSecondary = true;
+              } else if (m === 'chest_lower' && (exNameLow.includes('брусь') || exNameLow.includes('dips') || exNameLow.includes('вниз'))) {
+                if (isPrim) isPrimary = true; else isSecondary = true;
+              } else if (m.startsWith('chest_')) {
+                if (isPrim) isPrimary = true; else isSecondary = true;
               }
             }
-            // Shoulders sub-heads
-            else if (m === 'front_delts' && (exTarget === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
-              if (exNameLow.includes('армей') || exNameLow.includes('вверх') || exNameLow.includes('передн') || exNameLow.includes('overhead')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
-              }
-            } else if (m === 'side_delts' && (exTarget === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
-              if (exNameLow.includes('мах') || exNameLow.includes('разводк') || exNameLow.includes('боков') || exNameLow.includes('lateral')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
-              }
-            } else if (m === 'rear_delts' && (exTarget === 'shoulders' || secondaryMuscles?.includes('shoulders'))) {
-              if (exNameLow.includes('задн') || exNameLow.includes('face pull')) {
-                isPrimary = true;
-              }
-            }
-            // Arms: Brachialis
-            else if (m === 'brachialis' && (exTarget === 'biceps' || secondaryMuscles?.includes('biceps'))) {
-              if (exNameLow.includes('молот') || exNameLow.includes('нейтральн') || exNameLow.includes('обратн') || exNameLow.includes('hammer')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
+
+            // Shoulders mapping
+            else if (m === 'shoulders' && (normPrimary?.endsWith('_delts') || normPrimary === 'rearDelts' || normSecondaries.some((sec) => sec.endsWith('_delts') || sec === 'rearDelts'))) {
+              if (normPrimary?.endsWith('_delts') || normPrimary === 'rearDelts') isPrimary = true;
+              else isSecondary = true;
+            } else if (normPrimary === 'shoulders' || normSecondaries.includes('shoulders')) {
+              const isPrim = normPrimary === 'shoulders';
+              if (m === 'front_delts' && (exNameLow.includes('армей') || exNameLow.includes('вверх') || exNameLow.includes('передн'))) {
+                if (isPrim) isPrimary = true; else isSecondary = true;
+              } else if (m === 'side_delts' && (exNameLow.includes('мах') || exNameLow.includes('боков'))) {
+                if (isPrim) isPrimary = true; else isSecondary = true;
+              } else if ((m === 'rear_delts' || m === 'rearDelts') && (exNameLow.includes('задн') || exNameLow.includes('face pull'))) {
+                if (isPrim) isPrimary = true; else isSecondary = true;
+              } else if (m.endsWith('_delts') || m === 'rearDelts') {
+                if (isPrim) isPrimary = true; else isSecondary = true;
               }
             }
-            // Back: Traps sub-heads & Rhomboids
-            else if (m === 'traps_upper' && (exTarget === 'traps' || secondaryMuscles?.includes('traps'))) {
-              isPrimary = true;
-            } else if (m === 'traps_mid' && (exTarget === 'traps' || secondaryMuscles?.includes('traps') || exTarget === 'lats')) {
-              isSecondary = true;
-            } else if (m === 'traps_lower' && (exTarget === 'traps' || exTarget === 'lats' || secondaryMuscles?.includes('lats'))) {
-              isSecondary = true;
-            } else if (m === 'rhomboids' && (exTarget === 'traps' || exTarget === 'lats' || secondaryMuscles?.includes('lats'))) {
-              isSecondary = true;
+
+            // Traps mapping
+            else if (m === 'traps' && (normPrimary?.startsWith('traps_') || normPrimary === 'rhomboids' || normSecondaries.some((sec) => sec.startsWith('traps_') || sec === 'rhomboids'))) {
+              if (normPrimary?.startsWith('traps_') || normPrimary === 'rhomboids') isPrimary = true;
+              else isSecondary = true;
+            } else if ((normPrimary === 'traps' || normSecondaries.includes('traps')) && (m.startsWith('traps_') || m === 'rhomboids')) {
+              if (normPrimary === 'traps') isPrimary = true; else isSecondary = true;
             }
-            // Quads sub-heads
-            else if (m === 'quads_rectus' && (exTarget === 'quads' || secondaryMuscles?.includes('quads'))) {
-              if (exNameLow.includes('разгибан') || exNameLow.includes('выпад')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
-              }
-            } else if (m === 'quads_lateralis' && (exTarget === 'quads' || secondaryMuscles?.includes('quads'))) {
-              if (exNameLow.includes('присед') || exNameLow.includes('жим ногами')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
-              }
-            } else if (m === 'quads_medialis' && (exTarget === 'quads' || secondaryMuscles?.includes('quads'))) {
-              if (exNameLow.includes('присед') || exNameLow.includes('разгибан') || exNameLow.includes('гакк')) {
-                isPrimary = true;
-              } else {
-                isSecondary = true;
-              }
+
+            // Quads mapping
+            else if (m === 'quads' && (normPrimary?.startsWith('quads_') || normSecondaries.some((sec) => sec.startsWith('quads_')))) {
+              if (normPrimary?.startsWith('quads_')) isPrimary = true;
+              else isSecondary = true;
+            } else if ((normPrimary === 'quads' || normSecondaries.includes('quads')) && m.startsWith('quads_')) {
+              if (normPrimary === 'quads') isPrimary = true; else isSecondary = true;
             }
           }
 
           if (isPrimary || isSecondary) {
             distinctExercises.add(ex.name);
-            // Primary muscle receives 100% volume; secondary receives 45% volume
             const multiplier = isPrimary ? 1.0 : 0.45;
 
-            ex.sets?.forEach((st) => {
-              if (st.completed) {
+            ex.sets?.forEach((st: any) => {
+              if (isSetCompleted(st)) {
                 totalSets++;
                 sessionMuscleSets++;
-                const setWeight = st.weightKg > 0 ? st.weightKg : (ex.isBodyweight ? 75 : 50);
-                const vol = setWeight * st.reps * multiplier;
+                const rawW = Number(st.weightKg);
+                const setWeight = rawW > 0 ? rawW : fallbackWeight;
+                const setReps = Number(st.reps) || 0;
+                const vol = setWeight * setReps * multiplier;
                 strengthVolume += vol;
                 sessionMuscleVol += vol;
               }
@@ -1070,11 +1540,9 @@ export const StorageService = {
       });
 
       const totalHits = strengthHits + sportHits;
-      // 1 sport load point ~ 20 kg volume equivalent
       const totalEffectiveKg = Math.round(strengthVolume + sportLoadPoints * 20);
       const hasRealData = totalHits > 0 && (totalSets > 0 || sportHits > 0);
 
-      // Sort history chronologically descending (newest first)
       history.sort((a, b) => b.date.localeCompare(a.date));
 
       let effectivePercent = 0;
@@ -1089,12 +1557,10 @@ export const StorageService = {
         finalTonnage = totalEffectiveKg;
         finalHits = totalHits;
 
-        // Base recovery physiological hours (e.g. 48 for chest/shoulders, 72 for hamstrings, 36 for biceps, 24 for calves)
         const baseHours = def.recoveryHours || 48;
         const volumeMultiplier = totalEffectiveKg > 6000 ? 1.25 : totalEffectiveKg > 3000 ? 1.1 : totalEffectiveKg < 1200 ? 0.75 : 1.0;
         const totalNeededHours = Math.round(baseHours * volumeMultiplier);
 
-        // Calculate hours elapsed since the latest completed workout
         const latestDateStr = history[0]?.date;
         let elapsedHours = 0;
         if (latestDateStr) {
@@ -1121,7 +1587,6 @@ export const StorageService = {
           status = remainingHours > (totalNeededHours * 0.5) ? 'fatigued' : 'recovering';
         }
       } else {
-        // Strictly no load: no timer, no invented recovery time
         effectivePercent = 0;
         finalTonnage = 0;
         finalHits = 0;
@@ -1504,6 +1969,34 @@ export const StorageService = {
   getAllExercises(): FullExerciseItem[] {
     const custom = this.getCustomExercises();
     return [...COMPREHENSIVE_FULL_CATALOG, ...custom];
+  },
+
+  // ANATOMY STATS RESET
+  getAnatomyResetTime(): number {
+    try {
+      return Number(localStorage.getItem(STORAGE_KEYS.ANATOMY_RESET_TIME) || '0');
+    } catch {
+      return 0;
+    }
+  },
+
+  resetMuscleStats(): void {
+    const timestamp = Date.now();
+    try {
+      localStorage.setItem(STORAGE_KEYS.ANATOMY_RESET_TIME, timestamp.toString());
+    } catch (e) {
+      console.error('Failed to set anatomy reset time', e);
+    }
+    notifyListeners();
+  },
+
+  clearAnatomyReset(): void {
+    try {
+      localStorage.removeItem(STORAGE_KEYS.ANATOMY_RESET_TIME);
+    } catch (e) {
+      console.error('Failed to clear anatomy reset time', e);
+    }
+    notifyListeners();
   },
 
   resetAllData(): void {

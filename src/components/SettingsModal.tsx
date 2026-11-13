@@ -21,7 +21,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { StorageService } from '../services/storage';
 import { AppSettings } from '../types/workout';
 import { FormSelect } from './common/FormSelect';
-import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
+import { Modal } from './common/Modal';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -45,56 +45,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   return (
-    <motion.div
-      variants={modalBackdropVariants}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-      className="fixed inset-0 z-50 bg-black/90 backdrop-blur-xl flex items-end sm:items-center justify-center p-0 sm:p-4 select-none"
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title="Настройки"
+      subtitle="FORM Core • Build 2026.11"
+      maxWidth="max-w-lg"
     >
-      <motion.div
-        variants={modalDialogVariants}
-        initial="initial"
-        animate="animate"
-        exit="exit"
-        className="w-full max-w-lg bg-[#0a0a0c] border border-[#222226] rounded-t-3xl sm:rounded-3xl max-h-[92vh] sm:max-h-[88vh] flex flex-col overflow-hidden shadow-2xl"
-      >
-        {/* Header with Search Bar (HiOS / Android Reference Style) */}
-        <div className="p-4 border-b border-[#222226] bg-[#0a0a0c] z-10 shrink-0 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-lg font-bold text-white tracking-tight">Настройки</h3>
-              <span className="text-[11px] text-zinc-500 font-medium">FORM Core • Build 2026.11</span>
-            </div>
-
-            <motion.button
-              whileTap={{ scale: 0.9 }}
-              onClick={onClose}
-              className="p-2 text-zinc-400 hover:text-white rounded-full bg-[#161618] border border-[#26262a] transition-colors cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </motion.button>
-          </div>
-
-          {/* Pill Search Bar */}
-          <div className="relative">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-            <input
-              type="text"
-              placeholder="Поиск в настройках..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-[#141416] border border-[#26262a] rounded-full pl-10 pr-4 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#58C995] transition-colors"
-            />
-          </div>
+      <div className="space-y-4">
+        {/* Pill Search Bar */}
+        <div className="relative">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+          <input
+            type="text"
+            placeholder="Поиск в настройках..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-[#141416] border border-[#26262a] rounded-full pl-10 pr-4 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-[#58C995] transition-colors"
+          />
         </div>
 
-        {/* Scrollable Content Body */}
-        <div
-          className="flex-1 overflow-y-auto p-4 space-y-4 text-xs text-zinc-300"
-          style={{ overscrollBehavior: 'contain' }}
-        >
-          {/* SECTION 1: ВНЕШНИЙ ВИД */}
+        {/* SECTION 1: ВНЕШНИЙ ВИД */}
           <div className="space-y-2">
             <span className="text-[11px] font-bold text-zinc-500 uppercase tracking-wider px-1">
               Интерфейс и оформление
@@ -382,7 +353,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
         </div>
-      </motion.div>
-    </motion.div>
+    </Modal>
   );
 };

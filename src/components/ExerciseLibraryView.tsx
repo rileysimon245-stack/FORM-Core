@@ -319,18 +319,18 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
 
       {/* Search Input Bar */}
       <div className="relative">
-        <Search className="w-4 h-4 text-[#697174] absolute left-3 top-3 pointer-events-none" />
+        <Search className="w-4 h-4 text-[#8E9CA3] absolute left-3.5 top-3 pointer-events-none" />
         <input
           type="text"
           placeholder="Поиск по названию (рус/англ), мышце или технике..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full bg-[#101719] border border-[#252D2F] rounded-xl pl-9 pr-9 py-2.5 text-xs text-[#E8E9E7] placeholder-[#697174] focus:outline-none focus:border-[#58C995] transition-colors"
+          className="w-full bg-[#0C1014] border border-[#182027] rounded-full pl-10 pr-10 py-2.5 text-xs text-white placeholder-[#8E9CA3] focus:outline-none focus:border-[#58C995] transition-colors"
         />
         {search && (
           <button
             onClick={() => setSearch('')}
-            className="absolute right-3 top-2.5 p-0.5 text-[#92999A] hover:text-[#E8E9E7]"
+            className="absolute right-3.5 top-2.5 p-0.5 text-[#8E9CA3] hover:text-white"
           >
             <X className="w-4 h-4" />
           </button>
@@ -588,10 +588,10 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
               <div
                 key={item.id}
                 onClick={() => setExpandedId(isExpanded ? null : item.id)}
-                className={`bg-[#101719] border rounded-2xl p-3.5 transition-all cursor-pointer ${
+                className={`rounded-[28px] bg-[#13171B] border p-4.5 space-y-3 transition-all cursor-pointer shadow-xl ${
                   isExpanded
-                    ? 'border-[#58C995] shadow-lg shadow-[#58C995]/5'
-                    : 'border-[#252D2F] hover:border-[#3a4447]'
+                    ? 'border-[#58C995] shadow-[0_8px_30px_rgba(88,201,149,0.1)]'
+                    : 'border-[#1F2730] hover:border-[#2D3945]'
                 }`}
               >
                 {/* Header Row: Badges, Titles, Actions */}

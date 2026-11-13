@@ -21,8 +21,7 @@ import {
   Trash2,
   Info,
 } from 'lucide-react';
-import { motion } from 'motion/react';
-import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
+import { Modal } from './common/Modal';
 
 interface SportSessionModalProps {
   initialSession?: SportSession | null;
@@ -95,40 +94,51 @@ export const SportSessionModal: React.FC<SportSessionModalProps> = ({
   };
 
   return (
-    <motion.div
-      variants={modalBackdropVariants}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-      className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3"
-    >
-      <motion.div
-        variants={modalDialogVariants}
-        initial="initial"
-        animate="animate"
-        exit="exit"
-        className="w-full max-w-md bg-[#101719] border border-[#252D2F] rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
-      >
-        {/* Header */}
-        <div className="px-4 py-3 border-b border-[#252D2F] flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-lg">
-              {sportType === 'boxing' ? '🥊' : sportType === 'basketball' ? '🏀' : sportType === 'running' ? '🏃' : '⚡'}
-            </span>
-            <h2 className="text-base font-bold text-[#E8E9E7]">
-              {initialSession ? 'Запись спортивного занятия' : 'Добавить занятие спортом'}
-            </h2>
-          </div>
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title={initialSession ? 'Запись спортивного занятия' : 'Добавить занятие спортом'}
+      icon={
+        <span className="text-base leading-none">
+          {sportType === 'boxing' ? '🥊' : sportType === 'basketball' ? '🏀' : sportType === 'running' ? '🏃' : '⚡'}
+        </span>
+      }
+      maxWidth="max-w-md"
+      footer={
+        <div className="flex gap-2 w-full">
+          {initialSession && onDelete && (
+            <button
+              type="button"
+              onClick={() => {
+                onDelete(initialSession.id);
+                onClose();
+              }}
+              className="p-2.5 bg-[#2a1714] border border-[#552720] text-[#E05353] rounded-xl hover:bg-[#381c18] transition-colors cursor-pointer shrink-0"
+              title="Удалить запись"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
+
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 text-[#92999A] hover:text-[#E8E9E7] transition-colors"
+            className="flex-1 py-2.5 bg-[#182327] hover:bg-[#202E34] text-[#92999A] font-bold text-xs rounded-xl transition-colors cursor-pointer"
           >
-            <X className="w-5 h-5" />
+            Отмена
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSubmit}
+            className="flex-1 py-2.5 bg-[#58C995] hover:bg-[#68d7a4] text-black font-bold text-xs rounded-xl shadow-md transition-colors cursor-pointer"
+          >
+            {initialSession ? 'Сохранить изменения' : 'Записать тренировку'}
           </button>
         </div>
-
-        {/* Form Body */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4 text-xs [overscroll-behavior:contain] min-h-0">
+      }
+    >
+      <form onSubmit={handleSubmit} className="space-y-3.5">
           {/* Sport Selector Pills */}
           <div>
             <label className="block text-[11px] font-semibold text-[#92999A] mb-1.5">
@@ -303,43 +313,7 @@ export const SportSessionModal: React.FC<SportSessionModalProps> = ({
               className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995] resize-none"
             />
           </div>
-
-          {/* Action buttons */}
-          <div className="flex gap-2 pt-2">
-            {initialSession && onDelete && (
-              <motion.button
-                whileTap={{ scale: 0.92 }}
-                type="button"
-                onClick={() => {
-                  onDelete(initialSession.id);
-                  onClose();
-                }}
-                className="p-2.5 bg-[#2a1714] border border-[#552720] text-[#C83232] rounded-xl hover:bg-[#381c18] transition-colors cursor-pointer"
-                title="Удалить запись"
-              >
-                <Trash2 className="w-4 h-4" />
-              </motion.button>
-            )}
-
-            <motion.button
-              whileTap={{ scale: 0.96 }}
-              type="button"
-              onClick={onClose}
-              className="flex-1 py-2.5 bg-[#171D1F] hover:bg-[#202729] text-[#92999A] font-bold text-xs rounded-xl transition-colors cursor-pointer"
-            >
-              Отмена
-            </motion.button>
-
-            <motion.button
-              whileTap={{ scale: 0.96 }}
-              type="submit"
-              className="flex-1 py-2.5 bg-[#58C995] hover:bg-[#68d7a4] text-black font-bold text-xs rounded-xl shadow-md transition-colors cursor-pointer"
-            >
-              {initialSession ? 'Сохранить изменения' : 'Записать тренировку'}
-            </motion.button>
-          </div>
         </form>
-      </motion.div>
-    </motion.div>
+    </Modal>
   );
 };

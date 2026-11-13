@@ -243,7 +243,7 @@ export const ExerciseProgressModal: React.FC<ExerciseProgressModalProps> = ({
       initial="initial"
       animate="animate"
       exit="exit"
-      className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+      className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-md flex items-center justify-center p-3.5 sm:p-5 select-none font-sans"
       onClick={onClose}
     >
       <motion.div
@@ -251,7 +251,7 @@ export const ExerciseProgressModal: React.FC<ExerciseProgressModalProps> = ({
         initial="initial"
         animate="animate"
         exit="exit"
-        className="bg-[#0D1315] border border-[#252D2F] rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden flex flex-col my-auto max-h-[92vh]"
+        className="bg-[#11171A] border border-[#253338] rounded-[28px] w-full max-w-xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

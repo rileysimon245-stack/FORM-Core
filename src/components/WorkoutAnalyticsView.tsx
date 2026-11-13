@@ -190,58 +190,58 @@ export const WorkoutAnalyticsView: React.FC<WorkoutAnalyticsViewProps> = ({ onSt
           {/* 1. General Statistics KPI Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             {/* Total Workouts */}
-            <div className="bg-[#121A1C] border border-[#1C2628] rounded-2xl p-3 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-[#9AA3A5] mb-1">
-                <span className="text-[11px] font-medium">Тренировки</span>
+            <div className="rounded-[24px] bg-[#13171B] border border-[#1F2730] p-4 flex flex-col justify-between shadow-md">
+              <div className="flex items-center justify-between text-[#8E9CA3] mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider">Тренировки</span>
                 <Dumbbell className="w-3.5 h-3.5 text-[#58C995]" />
               </div>
               <div>
-                <span className="text-xl font-bold font-mono tabular-nums text-[#F0F3F2]">
+                <span className="text-2xl font-black font-mono tabular-nums text-white">
                   {analytics.totalCompletedWorkouts}
                 </span>
-                <span className="text-[10px] text-[#5F6B6E] block mt-0.5">завершено</span>
+                <span className="text-[10px] text-[#8E9CA3] block mt-0.5">завершено</span>
               </div>
             </div>
 
             {/* Total Completed Sets */}
-            <div className="bg-[#121A1C] border border-[#1C2628] rounded-2xl p-3 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-[#9AA3A5] mb-1">
-                <span className="text-[11px] font-medium">Подходы</span>
+            <div className="rounded-[24px] bg-[#13171B] border border-[#1F2730] p-4 flex flex-col justify-between shadow-md">
+              <div className="flex items-center justify-between text-[#8E9CA3] mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider">Подходы</span>
                 <Layers className="w-3.5 h-3.5 text-[#58C995]" />
               </div>
               <div>
-                <span className="text-xl font-bold font-mono tabular-nums text-[#F0F3F2]">
+                <span className="text-2xl font-black font-mono tabular-nums text-white">
                   {analytics.totalCompletedSets}
                 </span>
-                <span className="text-[10px] text-[#5F6B6E] block mt-0.5">выполнено сетов</span>
+                <span className="text-[10px] text-[#8E9CA3] block mt-0.5">сетов</span>
               </div>
             </div>
 
             {/* Total Training Volume */}
-            <div className="bg-[#121A1C] border border-[#1C2628] rounded-2xl p-3 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-[#9AA3A5] mb-1">
-                <span className="text-[11px] font-medium">Общий тоннаж</span>
+            <div className="rounded-[24px] bg-[#13171B] border border-[#1F2730] p-4 flex flex-col justify-between shadow-md">
+              <div className="flex items-center justify-between text-[#8E9CA3] mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider">Тоннаж</span>
                 <Flame className="w-3.5 h-3.5 text-[#58C995]" />
               </div>
               <div>
-                <span className="text-xl font-bold font-mono tabular-nums text-[#58C995]">
+                <span className="text-2xl font-black font-mono tabular-nums text-[#58C995]">
                   {formatTonnage(analytics.totalVolumeKg)}
                 </span>
-                <span className="text-[10px] text-[#5F6B6E] block mt-0.5">суммарный вес</span>
+                <span className="text-[10px] text-[#8E9CA3] block mt-0.5">суммарный вес</span>
               </div>
             </div>
 
             {/* Average Duration */}
-            <div className="bg-[#121A1C] border border-[#1C2628] rounded-2xl p-3 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-[#9AA3A5] mb-1">
-                <span className="text-[11px] font-medium">Ср. время</span>
+            <div className="rounded-[24px] bg-[#13171B] border border-[#1F2730] p-4 flex flex-col justify-between shadow-md">
+              <div className="flex items-center justify-between text-[#8E9CA3] mb-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider">Ср. время</span>
                 <Clock className="w-3.5 h-3.5 text-[#58C995]" />
               </div>
               <div>
-                <span className="text-xl font-bold font-mono tabular-nums text-[#F0F3F2]">
+                <span className="text-2xl font-black font-mono tabular-nums text-white">
                   {analytics.avgDurationMinutes}
                 </span>
-                <span className="text-[10px] text-[#5F6B6E] block mt-0.5">минут за сессию</span>
+                <span className="text-[10px] text-[#8E9CA3] block mt-0.5">мин/сессия</span>
               </div>
             </div>
           </div>
@@ -249,15 +249,15 @@ export const WorkoutAnalyticsView: React.FC<WorkoutAnalyticsViewProps> = ({ onSt
           {/* Period Rates & Comparisons: Week and Month */}
           <div className="grid grid-cols-2 gap-2.5">
             {/* Week Activity Card */}
-            <div className="bg-[#121A1C] border border-[#1C2628] rounded-2xl p-3.5 space-y-2">
+            <div className="rounded-[28px] bg-[#13171B] border border-[#1F2730] p-4 space-y-2 shadow-md">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#F0F3F2]">На этой неделе</span>
+                <span className="text-xs font-bold text-white">На этой неделе</span>
                 {weekDiff !== 0 && (
                   <span
-                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-0.5 ${
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-0.5 ${
                       weekDiff > 0
-                        ? 'bg-[#11241C] text-[#58C995] border border-[#2A5943]'
-                        : 'bg-[#261315] text-[#E04848] border border-[#522023]'
+                        ? 'bg-[#132A20] text-[#58C995] border border-[#234F3A]'
+                        : 'bg-[#2B1414] text-[#E05353] border border-[#4A2020]'
                     }`}
                   >
                     {weekDiff > 0 ? (
@@ -265,34 +265,34 @@ export const WorkoutAnalyticsView: React.FC<WorkoutAnalyticsViewProps> = ({ onSt
                     ) : (
                       <TrendingDown className="w-2.5 h-2.5" />
                     )}
-                    <span>{weekDiff > 0 ? `+${weekDiff}` : weekDiff} к пред. нед.</span>
+                    <span>{weekDiff > 0 ? `+${weekDiff}` : weekDiff}</span>
                   </span>
                 )}
               </div>
               <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-bold font-mono tabular-nums text-[#F0F3F2]">
+                <span className="text-2xl font-black font-mono tabular-nums text-white">
                   {analytics.weekWorkoutsCount}
                 </span>
-                <span className="text-xs text-[#9AA3A5]">тренировок</span>
+                <span className="text-xs text-[#8E9CA3]">тренировок</span>
               </div>
-              <div className="text-[11px] text-[#9AA3A5] flex items-center justify-between pt-1 border-t border-[#161F21]">
-                <span>Объём недели:</span>
-                <span className="font-semibold text-[#58C995] font-mono tabular-nums">
+              <div className="text-[11px] text-[#8E9CA3] flex items-center justify-between pt-1 border-t border-[#1F2730]">
+                <span>Объём:</span>
+                <span className="font-bold text-[#58C995] font-mono tabular-nums">
                   {formatTonnage(analytics.weekVolumeKg)}
                 </span>
               </div>
             </div>
 
             {/* Month Activity Card */}
-            <div className="bg-[#121A1C] border border-[#1C2628] rounded-2xl p-3.5 space-y-2">
+            <div className="rounded-[28px] bg-[#13171B] border border-[#1F2730] p-4 space-y-2 shadow-md">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#F0F3F2]">В этом месяце</span>
+                <span className="text-xs font-bold text-white">В этом месяце</span>
                 {monthDiff !== 0 && (
                   <span
-                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-0.5 ${
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-0.5 ${
                       monthDiff > 0
-                        ? 'bg-[#11241C] text-[#58C995] border border-[#2A5943]'
-                        : 'bg-[#261315] text-[#E04848] border border-[#522023]'
+                        ? 'bg-[#132A20] text-[#58C995] border border-[#234F3A]'
+                        : 'bg-[#2B1414] text-[#E04848] border border-[#4A2020]'
                     }`}
                   >
                     {monthDiff > 0 ? (
@@ -300,19 +300,19 @@ export const WorkoutAnalyticsView: React.FC<WorkoutAnalyticsViewProps> = ({ onSt
                     ) : (
                       <TrendingDown className="w-2.5 h-2.5" />
                     )}
-                    <span>{monthDiff > 0 ? `+${monthDiff}` : monthDiff} к пред. мес.</span>
+                    <span>{monthDiff > 0 ? `+${monthDiff}` : monthDiff}</span>
                   </span>
                 )}
               </div>
               <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-bold font-mono tabular-nums text-[#F0F3F2]">
+                <span className="text-2xl font-black font-mono tabular-nums text-white">
                   {analytics.monthWorkoutsCount}
                 </span>
-                <span className="text-xs text-[#9AA3A5]">тренировок</span>
+                <span className="text-xs text-[#8E9CA3]">тренировок</span>
               </div>
-              <div className="text-[11px] text-[#9AA3A5] flex items-center justify-between pt-1 border-t border-[#161F21]">
-                <span>Объём месяца:</span>
-                <span className="font-semibold text-[#58C995] font-mono tabular-nums">
+              <div className="text-[11px] text-[#8E9CA3] flex items-center justify-between pt-1 border-t border-[#1F2730]">
+                <span>Объём:</span>
+                <span className="font-bold text-[#58C995] font-mono tabular-nums">
                   {formatTonnage(analytics.monthVolumeKg)}
                 </span>
               </div>
@@ -465,19 +465,19 @@ export const WorkoutAnalyticsView: React.FC<WorkoutAnalyticsViewProps> = ({ onSt
           </div>
 
           {/* 2. Muscle Load Distribution (StorageService.getMuscleStats with 7d/30d/90d/all) */}
-          <div className={`${DS_CARD.base} space-y-4`}>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="rounded-[32px] bg-[#13171B] border border-[#1F2730] p-5 space-y-4 shadow-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
               <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-[#F0F3F2]">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-white">
                   Распределение нагрузки по мышцам
                 </h3>
-                <span className="text-[11px] text-[#9AA3A5]">
+                <span className="text-[11px] text-[#8E9CA3]">
                   На основе реальных завершённых подходов и весов
                 </span>
               </div>
 
               {/* Period Selector Tabs: 7d, 30d, 90d, all */}
-              <div className="flex items-center p-0.5 bg-[#0A1012] border border-[#1C2628] rounded-xl self-start sm:self-auto">
+              <div className="flex items-center p-1 bg-[#0C1014] border border-[#182027] rounded-full self-start sm:self-auto">
                 {(
                   [
                     { id: '7d', label: '7 дней' },
@@ -492,10 +492,10 @@ export const WorkoutAnalyticsView: React.FC<WorkoutAnalyticsViewProps> = ({ onSt
                       key={tab.id}
                       type="button"
                       onClick={() => setMusclePeriod(tab.id)}
-                      className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg transition-all cursor-pointer ${
+                      className={`px-3 py-1 text-[11px] font-bold rounded-full transition-all cursor-pointer ${
                         isActive
-                          ? 'bg-[#58C995] text-[#080D0E] shadow-sm font-bold'
-                          : 'text-[#9AA3A5] hover:text-[#F0F3F2]'
+                          ? 'bg-[#58C995] text-[#0A0D0F] shadow-sm'
+                          : 'text-[#8E9CA3] hover:text-white'
                       }`}
                     >
                       {tab.label}
@@ -513,50 +513,50 @@ export const WorkoutAnalyticsView: React.FC<WorkoutAnalyticsViewProps> = ({ onSt
                 return (
                   <div
                     key={cat.id}
-                    className="p-3 bg-[#0A1012] border border-[#161F21] rounded-xl space-y-2"
+                    className="p-3.5 bg-[#0C1014] border border-[#182027] rounded-2xl space-y-2.5"
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-[#F0F3F2]">{cat.nameRu}</span>
+                        <span className="text-xs font-bold text-white">{cat.nameRu}</span>
                         {cat.status === 'fatigued' && (
-                          <span className="text-[9px] px-1.5 py-0.2 bg-[#261315] text-[#E04848] border border-[#522023] rounded">
+                          <span className="text-[9px] font-bold px-2 py-0.5 bg-[#2B1414] text-[#E05353] border border-[#4A2020] rounded-full">
                             Нагрузка
                           </span>
                         )}
                         {cat.status === 'recovering' && (
-                          <span className="text-[9px] px-1.5 py-0.2 bg-[#271F11] text-[#E5A842] border border-[#543E19] rounded">
+                          <span className="text-[9px] font-bold px-2 py-0.5 bg-[#271F11] text-[#E5A842] border border-[#543E19] rounded-full">
                             Восстановление
                           </span>
                         )}
                         {cat.status === 'recovered' && hasLoad && (
-                          <span className="text-[9px] px-1.5 py-0.2 bg-[#11241C] text-[#58C995] border border-[#2A5943] rounded">
+                          <span className="text-[9px] font-bold px-2 py-0.5 bg-[#132A20] text-[#58C995] border border-[#234F3A] rounded-full">
                             Готова
                           </span>
                         )}
                       </div>
 
                       <div className="flex items-center gap-3 text-xs">
-                        <span className="font-mono tabular-nums text-[#9AA3A5]">
+                        <span className="font-mono tabular-nums text-[#8E9CA3]">
                           {cat.totalSets} сетов
                         </span>
                         <span className="font-mono tabular-nums font-bold text-[#58C995]">
                           {formatTonnage(cat.totalVolumeKg)}
                         </span>
-                        <span className="font-mono tabular-nums font-bold text-[#F0F3F2] w-8 text-right">
+                        <span className="font-mono tabular-nums font-black text-white w-8 text-right">
                           {cat.sharePercent}%
                         </span>
                       </div>
                     </div>
 
                     {/* Progress Bar */}
-                    <div className="w-full h-1.5 bg-[#162124] rounded-full overflow-hidden">
+                    <div className="w-full h-1.5 bg-[#182027] rounded-full overflow-hidden">
                       <motion.div
                         initial={{ width: 0 }}
                         animate={{ width: `${Math.max(hasLoad ? 2 : 0, cat.sharePercent)}%` }}
                         transition={{ duration: 0.35, ease: [0.2, 0, 0, 1] }}
                         className={`h-full rounded-full ${
                           hasLoad
-                            ? 'bg-gradient-to-r from-[#31644E] to-[#58C995]'
+                            ? 'bg-[#58C995]'
                             : 'bg-transparent'
                         }`}
                       />

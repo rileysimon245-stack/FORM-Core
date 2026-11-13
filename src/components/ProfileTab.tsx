@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
-import { DS, DS_CARD, DS_BUTTON, DS_INPUT, DS_MODAL } from '../styles/designSystem';
+import { DS, DS_CARD, DS_BUTTON, DS_INPUT, DS_MODAL, DS_BADGE, DS_TYPO } from '../styles/designSystem';
 
 interface ProfileTabProps {
   profile: UserProfile;
@@ -148,49 +148,51 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
       </div>
 
       {/* Athlete Bio Card */}
-      <div className={`${DS_CARD.base}`}>
-        <div className="flex items-center gap-3 mb-4">
-          <div className="w-12 h-12 rounded-2xl bg-[#11241C] border border-[#2A5943] flex items-center justify-center text-[#58C995] shrink-0">
-            <User className="w-6 h-6" />
+      <div className={DS_CARD.base + ' p-5 sm:p-6 space-y-4'}>
+        <div className="flex items-start gap-4">
+          {/* Hallmark Left Inset Squircle with User Avatar */}
+          <div className={DS_CARD.iconBox + ' w-16 h-16 sm:w-20 sm:h-20'}>
+            <User className="w-8 h-8 text-[#56CC97]" />
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-bold text-[#F0F3F2] truncate">
-                {profile.name || 'Не указано'}
-              </h2>
-              <span className="text-[10px] text-[#9AA3A5] bg-[#0A1012] px-2 py-0.5 rounded-lg border border-[#161F21]">
-                {profile.experienceLevel || 'Средний уровень'}
+
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className={DS_BADGE.pill}>
+                {profile.experienceLevel || 'Средний'}
               </span>
             </div>
-            <span className="text-xs text-[#58C995] font-semibold block truncate mt-0.5">
-              {profile.fitnessGoal || 'Цель не выбрана'}
+            <h2 className="text-xl sm:text-2xl font-black text-[#F2F5F3] truncate tracking-tight uppercase">
+              {profile.name || 'Атлет FORM Core'}
+            </h2>
+            <span className="text-xs sm:text-sm text-[#C9D3CE] block truncate">
+              🎯 {profile.fitnessGoal || 'Развитие силы и выносливости'}
             </span>
           </div>
         </div>
 
         {/* 4 Stats Grid: Age, Height, Weight, Total Sessions */}
-        <div className="grid grid-cols-4 gap-2 text-center py-2.5 bg-[#0A1012] rounded-xl border border-[#161F21]">
+        <div className="grid grid-cols-4 gap-2 text-center py-3 bg-[#0B1712] rounded-2xl border border-[#1E3A30]">
           <div>
-            <span className="text-[10px] text-[#5F6B6E] block font-medium">Возраст</span>
-            <span className="text-xs sm:text-sm font-bold text-[#F0F3F2] font-mono tabular-nums">
-              {profile.age > 0 ? `${profile.age} лет` : '—'}
+            <span className={DS_TYPO.subCaption + ' text-[10px] sm:text-[11px] block'}>Возраст</span>
+            <span className="text-xs sm:text-sm font-bold text-[#F2F5F3] font-mono tabular-nums mt-0.5 block">
+              {profile.age > 0 ? `${profile.age}` : '—'}
             </span>
           </div>
           <div>
-            <span className="text-[10px] text-[#5F6B6E] block font-medium">Рост</span>
-            <span className="text-xs sm:text-sm font-bold text-[#F0F3F2] font-mono tabular-nums">
-              {profile.heightCm > 0 ? `${profile.heightCm} см` : '—'}
+            <span className={DS_TYPO.subCaption + ' text-[10px] sm:text-[11px] block'}>Рост</span>
+            <span className="text-xs sm:text-sm font-bold text-[#F2F5F3] font-mono tabular-nums mt-0.5 block">
+              {profile.heightCm > 0 ? `${profile.heightCm}` : '—'}
             </span>
           </div>
           <div>
-            <span className="text-[10px] text-[#5F6B6E] block font-medium">Вес</span>
-            <span className="text-xs sm:text-sm font-bold text-[#F0F3F2] font-mono tabular-nums">
-              {profile.weightKg > 0 ? `${profile.weightKg} кг` : '—'}
+            <span className={DS_TYPO.subCaption + ' text-[10px] sm:text-[11px] block'}>Вес</span>
+            <span className="text-xs sm:text-sm font-bold text-[#F2F5F3] font-mono tabular-nums mt-0.5 block">
+              {profile.weightKg > 0 ? `${profile.weightKg}` : '—'}
             </span>
           </div>
           <div>
-            <span className="text-[10px] text-[#5F6B6E] block font-medium">Тренировок</span>
-            <span className="text-xs sm:text-sm font-bold text-[#58C995] font-mono tabular-nums">
+            <span className={DS_TYPO.subCaption + ' text-[10px] sm:text-[11px] block'}>Сессий</span>
+            <span className="text-xs sm:text-sm font-bold text-[#56CC97] font-mono tabular-nums mt-0.5 block">
               {totalCompletedCount}
             </span>
           </div>
@@ -198,8 +200,8 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
       </div>
 
       {/* PERSONAL FITNESS SETTINGS & EQUIPMENT ENTRANCES */}
-      <div className="space-y-2">
-        <span className="text-[11px] font-bold text-[#9AA3A5] uppercase tracking-wider block px-1">
+      <div className="space-y-2.5">
+        <span className={DS_TYPO.sectionLabel}>
           Персональные настройки и инвентарь
         </span>
 
@@ -207,69 +209,60 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
         <motion.button
           whileTap={{ scale: 0.985 }}
           onClick={onOpenParameters}
-          className="w-full text-left bg-[#121A1C] border border-[#1C2628] hover:border-[#31644E] rounded-2xl p-4 transition-all flex items-center justify-between group cursor-pointer"
+          className={DS_CARD.interactive + ' flex items-center justify-between group p-4 sm:p-5'}
         >
           <div className="space-y-1.5 min-w-0 pr-2">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-[#11241C] text-[#58C995] flex items-center justify-center">
-                <Sliders className="w-4 h-4" />
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-[16px] bg-[#10221A] border border-[#56CC97]/30 text-[#56CC97] flex items-center justify-center shrink-0">
+                <Sliders className="w-5 h-5 text-[#56CC97]" />
               </div>
-              <span className="text-sm font-bold text-[#F0F3F2] group-hover:text-[#58C995] transition-colors">
+              <span className="text-sm sm:text-base font-bold uppercase text-[#F2F5F3] group-hover:text-[#56CC97] transition-colors">
                 Мои параметры
               </span>
             </div>
 
-            <div className="flex items-center gap-1.5 flex-wrap text-[11px] text-[#9AA3A5]">
-              <span className="px-2 py-0.5 bg-[#0A1012] rounded-md border border-[#161F21] text-[#58C995]">
+            <div className="flex items-center gap-1.5 flex-wrap text-xs pt-1">
+              <span className={DS_BADGE.pill}>
                 {userParams.goal || 'Цель не выбрана'}
               </span>
-              <span className="px-2 py-0.5 bg-[#0A1012] rounded-md border border-[#161F21]">
+              <span className="px-3 py-1 bg-[#12251E] rounded-full border border-[#1F3A30] text-[#C9D3CE]">
                 {userParams.level || 'Уровень не указан'}
               </span>
-              <span className="px-2 py-0.5 bg-[#0A1012] rounded-md border border-[#161F21]">
-                {userParams.location || 'Локация не выбрана'}
-              </span>
-              <span className="px-2 py-0.5 bg-[#0A1012] rounded-md border border-[#161F21]">
+              <span className="px-3 py-1 bg-[#12251E] rounded-full border border-[#1F3A30] text-[#C9D3CE]">
                 {userParams.daysPerWeek > 0 ? `${userParams.daysPerWeek} дня/нед` : 'Дни не выбраны'}
               </span>
             </div>
-
-            {userParams.healthRestrictions && userParams.healthRestrictions.length > 0 && (
-              <p className="text-[10px] text-[#E5A842] flex items-center gap-1">
-                <span>Ограничения: {userParams.healthRestrictions.join(', ')}</span>
-              </p>
-            )}
           </div>
 
-          <ChevronRight className="w-5 h-5 text-[#9AA3A5] group-hover:text-[#58C995] transition-colors shrink-0" />
+          <ChevronRight className="w-5 h-5 text-[#6F8A7F] group-hover:text-[#56CC97] transition-colors shrink-0" />
         </motion.button>
 
         {/* 2. Мой инвентарь */}
         <motion.button
           whileTap={{ scale: 0.985 }}
           onClick={onOpenEquipment}
-          className="w-full text-left bg-[#121A1C] border border-[#1C2628] hover:border-[#31644E] rounded-2xl p-4 transition-all flex items-center justify-between group cursor-pointer"
+          className={DS_CARD.interactive + ' flex items-center justify-between group p-4 sm:p-5'}
         >
           <div className="space-y-1.5 min-w-0 pr-2">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-[#11241C] text-[#58C995] flex items-center justify-center">
-                <Dumbbell className="w-4 h-4" />
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-[16px] bg-[#10221A] border border-[#56CC97]/30 text-[#56CC97] flex items-center justify-center shrink-0">
+                <Dumbbell className="w-5 h-5 text-[#56CC97]" />
               </div>
-              <span className="text-sm font-bold text-[#F0F3F2] group-hover:text-[#58C995] transition-colors">
+              <span className="text-sm sm:text-base font-bold uppercase text-[#F2F5F3] group-hover:text-[#56CC97] transition-colors">
                 Мой инвентарь
               </span>
             </div>
 
-            <p className="text-[11px] text-[#9AA3A5]">
+            <p className="text-xs sm:text-sm text-[#C9D3CE]">
               {activeEquipmentCount > 0 ? (
-                <>Выбрано: <span className="font-bold text-[#58C995]">{activeEquipmentCount} предметов</span></>
+                <>Выбрано: <span className="font-bold text-[#56CC97]">{activeEquipmentCount} предметов</span></>
               ) : (
-                <span className="text-[#5F6B6E]">Инвентарь не выбран (0 предметов)</span>
+                <span className="text-[#6F8A7F]">Инвентарь не выбран (0 предметов)</span>
               )}
             </p>
           </div>
 
-          <ChevronRight className="w-5 h-5 text-[#9AA3A5] group-hover:text-[#58C995] transition-colors shrink-0" />
+          <ChevronRight className="w-5 h-5 text-[#6F8A7F] group-hover:text-[#56CC97] transition-colors shrink-0" />
         </motion.button>
       </div>
 

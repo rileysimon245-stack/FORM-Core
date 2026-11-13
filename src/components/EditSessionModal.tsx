@@ -8,6 +8,7 @@ import {
 } from '../types/workout';
 import { StorageService } from '../services/storage';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
+import { ConfirmModal } from './common/Modal';
 import {
   X,
   Plus,
@@ -42,6 +43,8 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
 
   const [showAddPicker, setShowAddPicker] = useState(false);
   const [search, setSearch] = useState('');
+  const [deleteExIdx, setDeleteExIdx] = useState<number | null>(null);
+  const [nameError, setNameError] = useState<string>('');
 
   const handleAddSet = (exIdx: number) => {
     const next = [...exercises];
@@ -98,9 +101,7 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
   };
 
   const handleDeleteExercise = (exIdx: number) => {
-    if (confirm(`Удалить упражнение «${exercises[exIdx].name}»?`)) {
-      setExercises(exercises.filter((_, i) => i !== exIdx));
-    }
+    setDeleteExIdx(exIdx);
   };
 
   const handleAddExerciseFromCatalog = (catalogItem: any) => {
@@ -130,7 +131,7 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
 
   const handleSave = () => {
     if (!name.trim()) {
-      alert('Введите название тренировки');
+      setNameError('Введите название тренировки');
       return;
     }
 
@@ -170,10 +171,10 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 animate-in fade-in">
-      <div className="w-full max-w-md bg-[#101719] border border-[#252D2F] rounded-2xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3.5 sm:p-5 select-none font-sans animate-in fade-in">
+      <div className="w-full max-w-md bg-[#11171A] border border-[#253338] rounded-[28px] max-h-[88vh] flex flex-col overflow-hidden shadow-2xl">
         {/* Header */}
-        <div className="px-4 py-3 border-b border-[#252D2F] flex items-center justify-between">
+        <div className="px-5 py-3.5 border-b border-[#1E282D] flex items-center justify-between">
           <div>
             <span className="text-[11px] font-bold text-[#58C995] uppercase tracking-wider block">
               Редактирование записи
@@ -184,7 +185,7 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="p-1 text-[#92999A] hover:text-[#E8E9E7] transition-colors rounded-lg"
+            className="p-1 text-[#92999A] hover:text-[#E8E9E7] transition-colors rounded-lg cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -200,10 +201,21 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
             <input
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full bg-[#080D0E] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none focus:border-[#58C995]"
+              onChange={(e) => {
+                setName(e.target.value);
+                if (nameError) setNameError('');
+              }}
+              className={`w-full bg-[#080D0E] border rounded-xl px-3 py-2 text-xs text-[#E8E9E7] focus:outline-none transition-colors ${
+                nameError ? 'border-[#E05353] focus:border-[#E05353]' : 'border-[#252D2F] focus:border-[#58C995]'
+              }`}
+              placeholder="Название тренировки"
               required
             />
+            {nameError && (
+              <span className="text-[11px] text-[#E05353] block mt-1 font-medium">
+                {nameError}
+              </span>
+            )}
           </div>
 
           {/* Date & Duration Grid */}
@@ -440,6 +452,27 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
           </div>
         )}
       </div>
+
+      {/* Confirmation Modal for Exercise Deletion */}
+      <ConfirmModal
+        isOpen={deleteExIdx !== null}
+        onClose={() => setDeleteExIdx(null)}
+        onConfirm={() => {
+          if (deleteExIdx !== null) {
+            setExercises((prev) => prev.filter((_, i) => i !== deleteExIdx));
+            setDeleteExIdx(null);
+          }
+        }}
+        title="Удалить упражнение?"
+        description={
+          deleteExIdx !== null && exercises[deleteExIdx]
+            ? `Упражнение «${exercises[deleteExIdx].name}» будет удалено из записи тренировки.`
+            : 'Упражнение будет удалено из записи.'
+        }
+        confirmText="Удалить"
+        cancelText="Отмена"
+        variant="danger"
+      />
     </div>
   );
 };

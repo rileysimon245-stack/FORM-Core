@@ -2,9 +2,9 @@ import React, { useState } from 'react';
 import { UserFitnessParameters, MuscleGroup, MUSCLE_DEFINITIONS, EXERCISE_CATALOG } from '../types/workout';
 import { StorageService } from '../services/storage';
 import { FormSelect } from './common/FormSelect';
+import { Modal } from './common/Modal';
 import { X, Check, Sliders, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
 import { motion } from 'motion/react';
-import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
 
 interface UserParametersModalProps {
   onClose: () => void;
@@ -99,35 +99,39 @@ export const UserParametersModal: React.FC<UserParametersModalProps> = ({
   };
 
   return (
-    <motion.div
-      variants={modalBackdropVariants}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-      className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3"
-    >
-      <motion.div
-        variants={modalDialogVariants}
-        initial="initial"
-        animate="animate"
-        exit="exit"
-        className="w-full max-w-md bg-[#101719] border border-[#252D2F] rounded-2xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl"
-      >
-        {/* Header */}
-        <div className="px-4 py-3 border-b border-[#252D2F] flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-[#315D4B]/40 text-[#58C995] flex items-center justify-center">
-              <Sliders className="w-4 h-4" />
-            </div>
-            <h2 className="text-base font-bold text-[#E8E9E7]">Мои параметры</h2>
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title="Мои параметры"
+      icon={<Sliders className="w-4 h-4" />}
+      maxWidth="max-w-md"
+      footer={
+        successToast ? (
+          <div className="w-full py-2.5 bg-[#315D4B]/40 text-[#58C995] text-xs font-bold rounded-xl flex items-center justify-center gap-2">
+            <CheckCircle2 className="w-4 h-4" />
+            <span>Параметры успешно обновлены!</span>
           </div>
-          <button onClick={onClose} className="text-[#92999A] hover:text-[#E8E9E7]">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Content Body */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs [overscroll-behavior:contain] min-h-0">
+        ) : (
+          <div className="flex items-center gap-2 w-full">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 bg-[#182327] hover:bg-[#202E34] text-[#92999A] text-xs font-semibold rounded-xl hover:text-[#E8E9E7] cursor-pointer"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="flex-1 py-2.5 bg-[#58C995] text-[#080D0E] text-xs font-bold rounded-xl hover:bg-[#48b885] transition-colors cursor-pointer shadow-md"
+            >
+              Сохранить параметры
+            </button>
+          </div>
+        )
+      }
+    >
+      <div className="space-y-3.5">
           {/* Goal */}
           <div>
             <FormSelect
@@ -316,7 +320,6 @@ export const UserParametersModal: React.FC<UserParametersModalProps> = ({
               </div>
             )}
 
-            {/* Quick add from catalog or custom input */}
             <div className="flex gap-1.5 pt-1">
               <input
                 type="text"
@@ -328,43 +331,13 @@ export const UserParametersModal: React.FC<UserParametersModalProps> = ({
               <button
                 type="button"
                 onClick={() => handleAddExcluded(newExcludedInput)}
-                className="px-3 py-1 bg-[#252D2F] hover:bg-[#315D4B] text-[#E8E9E7] font-semibold rounded-lg text-xs"
+                className="px-3 py-1 bg-[#252D2F] hover:bg-[#315D4B] text-[#E8E9E7] font-semibold rounded-lg text-xs cursor-pointer"
               >
                 +
               </button>
             </div>
           </div>
-        </div>
-
-        {/* Footer */}
-        <div className="p-3 border-t border-[#252D2F] bg-[#101719] flex items-center justify-between gap-2">
-          {successToast ? (
-            <div className="w-full py-2.5 bg-[#315D4B]/40 text-[#58C995] text-xs font-bold rounded-xl flex items-center justify-center gap-2">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Параметры успешно обновлены!</span>
-            </div>
-          ) : (
-            <>
-              <motion.button
-                whileTap={{ scale: 0.96 }}
-                type="button"
-                onClick={onClose}
-                className="flex-1 py-2.5 bg-[#171D1F] text-[#92999A] text-xs font-semibold rounded-xl hover:text-[#E8E9E7] cursor-pointer"
-              >
-                Отмена
-              </motion.button>
-              <motion.button
-                whileTap={{ scale: 0.96 }}
-                type="button"
-                onClick={handleSave}
-                className="flex-1 py-2.5 bg-[#58C995] text-[#080D0E] text-xs font-bold rounded-xl hover:bg-[#48b885] transition-colors cursor-pointer shadow-md"
-              >
-                Сохранить параметры
-              </motion.button>
-            </>
-          )}
-        </div>
-      </motion.div>
-    </motion.div>
+      </div>
+    </Modal>
   );
 };

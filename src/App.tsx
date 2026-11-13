@@ -326,9 +326,9 @@ export default function App() {
 
   return (
     <AnimationProvider>
-      <div className="h-[100dvh] w-full bg-[#080D0E] text-[#F0F3F2] flex justify-center selection:bg-[#58C995] selection:text-black overflow-hidden">
+      <div className="h-[100dvh] w-full bg-[#08100D] text-[#F2F5F3] flex justify-center selection:bg-[#56CC97] selection:text-black overflow-hidden">
         {/* Mobile Smartphone Frame Container */}
-        <div className="w-full max-w-md h-full bg-[#080D0E] flex flex-col relative px-4 pt-2 pb-0 border-x border-[#1C2628] shadow-2xl overflow-hidden">
+        <div className="w-full max-w-md h-full bg-[#08100D] flex flex-col relative px-4 pt-2 pb-0 border-x border-[#12251E] shadow-2xl overflow-hidden">
           {/* Tab Content Display with authentic iOS-style elastic scrolling */}
           <main className="flex-1 min-h-0 w-full relative flex flex-col overflow-hidden">
             <ElasticScroll
@@ -451,11 +451,9 @@ export default function App() {
                 isRestoredDraft={isResumedDraft}
                 onSave={handleSaveActiveWorkout}
                 onCancel={() => {
-                  if (confirm('Прервать текущую тренировку? Прогресс сохранен в черновик.')) {
-                    setIsResumedDraft(false);
-                    setActiveWorkoutSession(null);
-                    setActiveDraft(StorageService.getActiveDraft());
-                  }
+                  setIsResumedDraft(false);
+                  setActiveWorkoutSession(null);
+                  setActiveDraft(StorageService.getActiveDraft());
                 }}
               />
             )}

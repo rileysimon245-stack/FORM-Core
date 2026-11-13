@@ -26,8 +26,7 @@ import {
   ChevronRight,
   Info,
 } from 'lucide-react';
-import { motion } from 'motion/react';
-import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
+import { Modal } from './common/Modal';
 
 interface WeeklyScheduleModalProps {
   initialSchedule: WeeklyScheduleDay[];
@@ -366,38 +365,45 @@ export const WeeklyScheduleModal: React.FC<WeeklyScheduleModalProps> = ({
   const totalWeeklySessions = schedule.reduce((acc, d) => acc + d.activities.length, 0);
 
   return (
-    <motion.div
-      variants={modalBackdropVariants}
-      initial="initial"
-      animate="animate"
-      exit="exit"
-      className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3"
-    >
-      <motion.div
-        variants={modalDialogVariants}
-        initial="initial"
-        animate="animate"
-        exit="exit"
-        className="w-full max-w-lg bg-[#101719] border border-[#252D2F] rounded-2xl max-h-[92vh] flex flex-col overflow-hidden shadow-2xl"
-      >
-        {/* Header */}
-        <div className="px-4 py-3.5 border-b border-[#252D2F] flex items-center justify-between shrink-0">
-          <div>
-            <h2 className="text-base font-bold text-[#E8E9E7] flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-[#58C995]" />
-              Конструктор недельного расписания
-            </h2>
-            <p className="text-[11px] text-[#92999A] mt-0.5">
-              Учет силовой нагрузки, бокса, баскетбола и других видов спорта
-            </p>
+    <Modal
+      isOpen={true}
+      onClose={onClose}
+      title="Конструктор расписания"
+      subtitle="Учет силовой нагрузки, бокса, баскетбола и других видов спорта"
+      icon={<Calendar className="w-4 h-4 text-[#58C995]" />}
+      maxWidth="max-w-lg"
+      footer={
+        <div className="space-y-2.5 w-full">
+          <div className="flex items-center justify-between text-xs text-[#92999A]">
+            <span>Всего за неделю:</span>
+            <span className="font-bold text-[#E8E9E7]">
+              {totalWeeklySessions} тренировок • {Math.round(totalWeeklyMinutes / 60)} ч {totalWeeklyMinutes % 60} мин
+            </span>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 text-[#92999A] hover:text-[#E8E9E7] rounded-lg transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 bg-[#182327] hover:bg-[#202E34] text-[#92999A] font-bold text-xs rounded-xl transition-colors cursor-pointer"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onSave(schedule);
+                onClose();
+              }}
+              className="flex-1 py-2.5 bg-[#58C995] hover:bg-[#68d7a4] text-black font-bold text-xs rounded-xl shadow-md transition-colors cursor-pointer"
+            >
+              Сохранить расписание
+            </button>
+          </div>
         </div>
+      }
+    >
+      <div className="space-y-3">
 
         {/* Presets Toolbar */}
         <div className="px-4 pt-3 pb-2 border-b border-[#252D2F]/60 bg-[#0d1315] space-y-2 shrink-0">
@@ -672,35 +678,8 @@ export const WeeklyScheduleModal: React.FC<WeeklyScheduleModalProps> = ({
           )}
         </div>
 
-        {/* Footer Summary & Save */}
-        <div className="p-4 border-t border-[#252D2F] bg-[#0d1315] shrink-0 space-y-3">
-          <div className="flex items-center justify-between text-xs text-[#92999A]">
-            <span>Всего за неделю:</span>
-            <span className="font-bold text-[#E8E9E7]">
-              {totalWeeklySessions} тренировок • {Math.round(totalWeeklyMinutes / 60)} ч {totalWeeklyMinutes % 60} мин
-            </span>
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              onClick={onClose}
-              className="flex-1 py-2.5 bg-[#171D1F] hover:bg-[#202729] text-[#92999A] font-bold text-xs rounded-xl transition-colors cursor-pointer"
-            >
-              Отмена
-            </button>
-            <motion.button
-              whileTap={{ scale: 0.96 }}
-              onClick={() => {
-                onSave(schedule);
-                onClose();
-              }}
-              className="flex-1 py-2.5 bg-[#58C995] hover:bg-[#68d7a4] text-black font-bold text-xs rounded-xl shadow-md transition-colors cursor-pointer"
-            >
-              Сохранить расписание
-            </motion.button>
-          </div>
-        </div>
-      </motion.div>
-    </motion.div>
+        {/* Footer Summary & Save was moved to Modal footer */}
+      </div>
+    </Modal>
   );
 };

@@ -427,6 +427,7 @@ export interface ExerciseSet {
   previousWeightKg?: number;
   previousReps?: number;
   note?: string;
+  isAutoFilled?: boolean;
 }
 
 export interface WorkoutExercise {
@@ -467,6 +468,17 @@ export interface ProgramWorkoutDay {
   exercises: ProgramExerciseTemplate[];
 }
 
+export type ProgramStatus = 'active' | 'paused' | 'completed' | 'archived';
+
+export interface ProgramCompletionStats {
+  completedAt: string;
+  totalWorkoutsCompleted: number;
+  totalVolumeKg: number;
+  totalDurationMinutes: number;
+  personalRecordsCount: number;
+  summaryNote?: string;
+}
+
 export interface WorkoutProgram {
   id: string;
   name: string;
@@ -477,6 +489,13 @@ export interface WorkoutProgram {
   weeklySchedule?: WeeklyScheduleDay[];
   isCustom: boolean;
   createdAt: string;
+  status?: ProgramStatus;
+  pausedAt?: string;
+  completedAt?: string;
+  archivedAt?: string;
+  completionStats?: ProgramCompletionStats;
+  iterationCount?: number;
+  direction?: 'programs' | 'mobility';
 }
 
 export interface PersonalRecordInfo {
@@ -537,6 +556,7 @@ export interface WorkoutSession {
   notes?: string;
   status: 'completed' | 'in_progress' | 'skipped';
   personalRecords?: PersonalRecordInfo[];
+  completedAt?: number;
 }
 
 export interface UserProfile {
@@ -574,6 +594,7 @@ export interface SportSession {
   notes?: string;
   loadScore?: number; // Calculated load points: intensity × duration × sport Coeff
   strengthSessionId?: string; // Link to WorkoutSession if it's strength
+  completedAt?: number;
 }
 
 export interface DayActivityItem {
