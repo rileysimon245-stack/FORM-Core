@@ -13,8 +13,18 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json());
 
-const PORT = Number(process.env.PORT) || 3000;
-const HOST = process.env.HOST || '0.0.0.0';
+function getCliArg(name: string): string | undefined {
+  const idx = process.argv.indexOf(name);
+  if (idx !== -1 && idx + 1 < process.argv.length) {
+    return process.argv[idx + 1];
+  }
+  const prefix = `${name}=`;
+  const eqArg = process.argv.find((arg) => arg.startsWith(prefix));
+  return eqArg ? eqArg.slice(prefix.length) : undefined;
+}
+
+const PORT = Number(getCliArg('--port') ?? process.env.PORT) || 3000;
+const HOST = getCliArg('--host') || process.env.HOST || '0.0.0.0';
 
 // API endpoint for AI program generation
 app.post('/api/generate-program', async (req, res) => {
@@ -126,11 +136,13 @@ async function start() {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
   } else {
+    const disableHmr = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== 'true',
-        watch: process.env.DISABLE_HMR === 'true' ? null : {},
+        hmr: !disableHmr,
+        ws: disableHmr ? false : undefined,
+        watch: disableHmr ? null : {},
       },
       appType: 'spa',
     });

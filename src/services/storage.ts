@@ -2079,6 +2079,16 @@ export const StorageService = {
   },
 
   importBackupJsonWithResult(jsonString: string): SafeWriteResult {
+    if (hasPendingRollbackRecovery()) {
+      const pendingKeys = getPendingRollbackKeys();
+      const keysSuffix = pendingKeys.length > 0 ? ` (${pendingKeys.join(', ')})` : '';
+      const msg = `Невозможно выполнить импорт: имеется незавершённое восстановление предыдущей операции${keysSuffix}. Сначала завершите восстановление предыдущих данных.`;
+      setLastWriteError(msg);
+      console.error('Import rejected due to pending rollback recovery:', msg);
+      notifyListeners();
+      return { ok: false, error: msg };
+    }
+
     const res = validateAndMigrateBackup(jsonString);
     if (!res.valid || !res.normalized) {
       const msg = res.error || 'Некорректный формат резервной копии.';

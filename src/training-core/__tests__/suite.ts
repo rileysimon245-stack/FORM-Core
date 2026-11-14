@@ -1450,6 +1450,113 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
     return 'Повторное восстановление после частичного rollback успешно завершается даже после рестарта';
   });
 
+  // 30. Защита незавершённого rollback от повторного импорта
+  test('Надёжность хранения (Шаг 1.2.1)', '11. Повторный импорт отклонён при незавершённом rollback и не затирает снимок восстановления', () => {
+    withIsolatedMockStorage((store, setFailRule) => {
+      store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Исходный Пользователь', age: 27 });
+      StorageService.saveProgram({
+        id: 'p_orig',
+        name: 'Исходная Программа',
+        description: '',
+        goal: 'Сила',
+        daysPerWeek: 3,
+        workouts: [],
+        isCustom: true,
+        createdAt: '2026-11-10T10:00:00.000Z',
+      });
+      const origProfileRaw = store.get('form_user_profile')!;
+      const origProgramsRaw = store.get('form_workout_programs')!;
+
+      // 1. Создаём ситуацию: первый импорт падает на programs, а rollback падает на восстановлении profile
+      const firstFailedBackup = JSON.stringify({
+        profile: { name: 'Сбойный Первый', age: 41 },
+        programs: [{ id: 'p_fail', name: 'Несохранённая', description: '', goal: 'Сила', daysPerWeek: 2, workouts: [] }],
+      });
+
+      setFailRule(
+        (k, val) =>
+          k === 'form_workout_programs' ||
+          (k === 'form_user_profile' && val === origProfileRaw)
+      );
+      const firstRes = StorageService.importBackupJsonWithResult(firstFailedBackup);
+      setFailRule(null);
+
+      assert(firstRes.ok === false, 'Первый импорт с частичным откатом должен вернуть ошибку');
+
+      // 2-3. Убеждаемся, что form_pending_rollback_v1 существует, и сохраняем его точное содержимое и состояние ключей
+      const pendingSnapshotRaw = store.get(PENDING_ROLLBACK_KEY);
+      assert(typeof pendingSnapshotRaw === 'string' && pendingSnapshotRaw.length > 0, 'Ключ form_pending_rollback_v1 должен существовать');
+      assert(hasPendingRollbackRecovery() === true, 'hasPendingRollbackRecovery() должен быть true');
+
+      const profileBeforeSecondImport = store.get('form_user_profile');
+      const programsBeforeSecondImport = store.get('form_workout_programs');
+      const workoutsBeforeSecondImport = store.get('form_workout_sessions');
+
+      // 4. Пытаемся выполнить второй, полностью корректный импорт до завершения первого восстановления
+      const secondValidBackup = JSON.stringify({
+        profile: { name: 'Второй Импорт', age: 35 },
+        programs: [{ id: 'p_second', name: 'Новая Программа 2', description: '', goal: 'Масса', daysPerWeek: 4, workouts: [] }],
+        workouts: [
+          {
+            id: 'w_second',
+            name: 'Новая тренировка 2',
+            date: '2026-11-13',
+            startTime: '18:00',
+            status: 'completed',
+            durationMinutes: 45,
+            totalVolumeKg: 1200,
+            completedSets: 4,
+            exercises: [],
+          },
+        ],
+      });
+
+      const secondRes = StorageService.importBackupJsonWithResult(secondValidBackup);
+
+      // 5. Второй импорт обязан быть отклонён с понятным сообщением
+      assert(secondRes.ok === false, 'Второй импорт до завершения восстановления обязан быть отклонён');
+      assert(
+        Boolean(secondRes.error && secondRes.error.includes('восстановление')),
+        `Сообщение об ошибке должно требовать завершить восстановление: ${secondRes.error}`
+      );
+
+      // 6-8. Снимок form_pending_rollback_v1, пользовательские данные и флаг hasPendingRollbackRecovery() неизменны
+      assert(
+        store.get(PENDING_ROLLBACK_KEY) === pendingSnapshotRaw,
+        'Содержимое form_pending_rollback_v1 обязано остаться абсолютно неизменным'
+      );
+      assert(
+        store.get('form_user_profile') === profileBeforeSecondImport &&
+          store.get('form_workout_programs') === programsBeforeSecondImport &&
+          store.get('form_workout_sessions') === workoutsBeforeSecondImport,
+        'Пользовательские данные не должны измениться из-за отклонённого второго импорта'
+      );
+      assert(hasPendingRollbackRecovery() === true, 'hasPendingRollbackRecovery() по-прежнему возвращает true');
+
+      // Проверяем также после имитации перезапуска приложения
+      resetMigrationSessionFlagForTests();
+      const secondResAfterRestart = StorageService.importBackupJsonWithResult(secondValidBackup);
+      assert(secondResAfterRestart.ok === false, 'После перезапуска повторный импорт до восстановления также отклонён');
+      assert(
+        store.get(PENDING_ROLLBACK_KEY) === pendingSnapshotRaw,
+        'После перезапуска снимок form_pending_rollback_v1 также нетронут'
+      );
+      assert(hasPendingRollbackRecovery() === true, 'После перезапуска hasPendingRollbackRecovery() === true');
+
+      // 9-10. Выполняем штатное повторное восстановление и проверяем возврат исходных данных
+      const retryRes = StorageService.retryPendingRecovery();
+      assert(retryRes.ok === true, 'Штатное повторное восстановление должно завершиться успехом');
+      assert(store.get('form_user_profile') === origProfileRaw, 'Первоначальный профиль полностью восстановлен');
+      assert(store.get('form_workout_programs') === origProgramsRaw, 'Первоначальные программы полностью восстановлены');
+      assert(store.get('form_workout_sessions') === undefined, 'Данные из отклонённого второго импорта отсутствуют');
+      assert(store.get(PENDING_ROLLBACK_KEY) === undefined, 'После успешного восстановления form_pending_rollback_v1 очищен');
+      assert(hasPendingRollbackRecovery() === false, 'После успешного восстановления hasPendingRollbackRecovery() === false');
+    });
+
+    return 'Повторный импорт заблокирован до завершения rollback; снимок и исходные данные сохранены';
+  });
+
   const passed = results.filter((r) => r.passed).length;
   const failed = results.length - passed;
   return {
