@@ -428,6 +428,10 @@ export interface ExerciseSet {
   previousReps?: number;
   note?: string;
   isAutoFilled?: boolean;
+  /** Запас повторений (Reps In Reserve): 0 = отказ, 1..3 = рабочий стимул, 4 = 4+ лёгкий, null/undefined = без оценки */
+  rir?: 0 | 1 | 2 | 3 | 4 | null;
+  /** Тип подхода: разминочный или рабочий */
+  setType?: 'warmup' | 'working';
 }
 
 export interface WorkoutExercise {
@@ -454,6 +458,9 @@ export interface ProgramExerciseTemplate {
   requiredEquipment?: EquipmentCategory;
   sets: number;
   reps: number;
+  /** Целевой диапазон повторений (двойная прогрессия) */
+  repsMin?: number;
+  repsMax?: number;
   targetWeight: number;
   restSeconds: number;
   technique?: string;
@@ -590,9 +597,13 @@ export interface SportSession {
   plannedDurationMinutes: number;
   actualDurationMinutes?: number;
   intensity: ActivityIntensity;
+  /** Субъективная тяжесть тренировки (1..10) */
+  rpe?: number;
+  /** Мышцы, вручную отмеченные пользователем для этой спортивной сессии */
+  manualMuscles?: MuscleGroup[];
   status: 'planned' | 'completed' | 'skipped' | 'rescheduled';
   notes?: string;
-  loadScore?: number; // Calculated load points: intensity × duration × sport Coeff
+  loadScore?: number; // Calculated load points: duration * rpe
   strengthSessionId?: string; // Link to WorkoutSession if it's strength
   completedAt?: number;
 }
@@ -730,6 +741,43 @@ export interface MuscleLoadStats {
   status: 'fatigued' | 'recovering' | 'recovered';
   history: MuscleLoadHistoryItem[];
   hasData: boolean;
+}
+
+export interface WellbeingCheckin {
+  id: string;
+  date: string; // YYYY-MM-DD
+  sleepHours?: number; // Часы сна
+  fatigue?: number; // Усталость 1..10
+  soreness?: number; // Мышечная болезненность 0..10
+  jointPain?: number; // Боль в суставах/связках 0..10
+  painByMuscle?: Partial<Record<MuscleGroup, number>>;
+  notes?: string;
+  createdAt: number;
+}
+
+export interface BodyMeasurement {
+  id: string;
+  date: string; // YYYY-MM-DD
+  weightKg?: number;
+  waistCm?: number;
+  chestCm?: number;
+  armCm?: number;
+  thighCm?: number;
+  notes?: string;
+  createdAt: number;
+}
+
+export interface StorageHealthReport {
+  schemaVersion: number;
+  hasPreMigrationBackup: boolean;
+  corruptedKeys: string[];
+  lastWriteError: string | null;
+  quotaOk: boolean;
+  sessionsCount: number;
+  programsCount: number;
+  sportSessionsCount: number;
+  checkinsCount: number;
+  measurementsCount: number;
 }
 
 export interface AppSettings {

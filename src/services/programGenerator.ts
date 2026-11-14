@@ -6,6 +6,7 @@ import {
 } from '../types/workout';
 import { StorageService } from './storage';
 import { FullExerciseItem } from '../data/exerciseTypes';
+import { formatLocalIsoDate } from '../training-core/dateUtils';
 
 export interface GeneratorParams {
   goal: string;
@@ -73,7 +74,7 @@ export async function generateWorkoutProgram(
             })),
           })),
           isCustom: true,
-          createdAt: new Date().toISOString().split('T')[0],
+          createdAt: formatLocalIsoDate(new Date()),
         };
 
         return { program: fullProgram, source: 'ai' };
@@ -320,6 +321,6 @@ export function generateLocalTemplateProgram(
     daysPerWeek,
     workouts,
     isCustom: true,
-    createdAt: new Date().toISOString().split('T')[0],
+    createdAt: formatLocalIsoDate(new Date()),
   };
 }

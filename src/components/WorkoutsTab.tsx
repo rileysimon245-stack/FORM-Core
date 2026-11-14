@@ -5,10 +5,12 @@ import {
   ProgramWorkoutDay,
   MuscleGroup,
   MUSCLE_DEFINITIONS,
-  EXERCISE_CATALOG,
   ProgramStatus,
 } from '../types/workout';
 import { StorageService } from '../services/storage';
+import { isIsoDateInCurrentWeek } from '../training-core/dateUtils';
+import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
+import { normalizeMuscleKeyPure } from '../training-core/muscles';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { WorkoutAnalyticsView } from './WorkoutAnalyticsView';
 import { Modal, ConfirmModal } from './common/Modal';
@@ -170,19 +172,10 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
   const totalTonnageDisplay =
     totalVolumeKg >= 1000 ? `${(totalVolumeKg / 1000).toFixed(1)} т` : `${totalVolumeKg} кг`;
 
-  // Workouts this week
+  // Workouts this week (timezone-safe local ISO week Mon-Sun)
   const workoutsThisWeekCount = useMemo(() => {
     const now = new Date();
-    const startOfWeek = new Date(now);
-    const day = now.getDay();
-    const diff = now.getDate() - day + (day === 0 ? -6 : 1); // Monday start
-    startOfWeek.setDate(diff);
-    startOfWeek.setHours(0, 0, 0, 0);
-
-    return completedSessions.filter((s) => {
-      const d = new Date(s.date);
-      return d >= startOfWeek;
-    }).length;
+    return completedSessions.filter((s) => isIsoDateInCurrentWeek(s.date, now)).length;
   }, [completedSessions]);
 
   // First active program for hero next workout card
@@ -1608,14 +1601,21 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                 План упражнений ({previewWorkoutData.day.exercises?.length || 0}):
               </span>
 
-              {previewWorkoutData.day.exercises?.map((ex, idx) => {
-                const catalogItem = EXERCISE_CATALOG.find(
-                  (c) => c.name.trim().toLowerCase() === ex.name.trim().toLowerCase()
-                );
-                const muscleKey = (catalogItem?.primaryMuscle || 'quads_rectus') as MuscleGroup;
-                const muscleNameRu = MUSCLE_DEFINITIONS[muscleKey]?.nameRu || 'Мышцы';
+              {(() => {
+                const customExercises = StorageService.getCustomExercises();
+                return previewWorkoutData.day.exercises?.map((ex, idx) => {
+                  const catalogItem = findExerciseInUnifiedCatalog(
+                    ex.exerciseId,
+                    ex.name,
+                    customExercises,
+                    ex.targetMuscle
+                  );
+                  const muscleKey = (normalizeMuscleKeyPure(
+                    ex.targetMuscle || catalogItem?.primaryMuscle
+                  ) || 'quads_rectus') as MuscleGroup;
+                  const muscleNameRu = MUSCLE_DEFINITIONS[muscleKey]?.nameRu || 'Мышцы';
 
-                return (
+                  return (
                   <div
                     key={idx}
                     className="bg-[#121A1E] border border-[#1B272C] rounded-2xl p-3 flex items-center justify-between gap-3"
@@ -1642,8 +1642,9 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                       </span>
                     </div>
                   </div>
-                );
-              })}
+                  );
+                });
+              })()}
             </div>
           </div>
         )}

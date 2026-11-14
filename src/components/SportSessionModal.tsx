@@ -5,6 +5,9 @@ import {
   ActivityIntensity,
   SPORT_DEFINITIONS,
 } from '../types/workout';
+import { calculateSportLoad, mapLegacySportIntensityToRpe } from '../training-core/coreMath';
+import { formatLocalIsoDate } from '../training-core/dateUtils';
+import { SafeWriteResult } from '../services/migrations';
 import { FormSelect } from './common/FormSelect';
 import {
   X,
@@ -26,42 +29,53 @@ import { Modal } from './common/Modal';
 interface SportSessionModalProps {
   initialSession?: SportSession | null;
   defaultDate?: string;
-  onSave: (session: SportSession) => void;
+  onSave: (session: SportSession) => void | SafeWriteResult;
   onDelete?: (sessionId: string) => void;
   onClose: () => void;
 }
 
 export const SportSessionModal: React.FC<SportSessionModalProps> = ({
   initialSession,
-  defaultDate = '2026-10-29',
+  defaultDate,
   onSave,
   onDelete,
   onClose,
 }) => {
+  const resolvedDefaultDate = defaultDate || formatLocalIsoDate(new Date());
   const [sportType, setSportType] = useState<SportType>(
     initialSession?.sportType || 'boxing'
   );
   const [title, setTitle] = useState(
     initialSession?.title || 'Бокс: тренировка'
   );
-  const [date, setDate] = useState(initialSession?.date || defaultDate);
+  const [date, setDate] = useState(initialSession?.date || resolvedDefaultDate);
   const [startTime, setStartTime] = useState(initialSession?.startTime || '19:00');
-  const [durationMinutes, setDurationMinutes] = useState(
-    initialSession?.actualDurationMinutes || initialSession?.plannedDurationMinutes || 60
+  const [durationMinutes, setDurationMinutes] = useState<number>(
+    initialSession?.actualDurationMinutes ?? initialSession?.plannedDurationMinutes ?? 60
   );
   const [intensity, setIntensity] = useState<ActivityIntensity>(
     initialSession?.intensity || 'high'
+  );
+  const [rpe, setRpe] = useState<number>(() =>
+    typeof initialSession?.rpe === 'number' && Number.isFinite(initialSession.rpe)
+      ? initialSession.rpe
+      : mapLegacySportIntensityToRpe(initialSession?.intensity || 'high')
   );
   const [status, setStatus] = useState<'planned' | 'completed' | 'skipped' | 'rescheduled'>(
     initialSession?.status || 'completed'
   );
   const [notes, setNotes] = useState(initialSession?.notes || '');
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const sportDef = SPORT_DEFINITIONS[sportType] || SPORT_DEFINITIONS.other_sport;
 
-  // Real-time load score preview
-  const intensityMult = intensity === 'high' ? 2.2 : intensity === 'medium' ? 1.5 : 1.0;
-  const estimatedLoadScore = Math.round(durationMinutes * intensityMult * (sportDef.loadMultiplier / 1.5));
+  // Единый расчёт нагрузки (100% идентичный StorageService.saveSportSession)
+  const sportLoadResult = calculateSportLoad({
+    durationMinutes,
+    rpe,
+    legacyIntensity: intensity,
+  });
+  const estimatedLoadScore = sportLoadResult.isValid ? sportLoadResult.loadUnits : 0;
 
   const handleSportChange = (newSport: SportType) => {
     setSportType(newSport);
@@ -71,9 +85,22 @@ export const SportSessionModal: React.FC<SportSessionModalProps> = ({
     }
   };
 
+  const handleIntensityChange = (newIntensity: ActivityIntensity) => {
+    setIntensity(newIntensity);
+    setRpe(mapLegacySportIntensityToRpe(newIntensity));
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    setSaveError(null);
+    if (!title.trim()) {
+      setSaveError('Укажите название активности.');
+      return;
+    }
+    if (!sportLoadResult.isValid) {
+      setSaveError(sportLoadResult.error || 'Проверьте корректность длительности и RPE (1–10).');
+      return;
+    }
 
     const sessionToSave: SportSession = {
       id: initialSession?.id || `sport_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -84,12 +111,17 @@ export const SportSessionModal: React.FC<SportSessionModalProps> = ({
       plannedDurationMinutes: durationMinutes,
       actualDurationMinutes: status === 'completed' ? durationMinutes : undefined,
       intensity,
+      rpe: sportLoadResult.usedRpe ?? rpe,
       status,
       notes: notes.trim(),
       loadScore: estimatedLoadScore,
     };
 
-    onSave(sessionToSave);
+    const result = onSave(sessionToSave);
+    if (result && !result.ok) {
+      setSaveError(result.error || 'Не удалось сохранить занятие. Проверьте память устройства.');
+      return;
+    }
     onClose();
   };
 
@@ -224,11 +256,14 @@ export const SportSessionModal: React.FC<SportSessionModalProps> = ({
               </label>
               <input
                 type="number"
-                min="10"
+                min="0"
                 max="300"
                 step="5"
                 value={durationMinutes}
-                onChange={(e) => setDurationMinutes(Number(e.target.value) || 45)}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setDurationMinutes(Number.isFinite(val) ? val : 0);
+                }}
                 className="w-full bg-[#171D1F] border border-[#252D2F] rounded-xl px-3 py-2 text-xs text-[#E8E9E7] font-mono focus:outline-none focus:border-[#58C995]"
               />
             </div>
@@ -237,13 +272,42 @@ export const SportSessionModal: React.FC<SportSessionModalProps> = ({
               <FormSelect
                 label="Интенсивность"
                 value={intensity}
-                onChange={(val) => setIntensity(val as ActivityIntensity)}
+                onChange={(val) => handleIntensityChange(val as ActivityIntensity)}
                 options={[
-                  { value: 'low', label: '🟢 Лёгкая (восстановительная)' },
-                  { value: 'medium', label: '🟡 Средняя (рабочий темп)' },
-                  { value: 'high', label: '🔴 Высокая (тяжёлая / матч)' },
+                  { value: 'low', label: '🟢 Лёгкая (RPE 4)' },
+                  { value: 'medium', label: '🟡 Средняя (RPE 6)' },
+                  { value: 'high', label: '🔴 Высокая (RPE 8)' },
                 ]}
               />
+            </div>
+          </div>
+
+          {/* Subjective RPE (1..10) synced with calculateSportLoad */}
+          <div className="p-2.5 bg-[#0D1416] border border-[#1E2A2D] rounded-xl flex items-center justify-between gap-2 text-xs">
+            <div className="min-w-0">
+              <span className="font-semibold text-[#C9D3CE] block">Тяжесть (RPE 1–10)</span>
+              <span className="text-[10px] text-[#869194]">
+                Нагрузка = длительность × RPE
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setRpe((prev) => Math.max(1, prev - 1))}
+                className="w-7 h-7 rounded-lg bg-[#171D1F] border border-[#252D2F] text-[#E8E9E7] font-bold hover:border-[#58C995] cursor-pointer"
+                aria-label="Уменьшить RPE"
+              >
+                -
+              </button>
+              <span className="w-8 text-center font-mono font-bold text-[#58C995]">{rpe}</span>
+              <button
+                type="button"
+                onClick={() => setRpe((prev) => Math.min(10, prev + 1))}
+                className="w-7 h-7 rounded-lg bg-[#171D1F] border border-[#252D2F] text-[#E8E9E7] font-bold hover:border-[#58C995] cursor-pointer"
+                aria-label="Увеличить RPE"
+              >
+                +
+              </button>
             </div>
           </div>
 
@@ -293,12 +357,18 @@ export const SportSessionModal: React.FC<SportSessionModalProps> = ({
           <div className="p-3 bg-[#080D0E] rounded-xl border border-[#202729] flex items-center justify-between text-xs">
             <div className="flex items-center gap-2 text-[#92999A]">
               <Info className="w-4 h-4 text-[#58C995]" />
-              <span>Расчётная нагрузка на организм:</span>
+              <span>Расчётная нагрузка ({sportDef.nameRu}):</span>
             </div>
             <span className="font-bold text-[#58C995] font-mono">
-              ~{estimatedLoadScore} баллов нагрузки
+              {sportLoadResult.isValid ? `${estimatedLoadScore} у.е.` : 'некорректно'}
             </span>
           </div>
+
+          {saveError && (
+            <div className="p-2.5 bg-[#2B1414] border border-[#5C2626] rounded-xl text-xs text-[#FCA5A5]">
+              {saveError}
+            </div>
+          )}
 
           {/* Notes */}
           <div>

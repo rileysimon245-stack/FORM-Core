@@ -4,9 +4,9 @@ import {
   WorkoutExercise,
   ExerciseSet,
   MuscleGroup,
-  EXERCISE_CATALOG,
 } from '../types/workout';
 import { StorageService } from '../services/storage';
+import { getUnifiedCatalog } from '../training-core/catalog';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { ConfirmModal } from './common/Modal';
 import {
@@ -166,7 +166,7 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
     onSave(updated);
   };
 
-  const filteredCatalog = EXERCISE_CATALOG.filter((item) =>
+  const filteredCatalog = getUnifiedCatalog(StorageService.getCustomExercises()).filter((item) =>
     item.name.toLowerCase().includes(search.toLowerCase())
   );
 

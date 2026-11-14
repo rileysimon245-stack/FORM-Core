@@ -5,10 +5,12 @@ import {
   ExerciseSet,
   MuscleGroup,
   PersonalRecordInfo,
-  EXERCISE_CATALOG,
   MUSCLE_DEFINITIONS,
 } from '../types/workout';
 import { StorageService } from '../services/storage';
+import { SafeWriteResult } from '../services/migrations';
+import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
+import { normalizeMuscleKeyPure, normalizeMuscleListPure } from '../training-core/muscles';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { Modal, ConfirmModal, PromptModal } from './common/Modal';
 import {
@@ -37,7 +39,7 @@ import { motion, AnimatePresence } from 'motion/react';
 
 interface ActiveWorkoutModalProps {
   session: WorkoutSession;
-  onSave: (updatedSession: WorkoutSession) => void;
+  onSave: (updatedSession: WorkoutSession) => void | SafeWriteResult;
   onCancel: () => void;
   isRestoredDraft?: boolean;
 }
@@ -66,6 +68,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
   const [showNotePrompt, setShowNotePrompt] = useState<boolean>(false);
   const [showRestoredToast, setShowRestoredToast] = useState<boolean>(Boolean(isRestoredDraft));
   const [isListeningVoice, setIsListeningVoice] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Rest timer
   const [restSecondsRemaining, setRestSecondsRemaining] = useState<number | null>(null);
@@ -133,7 +136,12 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       notes: sessionNotes,
       status: 'in_progress',
     };
-    StorageService.saveActiveDraft(draft);
+    const draftRes = StorageService.saveActiveDraft(draft);
+    if (!draftRes.ok) {
+      setSaveError(
+        draftRes.error || 'Не удалось автосохранить черновик тренировки (ошибка памяти).'
+      );
+    }
   }, [exercises, sessionNotes, secondsElapsed, session]);
 
   // Workout duration stopwatch
@@ -279,20 +287,27 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     setZoomScale((prev) => Math.max(0.9, Math.round((prev - 0.05) * 100) / 100));
   };
 
-  // Add exercise from catalog
+  // Add exercise from catalog (preserving custom & full catalog metadata)
   const handleAddFromCatalog = (item: any) => {
     const defaultSetsCount = item.defaultSets || 4;
     const defaultRepsCount = item.defaultReps || 12;
     const defaultWeightVal = item.defaultWeight || (item.isBodyweight ? 0 : 80);
     const restSec = item.defaultRestSeconds || 90;
+    const normPrimary =
+      normalizeMuscleKeyPure(item.primaryMuscle) || item.primaryMuscle || 'quads_rectus';
+    const normSecondary = normalizeMuscleListPure(item.secondaryMuscles || []).filter(
+      (m) => m !== normPrimary
+    );
 
     const newEx: WorkoutExercise = {
       id: `ex_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       exerciseId: item.id,
       name: item.name,
-      targetMuscle: item.primaryMuscle || 'quads_rectus',
-      secondaryMuscles: item.secondaryMuscles || [],
+      targetMuscle: normPrimary,
+      secondaryMuscles: normSecondary,
       isBodyweight: Boolean(item.isBodyweight),
+      requiredEquipment: item.requiredEquipment,
+      technique: item.technique,
       restSeconds: restSec,
       sets: Array.from({ length: defaultSetsCount }).map((_, idx) => ({
         setNumber: idx + 1,
@@ -381,6 +396,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
   };
 
   const handleConfirmFinish = () => {
+    setSaveError(null);
     const finalSession: WorkoutSession = {
       ...session,
       exercises,
@@ -394,7 +410,13 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       personalRecords: detectPersonalRecords(),
     };
 
-    onSave(finalSession);
+    const result = onSave(finalSession);
+    if (result && !result.ok) {
+      setSaveError(
+        result.error ||
+          'Не удалось сохранить тренировку в память устройства. Проверьте свободное место или Настройки → Данные.'
+      );
+    }
   };
 
   // Format stopwatch string
@@ -404,12 +426,14 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  // Helper for difficulty
+  // Helper for difficulty using unified catalog (198+ & custom exercises)
   const getDifficultyInfo = (ex: WorkoutExercise) => {
-    const catalogItem = EXERCISE_CATALOG.find(
-      (c) =>
-        c.id === ex.exerciseId ||
-        c.name.trim().toLowerCase() === ex.name.trim().toLowerCase()
+    const customExercises = StorageService.getCustomExercises();
+    const catalogItem = findExerciseInUnifiedCatalog(
+      ex.exerciseId,
+      ex.name,
+      customExercises,
+      ex.targetMuscle
     );
     const diff = catalogItem?.difficulty || 'Средний';
     let greenBars = 2;
@@ -549,6 +573,23 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {saveError && !showFinishSummary && (
+        <div
+          role="alert"
+          className="relative z-40 mx-4 mt-1 px-3.5 py-2 rounded-2xl bg-[#2B1414] border border-[#5C2626] text-xs text-[#FCA5A5] flex items-center justify-between gap-2"
+        >
+          <span className="flex-1">{saveError}</span>
+          <button
+            type="button"
+            onClick={() => setSaveError(null)}
+            className="text-[#FCA5A5] hover:text-white p-0.5 cursor-pointer"
+            aria-label="Скрыть ошибку"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* ======================================================== */}
       {/* 2. FLOATING RIGHT ZOOM DOCK (+ / −)                      */}
@@ -1283,6 +1324,14 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                 );
               })()}
 
+              {/* Save Error Feedback inside Finish Modal */}
+              {saveError && (
+                <div className="p-3 bg-[#2B1414] border border-[#5C2626] rounded-2xl text-xs text-[#FCA5A5] leading-relaxed">
+                  <strong className="block text-[#F87171] mb-0.5">Ошибка сохранения:</strong>
+                  <span>{saveError}</span>
+                </div>
+              )}
+
               {/* Actions */}
               <div className="flex flex-col gap-2 pt-2 border-t border-[#1E282D]">
                 <button
@@ -1294,7 +1343,10 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowFinishSummary(false)}
+                  onClick={() => {
+                    setSaveError(null);
+                    setShowFinishSummary(false);
+                  }}
                   className="w-full py-2.5 bg-[#182327] text-[#869194] hover:text-white font-semibold text-xs rounded-xl cursor-pointer"
                 >
                   Вернуться к тренировке

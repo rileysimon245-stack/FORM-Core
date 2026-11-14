@@ -11,6 +11,7 @@ import {
   staggerListContainer,
   staggerListItem,
 } from '../utils/animations';
+import { safeGetRaw, safeSetItem } from '../services/migrations';
 
 interface AnimationContextValue {
   isMotionReduced: boolean;
@@ -35,7 +36,7 @@ export const AnimationProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [isMotionReduced, setIsMotionReduced] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       return (
-        window.localStorage.getItem('form_reduced_motion') === 'true' ||
+        safeGetRaw('form_reduced_motion') === 'true' ||
         window.matchMedia('(prefers-reduced-motion: reduce)').matches
       );
     }
@@ -43,11 +44,7 @@ export const AnimationProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem('form_reduced_motion', String(isMotionReduced));
-    } catch {
-      // ignore
-    }
+    safeSetItem('form_reduced_motion', String(isMotionReduced));
   }, [isMotionReduced]);
 
   const toggleReducedMotion = () => {

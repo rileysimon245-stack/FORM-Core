@@ -5,6 +5,7 @@ import { StorageService } from '../services/storage';
 import { ExerciseProgressPoint, MuscleGroup, MUSCLE_DEFINITIONS } from '../types/workout';
 import { FullExerciseItem } from '../data/exerciseTypes';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
+import { parseIsoDateLocal } from '../training-core/dateUtils';
 import {
   X,
   TrendingUp,
@@ -149,8 +150,8 @@ export const ExerciseProgressModal: React.FC<ExerciseProgressModalProps> = ({
   const formatFullDateRu = (isoDate: string): string => {
     if (!isoDate) return '';
     try {
-      const d = new Date(isoDate);
-      if (isNaN(d.getTime())) return isoDate;
+      const d = parseIsoDateLocal(isoDate, 12);
+      if (!d) return isoDate;
       return d.toLocaleDateString('ru-RU', {
         day: 'numeric',
         month: 'long',

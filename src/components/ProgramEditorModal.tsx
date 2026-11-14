@@ -12,6 +12,7 @@ import { FormSelect } from './common/FormSelect';
 import { X, Plus, Trash2, ArrowRightLeft, ChevronDown, ChevronUp, BookOpen, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
+import { formatLocalIsoDate } from '../training-core/dateUtils';
 
 interface ProgramEditorModalProps {
   initialProgram?: WorkoutProgram | null;
@@ -252,7 +253,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
       daysPerWeek,
       workouts,
       isCustom: true,
-      createdAt: initialProgram?.createdAt || new Date().toISOString().split('T')[0],
+      createdAt: initialProgram?.createdAt || formatLocalIsoDate(new Date()),
     };
 
     onSave(programToSave);

@@ -6,6 +6,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { StorageService } from './services/storage';
+import { SafeWriteResult } from './services/migrations';
+import { findExerciseInUnifiedCatalog } from './training-core/catalog';
+import { normalizeMuscleKeyPure, normalizeMuscleListPure } from './training-core/muscles';
+import { formatLocalIsoDate } from './training-core/dateUtils';
 import {
   UserProfile,
   WorkoutProgram,
@@ -90,6 +94,12 @@ export default function App() {
   const [muscleStats, setMuscleStats] = useState(StorageService.getMuscleStats());
   const [activeDraft, setActiveDraft] = useState<WorkoutSession | null>(StorageService.getActiveDraft());
   const [recentlyCompletedDate, setRecentlyCompletedDate] = useState<string | null>(null);
+  const [storageErrorNotice, setStorageErrorNotice] = useState<string | null>(() =>
+    StorageService.getLastWriteError()
+  );
+  const [corruptedKeysCount, setCorruptedKeysCount] = useState<number>(
+    () => StorageService.getCorruptedKeys().length
+  );
 
   // Modals state
   const [activeWorkoutSession, setActiveWorkoutSession] = useState<WorkoutSession | null>(null);
@@ -144,6 +154,8 @@ export default function App() {
     setWeeklySchedule(StorageService.getWeeklySchedule());
     setMuscleStats(StorageService.getMuscleStats());
     setActiveDraft(StorageService.getActiveDraft());
+    setStorageErrorNotice(StorageService.getLastWriteError());
+    setCorruptedKeysCount(StorageService.getCorruptedKeys().length);
   }, [currentYear]);
 
   useEffect(() => {
@@ -158,7 +170,8 @@ export default function App() {
     programId?: string
   ) => {
     const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayStr = formatLocalIsoDate(now);
+    const customExercises = StorageService.getCustomExercises();
 
     // Create an immutable snapshot of the program day and planned exercises
     const programSnapshot: ProgramSnapshot = {
@@ -169,7 +182,7 @@ export default function App() {
       targetMuscleGroups: day.targetMuscleGroups ? [...day.targetMuscleGroups] : undefined,
       plannedExercises: (day.exercises || []).map((ex) => ({
         name: ex.name,
-        targetMuscle: ex.targetMuscle,
+        targetMuscle: normalizeMuscleKeyPure(ex.targetMuscle) || ex.targetMuscle,
         sets: ex.sets || 3,
         reps: ex.reps || 10,
         targetWeight: ex.isBodyweight ? 0 : (ex.targetWeight || 0),
@@ -192,20 +205,40 @@ export default function App() {
       totalVolumeKg: 0,
       completedSets: 0,
       status: 'in_progress',
-      exercises: (day.exercises || []).map((ex, idx) => ({
-        id: `ex_${idx}_${Date.now()}`,
-        exerciseId: `ex_${idx}`,
-        name: ex.name,
-        targetMuscle: ex.targetMuscle,
-        isBodyweight: ex.isBodyweight,
-        restSeconds: ex.restSeconds || 90,
-        sets: Array.from({ length: ex.sets || 3 }).map((_, sIdx) => ({
-          setNumber: sIdx + 1,
-          weightKg: ex.isBodyweight ? 0 : (ex.targetWeight || 0),
-          reps: ex.reps || 10,
-          completed: false,
-        })),
-      })),
+      exercises: (day.exercises || []).map((ex, idx) => {
+        const catalogEntry = findExerciseInUnifiedCatalog(
+          ex.exerciseId,
+          ex.name,
+          customExercises,
+          ex.targetMuscle
+        );
+        const resolvedPrimary =
+          normalizeMuscleKeyPure(ex.targetMuscle || catalogEntry?.primaryMuscle) || ex.targetMuscle;
+        const rawSec =
+          ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+            ? ex.secondaryMuscles
+            : catalogEntry?.secondaryMuscles || [];
+        const resolvedSecondary = normalizeMuscleListPure(rawSec).filter(
+          (m) => m !== resolvedPrimary
+        );
+        return {
+          id: `ex_${idx}_${Date.now()}`,
+          exerciseId: ex.exerciseId || catalogEntry?.id || `ex_${idx}`,
+          name: ex.name,
+          targetMuscle: resolvedPrimary,
+          secondaryMuscles: resolvedSecondary,
+          isBodyweight: ex.isBodyweight,
+          requiredEquipment: ex.requiredEquipment || catalogEntry?.requiredEquipment,
+          restSeconds: ex.restSeconds || 90,
+          technique: ex.technique || catalogEntry?.technique,
+          sets: Array.from({ length: ex.sets || 3 }).map((_, sIdx) => ({
+            setNumber: sIdx + 1,
+            weightKg: ex.isBodyweight ? 0 : (ex.targetWeight || 0),
+            reps: ex.reps || 10,
+            completed: false,
+          })),
+        };
+      }),
     };
 
     setIsResumedDraft(false);
@@ -215,7 +248,7 @@ export default function App() {
   // Quick start blank workout
   const handleStartCustomQuickWorkout = () => {
     const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayStr = formatLocalIsoDate(now);
     const quickSession: WorkoutSession = {
       id: `session_${Date.now()}`,
       name: 'Свободная тренировка',
@@ -234,14 +267,21 @@ export default function App() {
   };
 
   // Complete and save active workout
-  const handleSaveActiveWorkout = (completedSession: WorkoutSession) => {
-    StorageService.saveWorkoutSession(completedSession);
-    StorageService.clearActiveDraft();
+  const handleSaveActiveWorkout = (completedSession: WorkoutSession): SafeWriteResult => {
+    const res = StorageService.saveWorkoutSession(completedSession);
+    if (!res.ok) {
+      setStorageErrorNotice(
+        res.error || 'Не удалось сохранить тренировку в память устройства.'
+      );
+      return res;
+    }
+    setStorageErrorNotice(null);
     setIsResumedDraft(false);
     setActiveWorkoutSession(null);
     setActiveDraft(null);
     setRecentlyCompletedDate(completedSession.date);
     setTimeout(() => setRecentlyCompletedDate(null), 3000);
+    return res;
   };
 
   // Resume or discard draft
@@ -267,7 +307,12 @@ export default function App() {
   // Day status toggle from DayDetailsModal
   const handleSetDayStatus = (newStatus: 'completed' | 'skipped' | 'none') => {
     if (!inspectingDay) return;
-    StorageService.setDayStatus(inspectingDay.dateStr, newStatus);
+    const res = StorageService.setDayStatus(inspectingDay.dateStr, newStatus);
+    if (!res.ok) {
+      setStorageErrorNotice(res.error || 'Не удалось обновить статус дня.');
+      return;
+    }
+    setStorageErrorNotice(null);
     if (newStatus === 'completed') {
       setRecentlyCompletedDate(inspectingDay.dateStr);
       setTimeout(() => setRecentlyCompletedDate(null), 3000);
@@ -292,36 +337,63 @@ export default function App() {
   };
 
   // Export JSON backup
-  const handleExportData = () => {
-    const json = StorageService.exportBackupJson();
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `FORM_workout_backup_${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const handleExportData = (): SafeWriteResult => {
+    try {
+      const json = StorageService.exportBackupJson();
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `FORM_workout_backup_${formatLocalIsoDate(new Date())}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      return { ok: true, error: null };
+    } catch (err: any) {
+      const msg = err?.message || 'Не удалось сформировать файл резервной копии.';
+      setStorageErrorNotice(msg);
+      return { ok: false, error: msg };
+    }
   };
 
   // Import JSON backup
-  const handleImportData = (jsonStr: string) => {
-    return StorageService.importBackupJson(jsonStr);
+  const handleImportData = (jsonStr: string): SafeWriteResult => {
+    const res = StorageService.importBackupJsonWithResult(jsonStr);
+    if (res.ok) {
+      setStorageErrorNotice(null);
+      reloadData();
+    } else {
+      setStorageErrorNotice(res.error || 'Не удалось импортировать резервную копию.');
+    }
+    return res;
   };
 
   // Save weekly schedule
   const handleSaveWeeklySchedule = (newSchedule: WeeklyScheduleDay[]) => {
-    StorageService.saveWeeklySchedule(newSchedule);
+    const res = StorageService.saveWeeklySchedule(newSchedule);
+    if (!res.ok) {
+      setStorageErrorNotice(res.error || 'Не удалось сохранить расписание недели.');
+      return;
+    }
+    setStorageErrorNotice(null);
     setShowWeeklyScheduleModal(false);
     reloadData();
   };
 
   // Save sport session
-  const handleSaveSportSession = (session: SportSession) => {
-    StorageService.saveSportSession(session);
+  const handleSaveSportSession = (session: SportSession): SafeWriteResult => {
+    const res = StorageService.saveSportSession(session);
+    if (!res.ok) {
+      setStorageErrorNotice(res.error || 'Не удалось сохранить спортивное занятие.');
+      return res;
+    }
+    setStorageErrorNotice(null);
     setSportModalDate(null);
-    setRecentlyCompletedDate(session.date);
-    setTimeout(() => setRecentlyCompletedDate(null), 3000);
+    if (session.status === 'completed') {
+      setRecentlyCompletedDate(session.date);
+      setTimeout(() => setRecentlyCompletedDate(null), 3000);
+    }
     reloadData();
+    return res;
   };
 
   return (
@@ -329,6 +401,47 @@ export default function App() {
       <div className="h-[100dvh] w-full bg-[#08100D] text-[#F2F5F3] flex justify-center selection:bg-[#56CC97] selection:text-black overflow-hidden">
         {/* Mobile Smartphone Frame Container */}
         <div className="w-full max-w-md h-full bg-[#08100D] flex flex-col relative px-4 pt-2 pb-0 border-x border-[#12251E] shadow-2xl overflow-hidden">
+          {(storageErrorNotice || corruptedKeysCount > 0) && (
+            <div
+              role="alert"
+              className="mb-2 px-3 py-2 rounded-2xl bg-[#2B1414] border border-[#5C2626] text-[11px] text-[#FCA5A5] flex items-center justify-between gap-2 shrink-0"
+            >
+              <div className="min-w-0 flex-1">
+                <strong className="text-[#F87171] block">
+                  {corruptedKeysCount > 0
+                    ? `Обнаружены повреждённые ключи (${corruptedKeysCount})`
+                    : 'Ошибка сохранения данных'}
+                </strong>
+                <span className="truncate block">
+                  {storageErrorNotice ||
+                    'Повреждённый раздел заблокирован от перезаписи. Откройте настройки → Данные.'}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowSettings(true)}
+                  className="px-2 py-1 rounded-lg bg-[#3A1C1C] hover:bg-[#4B2323] text-white font-bold text-[10px] cursor-pointer"
+                >
+                  Данные
+                </button>
+                {storageErrorNotice && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      StorageService.clearLastWriteError();
+                      setStorageErrorNotice(null);
+                    }}
+                    className="px-1.5 py-1 rounded-lg text-[#FCA5A5] hover:text-white font-bold text-[10px] cursor-pointer"
+                    aria-label="Скрыть уведомление"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Tab Content Display with authentic iOS-style elastic scrolling */}
           <main className="flex-1 min-h-0 w-full relative flex flex-col overflow-hidden">
             <ElasticScroll
@@ -464,7 +577,12 @@ export default function App() {
                 key="modal-program-editor"
                 initialProgram={editingProgram === 'new' ? null : editingProgram}
                 onSave={(savedProgram) => {
-                  StorageService.saveProgram(savedProgram);
+                  const res = StorageService.saveProgram(savedProgram);
+                  if (!res.ok) {
+                    setStorageErrorNotice(res.error || 'Не удалось сохранить программу.');
+                    return;
+                  }
+                  setStorageErrorNotice(null);
                   setEditingProgram(null);
                 }}
                 onClose={() => setEditingProgram(null)}
@@ -476,7 +594,12 @@ export default function App() {
               <ProgramGeneratorModal
                 key="modal-program-generator"
                 onProgramGenerated={(generatedProgram) => {
-                  StorageService.saveProgram(generatedProgram);
+                  const res = StorageService.saveProgram(generatedProgram);
+                  if (!res.ok) {
+                    setStorageErrorNotice(res.error || 'Не удалось сохранить программу.');
+                    return;
+                  }
+                  setStorageErrorNotice(null);
                   setShowProgramGenerator(false);
                 }}
                 onClose={() => setShowProgramGenerator(false)}
@@ -570,8 +693,9 @@ export default function App() {
                 onExportData={handleExportData}
                 onImportData={handleImportData}
                 onResetData={() => {
-                  StorageService.resetAllData();
+                  const res = StorageService.resetAllData();
                   reloadData();
+                  return res;
                 }}
                 onDataChanged={reloadData}
               />

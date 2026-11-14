@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   WorkoutExercise,
   ExerciseSet,
-  MuscleGroup,
   MUSCLE_DEFINITIONS,
-  EXERCISE_CATALOG,
 } from '../types/workout';
+import { StorageService } from '../services/storage';
+import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
 import {
   Check,
   Plus,
@@ -47,17 +47,25 @@ export const ActiveExerciseCard: React.FC<ActiveExerciseCardProps> = ({
 }) => {
   const shouldReduceMotion = useReducedMotion();
 
+  const catalogItem = useMemo(() => {
+    const customExercises = StorageService.getCustomExercises();
+    return findExerciseInUnifiedCatalog(
+      exercise.exerciseId,
+      exercise.name,
+      customExercises,
+      exercise.targetMuscle
+    );
+  }, [exercise.exerciseId, exercise.name, exercise.targetMuscle]);
+
   // Equipment type and icon detection for tile
   const equipmentInfo = useMemo(() => {
     const nameLow = exercise.name.toLowerCase();
-    const catalogItem = EXERCISE_CATALOG.find(
-      (c) =>
-        c.id === exercise.exerciseId ||
-        c.name.trim().toLowerCase() === exercise.name.trim().toLowerCase()
-    );
+    const reqEq = exercise.requiredEquipment || catalogItem?.requiredEquipment;
 
     if (
       exercise.isBodyweight ||
+      catalogItem?.isBodyweight ||
+      reqEq === 'bodyweight' ||
       nameLow.includes('подтягиван') ||
       nameLow.includes('отжиман') ||
       nameLow.includes('планк') ||
@@ -66,13 +74,19 @@ export const ActiveExerciseCard: React.FC<ActiveExerciseCardProps> = ({
     ) {
       return { label: 'Свой вес', icon: Shield };
     }
-    if (nameLow.includes('штанг') || nameLow.includes('barbell')) {
+    if (reqEq === 'barbell' || nameLow.includes('штанг') || nameLow.includes('barbell')) {
       return { label: 'Штанга', icon: Dumbbell };
     }
-    if (nameLow.includes('гантел') || nameLow.includes('dumbbell')) {
+    if (
+      reqEq === 'dumbbells_adjustable' ||
+      reqEq === 'dumbbells_fixed' ||
+      nameLow.includes('гантел') ||
+      nameLow.includes('dumbbell')
+    ) {
       return { label: 'Гантели', icon: Dumbbell };
     }
     if (
+      reqEq === 'gym_machines' ||
       nameLow.includes('тренажёр') ||
       nameLow.includes('машин') ||
       nameLow.includes('блоч') ||
@@ -91,23 +105,18 @@ export const ActiveExerciseCard: React.FC<ActiveExerciseCardProps> = ({
       return { label: 'Кардио', icon: Activity };
     }
     return { label: 'Другое', icon: Dumbbell };
-  }, [exercise.name, exercise.exerciseId, exercise.isBodyweight]);
+  }, [exercise.name, exercise.isBodyweight, exercise.requiredEquipment, catalogItem]);
 
   const EquipmentIcon = equipmentInfo.icon;
 
-  // Difficulty level from catalog & bar height mapping
+  // Difficulty level from unified catalog & bar height mapping
   const difficultyInfo = useMemo(() => {
-    const catalogItem = EXERCISE_CATALOG.find(
-      (c) =>
-        c.id === exercise.exerciseId ||
-        c.name.trim().toLowerCase() === exercise.name.trim().toLowerCase()
-    );
     const diff = catalogItem?.difficulty || 'Средний';
     let level = 2; // 1: beginner, 2: intermediate, 3: advanced
     if (diff === 'Начинающий' || diff === 'Легкий') level = 1;
     if (diff === 'Сложный' || diff === 'Опытный') level = 3;
     return { label: diff, level };
-  }, [exercise.exerciseId, exercise.name]);
+  }, [catalogItem]);
 
   // Dynamic plan label: "4 × 12"
   const planLabel = useMemo(() => {

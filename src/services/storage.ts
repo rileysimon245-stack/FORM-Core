@@ -24,9 +24,51 @@ import {
   ExerciseProgressPoint,
   ProgramStatus,
   ProgramCompletionStats,
+  WellbeingCheckin,
+  BodyMeasurement,
+  StorageHealthReport,
 } from '../types/workout';
 import { FullExerciseItem } from '../data/exerciseTypes';
 import { COMPREHENSIVE_FULL_CATALOG } from '../data/fullExerciseCatalog';
+import { normalizeMuscleKeyPure } from '../training-core/muscles';
+import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
+import { isSetCompletedPure, calculateSportLoad } from '../training-core/coreMath';
+import {
+  formatLocalIsoDate,
+  parseIsoDateLocal,
+  getStartOfIsoWeekLocal,
+  getEndOfIsoWeekLocal,
+  getCalendarDaysAgo,
+} from '../training-core/dateUtils';
+import {
+  CURRENT_SCHEMA_VERSION,
+  SCHEMA_VERSION_KEY,
+  PRE_MIGRATION_BACKUP_KEY,
+  CORRUPTED_RAW_PREFIX,
+  CORRUPTED_LOCKS_INDEX_KEY,
+  PENDING_ROLLBACK_KEY,
+  SafeWriteResult,
+  runSafeMigrations,
+  safeGetJson,
+  safeGetRaw,
+  safeSetItem,
+  safeRemoveItem,
+  flagCorruptedKey,
+  clearCorruptedLock,
+  confirmClearedLocksAfterRecovery,
+  getCorruptedKeys,
+  isLocksIndexCorrupted,
+  getLastWriteError,
+  setLastWriteError,
+  clearLastWriteError,
+  captureStorageKeysSnapshot,
+  restoreStorageKeysSnapshotDetailed,
+  hasPendingRollbackRecovery,
+  getPendingRollbackKeys,
+  retryPendingRollbackRecovery,
+  clearPendingRollbackState,
+  validateAndMigrateBackup,
+} from './migrations';
 
 const STORAGE_KEYS = {
   APP_INITIALIZED: 'form_app_initialized_v10',
@@ -45,6 +87,8 @@ const STORAGE_KEYS = {
   SETTINGS: 'form_app_settings_v1',
   ANATOMY_RESET_TIME: 'form_anatomy_reset_time',
   ACTIVE_DIRECTION: 'form_active_direction_v1',
+  WELLBEING_CHECKINS: 'form_wellbeing_checkins_v1',
+  BODY_MEASUREMENTS: 'form_body_measurements_v1',
 };
 
 export function isSessionAfterReset(
@@ -78,16 +122,16 @@ export function isSessionAfterReset(
   // 3. Time string (endTime or startTime)
   const timeStr = session.endTime || session.startTime;
   if (timeStr && /^\d{1,2}:\d{2}/.test(timeStr)) {
-    const [hh, mm] = timeStr.split(':').map((v) => v.padStart(2, '0'));
-    const sessionTs = new Date(`${session.date}T${hh}:${mm}:00`).getTime();
-    if (!isNaN(sessionTs)) {
-      return sessionTs >= resetTime;
+    const [hh, mm] = timeStr.split(':').map(Number);
+    const localDt = parseIsoDateLocal(session.date, 0);
+    if (localDt && Number.isFinite(hh) && Number.isFinite(mm)) {
+      localDt.setHours(hh, mm, 0, 0);
+      return localDt.getTime() >= resetTime;
     }
   }
 
   // 4. Date comparison with reset day
-  const resetDate = new Date(resetTime);
-  const resetIso = `${resetDate.getFullYear()}-${String(resetDate.getMonth() + 1).padStart(2, '0')}-${String(resetDate.getDate()).padStart(2, '0')}`;
+  const resetIso = formatLocalIsoDate(new Date(resetTime));
 
   if (session.date > resetIso) return true;
   if (session.date < resetIso) return false;
@@ -171,110 +215,7 @@ function notifyListeners() {
 }
 
 export function normalizeMuscleKey(rawKey?: string | null): MuscleGroup | null {
-  if (!rawKey) return null;
-  const clean = rawKey.trim().toLowerCase();
-
-  const map: Record<string, MuscleGroup> = {
-    // Chest
-    'грудные (общие)': 'chest',
-    'грудные': 'chest',
-    'грудь': 'chest',
-    'верх груди': 'chest_upper',
-    'верхняя часть груди': 'chest_upper',
-    'средняя часть груди': 'chest_mid',
-    'низ груди': 'chest_lower',
-    'нижняя часть груди': 'chest_lower',
-    'chest': 'chest',
-    'chest_upper': 'chest_upper',
-    'chest_mid': 'chest_mid',
-    'chest_lower': 'chest_lower',
-
-    // Shoulders
-    'плечи': 'shoulders',
-    'дельты': 'shoulders',
-    'передняя дельта': 'front_delts',
-    'передние дельты': 'front_delts',
-    'боковая дельта': 'side_delts',
-    'средняя дельта': 'side_delts',
-    'боковые дельты': 'side_delts',
-    'средние дельты': 'side_delts',
-    'задняя дельта': 'rear_delts',
-    'задние дельты': 'rear_delts',
-    'shoulders': 'shoulders',
-    'front_delts': 'front_delts',
-    'side_delts': 'side_delts',
-    'rear_delts': 'rear_delts',
-    'reardelts': 'rear_delts',
-
-    // Arms
-    'бицепс': 'biceps',
-    'двуглавая мышца плеча': 'biceps',
-    'плечевая мышца': 'brachialis',
-    'брахиалис': 'brachialis',
-    'трицепс': 'triceps',
-    'трехглавая мышца плеча': 'triceps',
-    'предплечья': 'forearms',
-    'предплечье': 'forearms',
-    'biceps': 'biceps',
-    'brachialis': 'brachialis',
-    'triceps': 'triceps',
-    'forearms': 'forearms',
-
-    // Back & Traps
-    'широчайшие': 'lats',
-    'широчайшие мышцы спины': 'lats',
-    'спина': 'lats',
-    'трапеция': 'traps',
-    'трапеции': 'traps',
-    'верх трапеции': 'traps_upper',
-    'середина трапеции': 'traps_mid',
-    'низ трапеции': 'traps_lower',
-    'ромбовидные': 'rhomboids',
-    'поясница': 'lowerback',
-    'разгибатели спины': 'lowerback',
-    'lats': 'lats',
-    'traps': 'traps',
-    'traps_upper': 'traps_upper',
-    'traps_mid': 'traps_mid',
-    'traps_lower': 'traps_lower',
-    'rhomboids': 'rhomboids',
-    'lowerback': 'lowerback',
-
-    // Core
-    'пресс': 'abs',
-    'прямая мышца живота': 'abs',
-    'косые': 'obliques',
-    'косые мышцы живота': 'obliques',
-    'abs': 'abs',
-    'obliques': 'obliques',
-
-    // Legs
-    'ягодицы': 'glutes',
-    'ягодичные': 'glutes',
-    'квадрицепс': 'quads',
-    'квадрицепсы': 'quads',
-    'четырехглавая мышца бедра': 'quads',
-    'прямая мышца бедра': 'quads_rectus',
-    'латеральная мышца бедра': 'quads_lateralis',
-    'медиальная мышца бедра': 'quads_medialis',
-    'бицепс бедра': 'hamstrings',
-    'задняя поверхность бедра': 'hamstrings',
-    'икры': 'calves',
-    'икроножная': 'calves',
-    'передняя большеберцовая': 'tibialis',
-    'glutes': 'glutes',
-    'quads': 'quads',
-    'quads_rectus': 'quads_rectus',
-    'quads_lateralis': 'quads_lateralis',
-    'quads_medialis': 'quads_medialis',
-    'hamstrings': 'hamstrings',
-    'calves': 'calves',
-    'tibialis': 'tibialis',
-  };
-
-  if (map[clean]) return map[clean];
-  if (clean in MUSCLE_DEFINITIONS) return clean as MuscleGroup;
-  return null;
+  return normalizeMuscleKeyPure(rawKey);
 }
 
 export function getBodyweightEquivalentKg(userWeightKg?: number): number {
@@ -282,15 +223,7 @@ export function getBodyweightEquivalentKg(userWeightKg?: number): number {
 }
 
 export function isSetCompleted(st: any): boolean {
-  if (!st) return false;
-  return (
-    st.completed === true ||
-    st.completed === 1 ||
-    st.completed === 'true' ||
-    st.done === true ||
-    st.isDone === true ||
-    Boolean(st.completed)
-  );
+  return isSetCompletedPure(st);
 }
 
 export const StorageService = {
@@ -300,90 +233,52 @@ export const StorageService = {
   },
 
   checkAndPurgeLegacyData(): void {
-    try {
-      const purged = localStorage.getItem(STORAGE_KEYS.CLEAN_PURGE);
-      if (purged !== 'v10') {
-        // Complete purge of any legacy mock artifacts
-        localStorage.removeItem(STORAGE_KEYS.WORKOUTS);
-        localStorage.removeItem(STORAGE_KEYS.PROGRAMS);
-        localStorage.removeItem(STORAGE_KEYS.CUSTOM_ACTIVITY);
-        localStorage.removeItem(STORAGE_KEYS.SPORTS_SESSIONS);
-        localStorage.removeItem(STORAGE_KEYS.ACTIVE_DRAFT);
-
-        // Reset profile if mock name 'Алексей' or empty
-        const prof = localStorage.getItem(STORAGE_KEYS.PROFILE);
-        if (prof) {
-          try {
-            const parsed = JSON.parse(prof);
-            if (parsed.name === 'Алексей' || !parsed.name) {
-              localStorage.removeItem(STORAGE_KEYS.PROFILE);
-            }
-          } catch {
-            localStorage.removeItem(STORAGE_KEYS.PROFILE);
-          }
-        }
-
-        // Reset equipment and fitness parameters to clean unselected defaults
-        localStorage.removeItem(STORAGE_KEYS.EQUIPMENT);
-        localStorage.removeItem(STORAGE_KEYS.FITNESS_PARAMS);
-
-        localStorage.setItem(STORAGE_KEYS.CLEAN_PURGE, 'v10');
-      }
-    } catch {}
+    // Неразрушающая миграция вместо прежней очистки данных пользователя
+    runSafeMigrations(STORAGE_KEYS);
   },
 
   getProfile(): UserProfile {
-    try {
-      this.checkAndPurgeLegacyData();
-      const data = localStorage.getItem(STORAGE_KEYS.PROFILE);
-      return data ? JSON.parse(data) : DEFAULT_PROFILE;
-    } catch {
-      return DEFAULT_PROFILE;
-    }
+    this.checkAndPurgeLegacyData();
+    const parsed = safeGetJson<Partial<UserProfile> | null>(STORAGE_KEYS.PROFILE, null, {
+      expectObject: true,
+    });
+    return parsed ? { ...DEFAULT_PROFILE, ...parsed } : DEFAULT_PROFILE;
   },
 
   updateProfile(profile: Partial<UserProfile>): UserProfile {
     const current = this.getProfile();
     const updated = { ...current, ...profile };
-    localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(updated));
+    safeSetItem(STORAGE_KEYS.PROFILE, JSON.stringify(updated));
     notifyListeners();
     return updated;
   },
 
   getPrograms(): WorkoutProgram[] {
-    try {
-      this.checkAndPurgeLegacyData();
-      const data = localStorage.getItem(STORAGE_KEYS.PROGRAMS);
-      if (data !== null) {
-        const parsed = JSON.parse(data);
-        if (Array.isArray(parsed)) {
-          // Strictly keep only user-created programs, removing any built-in/preset/demo programs
-          const userOnly = parsed.filter((p) => p && !isBuiltinPresetProgram(p));
-          let changed = userOnly.length !== parsed.length;
-          const normalized = userOnly.map((p) => {
-            if (!p.status || !p.iterationCount) {
-              changed = true;
-              return {
-                ...p,
-                status: (p.status as ProgramStatus) || 'active',
-                iterationCount: p.iterationCount || 1,
-              };
-            }
-            return p;
-          });
-          if (changed) {
-            localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(normalized));
-          }
-          return normalized;
+    this.checkAndPurgeLegacyData();
+    const parsed = safeGetJson<any[] | null>(STORAGE_KEYS.PROGRAMS, null, { expectArray: true });
+    if (Array.isArray(parsed)) {
+      const userOnly = parsed.filter((p) => p && !isBuiltinPresetProgram(p));
+      let changed = userOnly.length !== parsed.length;
+      const normalized = userOnly.map((p) => {
+        if (!p.status || !p.iterationCount) {
+          changed = true;
+          return {
+            ...p,
+            status: (p.status as ProgramStatus) || 'active',
+            iterationCount: p.iterationCount || 1,
+          };
         }
+        return p;
+      });
+      if (changed) {
+        safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(normalized));
       }
-      return [];
-    } catch {
-      return [];
+      return normalized;
     }
+    return [];
   },
 
-  saveProgram(program: WorkoutProgram): void {
+  saveProgram(program: WorkoutProgram): SafeWriteResult {
     const list = this.getPrograms();
     // Ensure saved program is marked as user custom program and has status
     const sanitized: WorkoutProgram = {
@@ -398,29 +293,25 @@ export const StorageService = {
     } else {
       list.unshift(sanitized);
     }
-    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    const res = safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
+    return res;
   },
 
   getActiveDirection(): 'programs' | 'mobility' | null {
-    try {
-      const val = localStorage.getItem(STORAGE_KEYS.ACTIVE_DIRECTION);
-      if (val === 'programs' || val === 'mobility') return val;
-      return null;
-    } catch {
-      return null;
-    }
+    const val = safeGetRaw(STORAGE_KEYS.ACTIVE_DIRECTION);
+    if (val === null || val === '') return null;
+    if (val === 'programs' || val === 'mobility') return val;
+    flagCorruptedKey(STORAGE_KEYS.ACTIVE_DIRECTION, val);
+    return null;
   },
 
-  setActiveDirection(dir: 'programs' | 'mobility' | null): void {
-    try {
-      if (dir) {
-        localStorage.setItem(STORAGE_KEYS.ACTIVE_DIRECTION, dir);
-      } else {
-        localStorage.removeItem(STORAGE_KEYS.ACTIVE_DIRECTION);
-      }
-      notifyListeners();
-    } catch {}
+  setActiveDirection(dir: 'programs' | 'mobility' | null): SafeWriteResult {
+    const res = dir
+      ? safeSetItem(STORAGE_KEYS.ACTIVE_DIRECTION, dir)
+      : safeRemoveItem(STORAGE_KEYS.ACTIVE_DIRECTION);
+    notifyListeners();
+    return res;
   },
 
   addProgramFromCatalog(catalogProgram: WorkoutProgram): WorkoutProgram {
@@ -444,7 +335,7 @@ export const StorageService = {
       isCustom: true,
       status: 'active',
       iterationCount: 1,
-      createdAt: new Date().toISOString().split('T')[0],
+      createdAt: formatLocalIsoDate(new Date()),
       workouts: catalogProgram.workouts.map((w, wIdx) => ({
         ...w,
         id: `w_${Date.now()}_${wIdx}`,
@@ -471,7 +362,7 @@ export const StorageService = {
       isCustom: true,
       status: 'active',
       iterationCount: 1,
-      createdAt: new Date().toISOString().split('T')[0],
+      createdAt: formatLocalIsoDate(new Date()),
       workouts: target.workouts.map((w, idx) => ({
         ...w,
         id: `w_copy_${idx}_${Date.now()}`,
@@ -479,15 +370,16 @@ export const StorageService = {
     };
 
     list.unshift(copy);
-    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
     return copy;
   },
 
-  deleteProgram(programId: string): void {
+  deleteProgram(programId: string): SafeWriteResult {
     const list = this.getPrograms().filter((p) => p.id !== programId);
-    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    const res = safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
+    return res;
   },
 
   calculateProgramStats(programId: string): ProgramCompletionStats {
@@ -539,7 +431,7 @@ export const StorageService = {
       ...(status === 'archived' ? { archivedAt: nowIso } : {}),
     };
     list[index] = updated;
-    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
     return updated;
   },
@@ -586,7 +478,7 @@ export const StorageService = {
       ...list[index],
       goal: newGoal,
     };
-    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
     return list[index];
   },
@@ -609,45 +501,40 @@ export const StorageService = {
         status: 'active',
       };
     }
-    localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
   },
 
   getWorkoutSessions(): WorkoutSession[] {
-    try {
-      this.checkAndPurgeLegacyData();
-      const data = localStorage.getItem(STORAGE_KEYS.WORKOUTS);
-      if (data !== null) {
-        return JSON.parse(data);
-      }
-      return [];
-    } catch {
-      return [];
-    }
+    this.checkAndPurgeLegacyData();
+    return safeGetJson<WorkoutSession[]>(STORAGE_KEYS.WORKOUTS, [], { expectArray: true });
   },
 
   // MULTI-SPORT SESSIONS (Boxing, Basketball, Running, Cycling, Swimming, etc.)
   getSportSessions(): SportSession[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.SPORTS_SESSIONS);
-      if (data !== null) {
-        return JSON.parse(data);
-      }
-      return [];
-    } catch {
-      return [];
-    }
+    this.checkAndPurgeLegacyData();
+    return safeGetJson<SportSession[]>(STORAGE_KEYS.SPORTS_SESSIONS, [], { expectArray: true });
   },
 
-  saveSportSession(session: SportSession): void {
+  saveSportSession(session: SportSession): SafeWriteResult {
     const list = this.getSportSessions();
-    const duration = session.actualDurationMinutes || session.plannedDurationMinutes || 45;
-    const intensityMult = session.intensity === 'high' ? 2.2 : session.intensity === 'medium' ? 1.5 : 1.0;
-    const spDef = SPORT_DEFINITIONS[session.sportType] || SPORT_DEFINITIONS.other_sport;
-    const loadScore = Math.round(duration * intensityMult * (spDef.loadMultiplier / 1.5));
+    const duration =
+      session.actualDurationMinutes ?? session.plannedDurationMinutes ?? 45;
+    const sportLoad = calculateSportLoad({
+      durationMinutes: duration,
+      rpe: session.rpe,
+      legacyIntensity: session.intensity,
+    });
+    if (!sportLoad.isValid) {
+      const errMsg = sportLoad.error || 'Некорректные параметры спортивной сессии.';
+      setLastWriteError(errMsg);
+      return { ok: false, error: errMsg };
+    }
+    const loadScore = sportLoad.loadUnits;
 
     const prepared: SportSession = {
       ...session,
+      rpe: sportLoad.usedRpe ?? session.rpe,
       completedAt: session.completedAt || (session.status === 'completed' ? Date.now() : undefined),
       loadScore,
     };
@@ -658,7 +545,11 @@ export const StorageService = {
     } else {
       list.unshift(prepared);
     }
-    localStorage.setItem(STORAGE_KEYS.SPORTS_SESSIONS, JSON.stringify(list));
+    const res = safeSetItem(STORAGE_KEYS.SPORTS_SESSIONS, JSON.stringify(list));
+    if (!res.ok) {
+      notifyListeners();
+      return res;
+    }
 
     if (prepared.status === 'completed') {
       this.setDayStatus(prepared.date, 'completed', prepared.title);
@@ -666,15 +557,16 @@ export const StorageService = {
       this.setDayStatus(prepared.date, 'skipped', prepared.title);
     }
     notifyListeners();
+    return res;
   },
 
-  deleteSportSession(sessionId: string): void {
+  deleteSportSession(sessionId: string): SafeWriteResult {
     const list = this.getSportSessions();
     const target = list.find((s) => s.id === sessionId);
     const filtered = list.filter((s) => s.id !== sessionId);
-    localStorage.setItem(STORAGE_KEYS.SPORTS_SESSIONS, JSON.stringify(filtered));
+    const res = safeSetItem(STORAGE_KEYS.SPORTS_SESSIONS, JSON.stringify(filtered));
 
-    if (target) {
+    if (res.ok && target) {
       const remainingSports = filtered.filter((s) => s.date === target.date);
       const remainingWorkouts = this.getWorkoutSessions().filter((s) => s.date === target.date);
       if (remainingSports.length === 0 && remainingWorkouts.length === 0) {
@@ -682,24 +574,20 @@ export const StorageService = {
       }
     }
     notifyListeners();
+    return res;
   },
 
   // WEEKLY SCHEDULE CONSTRUCTOR
   getWeeklySchedule(): WeeklyScheduleDay[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.WEEKLY_SCHEDULE);
-      if (data !== null) {
-        return JSON.parse(data);
-      }
-      return DEFAULT_WEEKLY_SCHEDULE;
-    } catch {
-      return DEFAULT_WEEKLY_SCHEDULE;
-    }
+    return safeGetJson<WeeklyScheduleDay[]>(STORAGE_KEYS.WEEKLY_SCHEDULE, DEFAULT_WEEKLY_SCHEDULE, {
+      expectArray: true,
+    });
   },
 
-  saveWeeklySchedule(schedule: WeeklyScheduleDay[]): void {
-    localStorage.setItem(STORAGE_KEYS.WEEKLY_SCHEDULE, JSON.stringify(schedule));
+  saveWeeklySchedule(schedule: WeeklyScheduleDay[]): SafeWriteResult {
+    const res = safeSetItem(STORAGE_KEYS.WEEKLY_SCHEDULE, JSON.stringify(schedule));
     notifyListeners();
+    return res;
   },
 
   // Retrieve previous results of an exercise from real user history
@@ -991,7 +879,7 @@ export const StorageService = {
   },
 
   // Save completed workout session with full chronological PR recalculation (zero duplicates)
-  saveWorkoutSession(session: WorkoutSession): void {
+  saveWorkoutSession(session: WorkoutSession): SafeWriteResult {
     if (!session.completedAt && session.status === 'completed') {
       session.completedAt = Date.now();
     }
@@ -1006,86 +894,89 @@ export const StorageService = {
 
     // Recalculate personal records across all sessions to preserve chronological integrity and avoid duplicates
     const updatedList = this.recalculatePersonalRecordsForAllSessions(list);
-    localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
+    const res = safeSetItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
+    if (!res.ok) {
+      notifyListeners();
+      return res;
+    }
 
-    // Update activity map for that day
-    this.setDayStatus(session.date, 'completed', session.name, session.totalVolumeKg);
+    // Update activity map for that day only after confirmed workout save
+    const actRes = this.setDayStatus(session.date, 'completed', session.name, session.totalVolumeKg);
 
-    // Clear active draft if saved
+    // Clear active draft only after confirmed workout save
     this.clearActiveDraft();
 
     notifyListeners();
+    return actRes.ok ? res : { ok: true, error: null };
   },
 
-  updateSession(session: WorkoutSession): void {
+  updateSession(session: WorkoutSession): SafeWriteResult {
     const list = this.getWorkoutSessions();
     const idx = list.findIndex((s) => s.id === session.id);
-    if (idx >= 0) {
-      list[idx] = session;
-      const updatedList = this.recalculatePersonalRecordsForAllSessions(list);
-      localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
-      notifyListeners();
+    if (idx < 0) {
+      return { ok: false, error: 'Тренировка не найдена для обновления.' };
     }
+    list[idx] = session;
+    const updatedList = this.recalculatePersonalRecordsForAllSessions(list);
+    const res = safeSetItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
+    notifyListeners();
+    return res;
   },
 
-  deleteWorkoutSession(sessionId: string): void {
+  deleteWorkoutSession(sessionId: string): SafeWriteResult {
     const list = this.getWorkoutSessions();
     const session = list.find((s) => s.id === sessionId);
     const filtered = list.filter((s) => s.id !== sessionId);
 
     // Recalculate personal records for all remaining completed sessions
     const updatedList = this.recalculatePersonalRecordsForAllSessions(filtered);
-    localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
+    const res = safeSetItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(updatedList));
 
-    if (session) {
+    if (res.ok && session) {
       const others = updatedList.filter((s) => s.date === session.date);
       if (others.length === 0) {
         this.setDayStatus(session.date, 'none');
       }
     }
     notifyListeners();
+    return res;
   },
 
   // Persistent in-progress draft (so user never loses active workout if closed)
-  saveActiveDraft(session: WorkoutSession): void {
-    try {
-      localStorage.setItem(STORAGE_KEYS.ACTIVE_DRAFT, JSON.stringify(session));
-    } catch {
-      // quota or local storage error
-    }
+  saveActiveDraft(session: WorkoutSession): SafeWriteResult {
+    return safeSetItem(STORAGE_KEYS.ACTIVE_DRAFT, JSON.stringify(session));
   },
 
   getActiveDraft(): WorkoutSession | null {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.ACTIVE_DRAFT);
-      return data ? JSON.parse(data) : null;
-    } catch {
-      return null;
-    }
+    return safeGetJson<WorkoutSession | null>(STORAGE_KEYS.ACTIVE_DRAFT, null, {
+      expectObject: true,
+    });
   },
 
-  clearActiveDraft(): void {
-    localStorage.removeItem(STORAGE_KEYS.ACTIVE_DRAFT);
+  clearActiveDraft(): SafeWriteResult {
+    return safeRemoveItem(STORAGE_KEYS.ACTIVE_DRAFT);
   },
 
   getActivityMap(year: number = 2026): Record<string, 'completed' | 'skipped' | 'none'> {
-    try {
-      this.checkAndPurgeLegacyData();
-      const data = localStorage.getItem(STORAGE_KEYS.CUSTOM_ACTIVITY);
-      if (data) {
-        return JSON.parse(data);
-      }
-      return {};
-    } catch {
-      return {};
-    }
+    this.checkAndPurgeLegacyData();
+    return safeGetJson<Record<string, 'completed' | 'skipped' | 'none'>>(
+      STORAGE_KEYS.CUSTOM_ACTIVITY,
+      {},
+      { expectObject: true }
+    );
   },
 
-  setDayStatus(date: string, status: 'completed' | 'skipped' | 'none', title?: string, volumeKg?: number): void {
+  setDayStatus(
+    date: string,
+    status: 'completed' | 'skipped' | 'none',
+    title?: string,
+    volumeKg?: number
+  ): SafeWriteResult {
     const map = this.getActivityMap();
     map[date] = status;
-    localStorage.setItem(STORAGE_KEYS.CUSTOM_ACTIVITY, JSON.stringify(map));
+    const res = safeSetItem(STORAGE_KEYS.CUSTOM_ACTIVITY, JSON.stringify(map));
     notifyListeners();
+    return res;
   },
 
   getYearStats(year: number = 2026) {
@@ -1109,16 +1000,16 @@ export const StorageService = {
 
     if (sortedDates.length > 0) {
       const today = new Date();
-      const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-      
-      let checkDate = new Date(today);
+      const todayStr = formatLocalIsoDate(today);
+
+      let checkDate = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12, 0, 0);
       // Check if trained today or yesterday
       if (!map[todayStr]) {
         checkDate.setDate(checkDate.getDate() - 1);
       }
-      
+
       while (true) {
-        const key = `${checkDate.getFullYear()}-${String(checkDate.getMonth() + 1).padStart(2, '0')}-${String(checkDate.getDate()).padStart(2, '0')}`;
+        const key = formatLocalIsoDate(checkDate);
         if (map[key] === 'completed') {
           streak++;
           checkDate.setDate(checkDate.getDate() - 1);
@@ -1187,7 +1078,7 @@ export const StorageService = {
     const fallbackWeight = getBodyweightEquivalentKg(userProfile.weightKg);
 
     const now = new Date();
-    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayIso = formatLocalIsoDate(now);
     const resetTime = this.getAnatomyResetTime();
 
     const completedSessionsAll = allSessions.filter((s) => s.status === 'completed');
@@ -1202,10 +1093,8 @@ export const StorageService = {
       }
       if (period === 'all') return true;
       if (itemDate === todayIso) return true;
-      const [iy, im, id] = itemDate.split('-').map(Number);
-      const sessionDate = new Date(iy, (im || 1) - 1, id || 1);
-      const currentDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const daysDiff = Math.floor((currentDate.getTime() - sessionDate.getTime()) / (1000 * 60 * 60 * 24));
+      const daysDiff = getCalendarDaysAgo(itemDate, now);
+      if (daysDiff === null) return false;
 
       if (period === '7d') return daysDiff >= 0 && daysDiff <= 7;
       if (period === '30d') return daysDiff >= 0 && daysDiff <= 30;
@@ -1238,14 +1127,23 @@ export const StorageService = {
       tonnageContribution: number;
     }> = [];
 
+    const customExercises = this.getCustomExercises();
     periodSessions.forEach((s) => {
       s.exercises?.forEach((ex) => {
-        const catalogItem = EXERCISE_CATALOG.find((cat) => cat.name.toLowerCase() === ex.name.toLowerCase());
+        const catalogItem = findExerciseInUnifiedCatalog(
+          ex.exerciseId,
+          ex.name,
+          customExercises,
+          ex.targetMuscle
+        );
         const rawPrimary = ex.targetMuscle || catalogItem?.primaryMuscle || '';
         const normPrimary = normalizeMuscleKey(rawPrimary);
         const normPrimaryDisplay = normPrimary || (rawPrimary ? `не распознан: ${rawPrimary}` : 'не указан');
 
-        const rawSecondaries = ex.secondaryMuscles || catalogItem?.secondaryMuscles || [];
+        const rawSecondaries =
+          ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+            ? ex.secondaryMuscles
+            : catalogItem?.secondaryMuscles || [];
         const normSecondaries = rawSecondaries.map((k) => normalizeMuscleKey(k) || `не распознан: ${k}`);
 
         const m = muscleKey;
@@ -1356,7 +1254,7 @@ export const StorageService = {
     const fallbackWeight = getBodyweightEquivalentKg(userProfile.weightKg);
 
     const now = new Date();
-    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayIso = formatLocalIsoDate(now);
 
     const resetTime = this.getAnatomyResetTime();
 
@@ -1376,10 +1274,8 @@ export const StorageService = {
       if (itemDate === todayIso) {
         return true;
       }
-      const [iy, im, id] = itemDate.split('-').map(Number);
-      const sessionDate = new Date(iy, (im || 1) - 1, id || 1);
-      const currentDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const daysDiff = Math.floor((currentDate.getTime() - sessionDate.getTime()) / (1000 * 60 * 60 * 24));
+      const daysDiff = getCalendarDaysAgo(itemDate, now);
+      if (daysDiff === null) return false;
 
       if (period === '7d') {
         return daysDiff >= 0 && daysDiff <= 7;
@@ -1401,6 +1297,7 @@ export const StorageService = {
     );
     const stats: Partial<Record<MuscleGroup, MuscleLoadStats>> = {};
 
+    const customExercises = this.getCustomExercises();
     (Object.keys(MUSCLE_DEFINITIONS) as MuscleGroup[]).forEach((m) => {
       const def = MUSCLE_DEFINITIONS[m];
 
@@ -1417,13 +1314,19 @@ export const StorageService = {
 
         s.exercises?.forEach((ex) => {
           const exCleanName = (ex.name || '').trim().toLowerCase();
-          const catalogItem = EXERCISE_CATALOG.find(
-            (cat) => cat.id === ex.exerciseId || cat.name.trim().toLowerCase() === exCleanName
+          const catalogItem = findExerciseInUnifiedCatalog(
+            ex.exerciseId,
+            ex.name,
+            customExercises,
+            ex.targetMuscle
           );
           const rawPrimary = ex.targetMuscle || catalogItem?.primaryMuscle;
           const normPrimary = normalizeMuscleKey(rawPrimary);
 
-          const rawSecondaries = ex.secondaryMuscles || catalogItem?.secondaryMuscles || [];
+          const rawSecondaries =
+            ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+              ? ex.secondaryMuscles
+              : catalogItem?.secondaryMuscles || [];
           const normSecondaries = rawSecondaries.map((k) => normalizeMuscleKey(k)).filter(Boolean) as MuscleGroup[];
 
           let isPrimary = normPrimary === m || ((m === 'rear_delts' || m === 'rearDelts') && (normPrimary === 'rear_delts' || normPrimary === 'rearDelts'));
@@ -1564,10 +1467,12 @@ export const StorageService = {
         const latestDateStr = history[0]?.date;
         let elapsedHours = 0;
         if (latestDateStr) {
-          const workoutDate = new Date(`${latestDateStr}T12:00:00`);
-          const now = new Date();
-          const diffMs = now.getTime() - workoutDate.getTime();
-          elapsedHours = Math.max(0, diffMs / (1000 * 60 * 60));
+          const workoutDate = parseIsoDateLocal(latestDateStr, 12);
+          if (workoutDate) {
+            const now = new Date();
+            const diffMs = now.getTime() - workoutDate.getTime();
+            elapsedHours = Math.max(0, diffMs / (1000 * 60 * 60));
+          }
         }
 
         const remainingHours = Math.max(0, totalNeededHours - elapsedHours);
@@ -1643,18 +1548,23 @@ export const StorageService = {
       totalCompletedWorkouts > 0 ? Math.round(totalDurationMinutes / totalCompletedWorkouts) : 0;
 
     const now = new Date();
-    // Monday as start of current week (ISO week)
-    const currentDayOfWeek = (now.getDay() + 6) % 7;
-    const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate() - currentDayOfWeek);
-    startOfWeek.setHours(0, 0, 0, 0);
+    // Monday as start of current week (ISO week) via local calendar utils
+    const startOfWeek = getStartOfIsoWeekLocal(now);
 
-    const startOfPrevWeek = new Date(startOfWeek.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const startOfPrevWeek = new Date(
+      startOfWeek.getFullYear(),
+      startOfWeek.getMonth(),
+      startOfWeek.getDate() - 7,
+      0,
+      0,
+      0,
+      0
+    );
     const endOfPrevWeek = new Date(startOfWeek.getTime() - 1);
 
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
 
-    const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
     const endOfPrevMonth = new Date(startOfMonth.getTime() - 1);
 
     let weekWorkoutsCount = 0;
@@ -1668,8 +1578,8 @@ export const StorageService = {
     let prevMonthVolumeKg = 0;
 
     completed.forEach((s) => {
-      const [y, m, d] = s.date.split('-').map(Number);
-      const sessionDate = new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
+      const sessionDate = parseIsoDateLocal(s.date, 12);
+      if (!sessionDate) return;
 
       // Current week vs Previous week
       if (sessionDate >= startOfWeek) {
@@ -1701,13 +1611,20 @@ export const StorageService = {
     }[] = [];
 
     for (let i = 7; i >= 0; i--) {
-      const wStart = new Date(startOfWeek.getTime() - i * 7 * 24 * 60 * 60 * 1000);
-      const wEnd = new Date(wStart.getTime() + 6 * 24 * 60 * 60 * 1000 + 23 * 3600000 + 59 * 60000);
+      const wStart = new Date(
+        startOfWeek.getFullYear(),
+        startOfWeek.getMonth(),
+        startOfWeek.getDate() - i * 7,
+        0,
+        0,
+        0,
+        0
+      );
+      const wEnd = getEndOfIsoWeekLocal(wStart);
 
       const weekSessions = completed.filter((s) => {
-        const [y, m, d] = s.date.split('-').map(Number);
-        const sDate = new Date(y, (m || 1) - 1, d || 1, 12, 0, 0);
-        return sDate >= wStart && sDate <= wEnd;
+        const sDate = parseIsoDateLocal(s.date, 12);
+        return Boolean(sDate && sDate >= wStart && sDate <= wEnd);
       });
 
       const count = weekSessions.length;
@@ -1843,37 +1760,31 @@ export const StorageService = {
 
   // APP SETTINGS
   getSettings(): AppSettings {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-      if (data) {
-        return { ...DEFAULT_APP_SETTINGS, ...JSON.parse(data) };
-      }
-      return DEFAULT_APP_SETTINGS;
-    } catch {
-      return DEFAULT_APP_SETTINGS;
-    }
+    const parsed = safeGetJson<Partial<AppSettings> | null>(STORAGE_KEYS.SETTINGS, null, {
+      expectObject: true,
+    });
+    return parsed ? { ...DEFAULT_APP_SETTINGS, ...parsed } : DEFAULT_APP_SETTINGS;
   },
 
   updateSettings(settings: Partial<AppSettings>): AppSettings {
     const current = this.getSettings();
     const updated = { ...current, ...settings };
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+    safeSetItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
     notifyListeners();
     return updated;
   },
 
   // EQUIPMENT MANAGEMENT
   getEquipmentList(): EquipmentItem[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.EQUIPMENT);
-      if (data) return JSON.parse(data);
-    } catch {}
-    return DEFAULT_EQUIPMENT;
+    return safeGetJson<EquipmentItem[]>(STORAGE_KEYS.EQUIPMENT, DEFAULT_EQUIPMENT, {
+      expectArray: true,
+    });
   },
 
-  saveEquipmentList(items: EquipmentItem[]): void {
-    localStorage.setItem(STORAGE_KEYS.EQUIPMENT, JSON.stringify(items));
+  saveEquipmentList(items: EquipmentItem[]): SafeWriteResult {
+    const res = safeSetItem(STORAGE_KEYS.EQUIPMENT, JSON.stringify(items));
     notifyListeners();
+    return res;
   },
 
   applyEquipmentPreset(preset: 'bodyweight_only' | 'home_minimal' | 'home_dumbbells' | 'full_gym' | 'custom'): EquipmentItem[] {
@@ -1899,25 +1810,23 @@ export const StorageService = {
 
   // USER FITNESS PARAMETERS
   getUserParameters(): UserFitnessParameters {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.FITNESS_PARAMS);
-      if (data) return JSON.parse(data);
-    } catch {}
-    return DEFAULT_USER_PARAMETERS;
+    const parsed = safeGetJson<Partial<UserFitnessParameters> | null>(
+      STORAGE_KEYS.FITNESS_PARAMS,
+      null,
+      { expectObject: true }
+    );
+    return parsed ? { ...DEFAULT_USER_PARAMETERS, ...parsed } : DEFAULT_USER_PARAMETERS;
   },
 
-  saveUserParameters(params: UserFitnessParameters): void {
-    localStorage.setItem(STORAGE_KEYS.FITNESS_PARAMS, JSON.stringify(params));
+  saveUserParameters(params: UserFitnessParameters): SafeWriteResult {
+    const res = safeSetItem(STORAGE_KEYS.FITNESS_PARAMS, JSON.stringify(params));
     notifyListeners();
+    return res;
   },
 
   // FAVORITES
   getFavoriteExerciseIds(): string[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.FAVORITES);
-      if (data) return JSON.parse(data);
-    } catch {}
-    return [];
+    return safeGetJson<string[]>(STORAGE_KEYS.FAVORITES, [], { expectArray: true });
   },
 
   toggleFavoriteExercise(exerciseId: string): boolean {
@@ -1930,39 +1839,40 @@ export const StorageService = {
       updated = [...current, exerciseId];
       isFav = true;
     }
-    localStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(updated));
+    safeSetItem(STORAGE_KEYS.FAVORITES, JSON.stringify(updated));
     notifyListeners();
     return isFav;
   },
 
   // CUSTOM EXERCISES
   getCustomExercises(): FullExerciseItem[] {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.CUSTOM_EXERCISES);
-      if (data) return JSON.parse(data);
-    } catch {}
-    return [];
+    return safeGetJson<FullExerciseItem[]>(STORAGE_KEYS.CUSTOM_EXERCISES, [], {
+      expectArray: true,
+    });
   },
 
-  saveCustomExercise(exercise: FullExerciseItem): void {
+  saveCustomExercise(exercise: FullExerciseItem): SafeWriteResult {
     const list = this.getCustomExercises();
-    const idx = list.findIndex(e => e.id === exercise.id);
+    const idx = list.findIndex((e) => e.id === exercise.id);
     if (idx >= 0) {
       list[idx] = { ...exercise, isCustom: true };
     } else {
       list.push({ ...exercise, isCustom: true });
     }
-    localStorage.setItem(STORAGE_KEYS.CUSTOM_EXERCISES, JSON.stringify(list));
+    const res = safeSetItem(STORAGE_KEYS.CUSTOM_EXERCISES, JSON.stringify(list));
     notifyListeners();
+    return res;
   },
 
-  deleteCustomExercise(exerciseId: string): void {
-    const list = this.getCustomExercises().filter(e => e.id !== exerciseId);
-    localStorage.setItem(STORAGE_KEYS.CUSTOM_EXERCISES, JSON.stringify(list));
-    // Also remove from favorites if present
-    const favs = this.getFavoriteExerciseIds().filter(id => id !== exerciseId);
-    localStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(favs));
+  deleteCustomExercise(exerciseId: string): SafeWriteResult {
+    const list = this.getCustomExercises().filter((e) => e.id !== exerciseId);
+    const res = safeSetItem(STORAGE_KEYS.CUSTOM_EXERCISES, JSON.stringify(list));
+    if (res.ok) {
+      const favs = this.getFavoriteExerciseIds().filter((id) => id !== exerciseId);
+      safeSetItem(STORAGE_KEYS.FAVORITES, JSON.stringify(favs));
+    }
     notifyListeners();
+    return res;
   },
 
   // Returns all exercises: 181 built-in exercises + any user-created custom exercises
@@ -1971,48 +1881,180 @@ export const StorageService = {
     return [...COMPREHENSIVE_FULL_CATALOG, ...custom];
   },
 
+  // WELLBEING CHECKINS (сон, усталость, болезненность, боль)
+  getWellbeingCheckins(): WellbeingCheckin[] {
+    this.checkAndPurgeLegacyData();
+    return safeGetJson<WellbeingCheckin[]>(STORAGE_KEYS.WELLBEING_CHECKINS, [], {
+      expectArray: true,
+    });
+  },
+
+  saveWellbeingCheckin(checkin: WellbeingCheckin): SafeWriteResult {
+    const list = this.getWellbeingCheckins();
+    const idx = list.findIndex((c) => c.id === checkin.id || c.date === checkin.date);
+    if (idx >= 0) {
+      list[idx] = checkin;
+    } else {
+      list.unshift(checkin);
+    }
+    const res = safeSetItem(STORAGE_KEYS.WELLBEING_CHECKINS, JSON.stringify(list));
+    notifyListeners();
+    return res;
+  },
+
+  deleteWellbeingCheckin(id: string): SafeWriteResult {
+    const list = this.getWellbeingCheckins().filter((c) => c.id !== id);
+    const res = safeSetItem(STORAGE_KEYS.WELLBEING_CHECKINS, JSON.stringify(list));
+    notifyListeners();
+    return res;
+  },
+
+  // BODY MEASUREMENTS (масса тела, обхваты)
+  getBodyMeasurements(): BodyMeasurement[] {
+    this.checkAndPurgeLegacyData();
+    return safeGetJson<BodyMeasurement[]>(STORAGE_KEYS.BODY_MEASUREMENTS, [], {
+      expectArray: true,
+    });
+  },
+
+  saveBodyMeasurement(measurement: BodyMeasurement): SafeWriteResult {
+    const list = this.getBodyMeasurements();
+    const idx = list.findIndex((m) => m.id === measurement.id || m.date === measurement.date);
+    if (idx >= 0) {
+      list[idx] = measurement;
+    } else {
+      list.unshift(measurement);
+    }
+    const res = safeSetItem(STORAGE_KEYS.BODY_MEASUREMENTS, JSON.stringify(list));
+    notifyListeners();
+    return res;
+  },
+
+  deleteBodyMeasurement(id: string): SafeWriteResult {
+    const list = this.getBodyMeasurements().filter((m) => m.id !== id);
+    const res = safeSetItem(STORAGE_KEYS.BODY_MEASUREMENTS, JSON.stringify(list));
+    notifyListeners();
+    return res;
+  },
+
+  // STORAGE HEALTH DIAGNOSTICS & ERROR HELPERS
+  getLastWriteError(): string | null {
+    return getLastWriteError();
+  },
+
+  clearLastWriteError(): void {
+    clearLastWriteError();
+    notifyListeners();
+  },
+
+  getCorruptedKeys(): string[] {
+    return getCorruptedKeys();
+  },
+
+  getStorageHealth(): StorageHealthReport {
+    this.checkAndPurgeLegacyData();
+    const rawVer = safeGetRaw(SCHEMA_VERSION_KEY);
+    const schemaVersion = rawVer ? Number(rawVer) || CURRENT_SCHEMA_VERSION : CURRENT_SCHEMA_VERSION;
+    const hasPreMigrationBackup = Boolean(safeGetRaw(PRE_MIGRATION_BACKUP_KEY));
+
+    // Проверяем последнее сообщение об ошибке ДО чтения счётчиков, чтобы read не перетёр статус
+    const corruptedKeys = getCorruptedKeys();
+    const sessionsCount = this.getWorkoutSessions().length;
+    const programsCount = this.getPrograms().length;
+    const sportSessionsCount = this.getSportSessions().length;
+    const checkinsCount = this.getWellbeingCheckins().length;
+    const measurementsCount = this.getBodyMeasurements().length;
+    const lastWriteError = getLastWriteError();
+
+    return {
+      schemaVersion,
+      hasPreMigrationBackup,
+      corruptedKeys: Array.from(new Set([...corruptedKeys, ...getCorruptedKeys()])),
+      lastWriteError,
+      quotaOk: lastWriteError === null,
+      sessionsCount,
+      programsCount,
+      sportSessionsCount,
+      checkinsCount,
+      measurementsCount,
+    };
+  },
+
+  hasPendingRecovery(): boolean {
+    return hasPendingRollbackRecovery();
+  },
+
+  getPendingRecoveryKeys(): string[] {
+    return getPendingRollbackKeys();
+  },
+
+  retryPendingRecovery(): SafeWriteResult {
+    const res = retryPendingRollbackRecovery();
+    notifyListeners();
+    return res;
+  },
+
+  isLocksIndexCorrupted(): boolean {
+    return isLocksIndexCorrupted();
+  },
+
   // ANATOMY STATS RESET
   getAnatomyResetTime(): number {
-    try {
-      return Number(localStorage.getItem(STORAGE_KEYS.ANATOMY_RESET_TIME) || '0');
-    } catch {
+    const raw = safeGetRaw(STORAGE_KEYS.ANATOMY_RESET_TIME);
+    if (raw === null || raw === '') return 0;
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num < 0) {
+      flagCorruptedKey(STORAGE_KEYS.ANATOMY_RESET_TIME, raw);
       return 0;
     }
+    return num;
   },
 
-  resetMuscleStats(): void {
+  resetMuscleStats(): SafeWriteResult {
     const timestamp = Date.now();
-    try {
-      localStorage.setItem(STORAGE_KEYS.ANATOMY_RESET_TIME, timestamp.toString());
-    } catch (e) {
-      console.error('Failed to set anatomy reset time', e);
-    }
+    const res = safeSetItem(STORAGE_KEYS.ANATOMY_RESET_TIME, timestamp.toString());
     notifyListeners();
+    return res;
   },
 
-  clearAnatomyReset(): void {
-    try {
-      localStorage.removeItem(STORAGE_KEYS.ANATOMY_RESET_TIME);
-    } catch (e) {
-      console.error('Failed to clear anatomy reset time', e);
-    }
+  clearAnatomyReset(): SafeWriteResult {
+    const res = safeRemoveItem(STORAGE_KEYS.ANATOMY_RESET_TIME);
     notifyListeners();
+    return res;
   },
 
-  resetAllData(): void {
-    localStorage.removeItem(STORAGE_KEYS.PROFILE);
-    localStorage.removeItem(STORAGE_KEYS.PROGRAMS);
-    localStorage.removeItem(STORAGE_KEYS.WORKOUTS);
-    localStorage.removeItem(STORAGE_KEYS.SPORTS_SESSIONS);
-    localStorage.removeItem(STORAGE_KEYS.WEEKLY_SCHEDULE);
-    localStorage.removeItem(STORAGE_KEYS.CUSTOM_ACTIVITY);
-    localStorage.removeItem(STORAGE_KEYS.ACTIVE_DRAFT);
-    localStorage.removeItem(STORAGE_KEYS.EQUIPMENT);
-    localStorage.removeItem(STORAGE_KEYS.FITNESS_PARAMS);
-    localStorage.removeItem(STORAGE_KEYS.FAVORITES);
-    localStorage.removeItem(STORAGE_KEYS.CUSTOM_EXERCISES);
-    localStorage.removeItem(STORAGE_KEYS.SETTINGS);
+  resetAllData(): SafeWriteResult {
+    let firstError: string | null = null;
+    Object.values(STORAGE_KEYS).forEach((key) => {
+      const rmRes = safeRemoveItem(key, { allowRemoveCorrupted: true });
+      if (!rmRes.ok && !firstError) {
+        firstError = rmRes.error;
+      }
+      const lockRes = clearCorruptedLock(key);
+      if (!lockRes.ok && !firstError) {
+        firstError = lockRes.error;
+      }
+    });
+    const idxQuarantineRes = safeRemoveItem(`${CORRUPTED_RAW_PREFIX}${CORRUPTED_LOCKS_INDEX_KEY}`, {
+      allowRemoveCorrupted: true,
+    });
+    if (!idxQuarantineRes.ok && !firstError) {
+      firstError = idxQuarantineRes.error;
+    }
+    const idxRes = safeRemoveItem(CORRUPTED_LOCKS_INDEX_KEY, { allowRemoveCorrupted: true });
+    if (!idxRes.ok && !firstError) {
+      firstError = idxRes.error;
+    }
+    const pendRes = safeRemoveItem(PENDING_ROLLBACK_KEY, { allowRemoveCorrupted: true });
+    if (!pendRes.ok && !firstError) {
+      firstError = pendRes.error;
+    }
+    clearPendingRollbackState();
+    if (!firstError) {
+      clearLastWriteError();
+    }
     notifyListeners();
+    return firstError ? { ok: false, error: firstError } : { ok: true, error: null };
   },
 
   exportBackupJson(): string {
@@ -2026,30 +2068,93 @@ export const StorageService = {
       equipment: this.getEquipmentList(),
       fitnessParameters: this.getUserParameters(),
       favoriteExerciseIds: this.getFavoriteExerciseIds(),
+      customExercises: this.getCustomExercises(),
+      settings: this.getSettings(),
+      wellbeingCheckins: this.getWellbeingCheckins(),
+      bodyMeasurements: this.getBodyMeasurements(),
       exportedAt: new Date().toISOString(),
-      version: 4,
+      version: 6,
     };
     return JSON.stringify(data, null, 2);
   },
 
-  importBackupJson(jsonString: string): boolean {
-    try {
-      const parsed = JSON.parse(jsonString);
-      if (parsed.profile) localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(parsed.profile));
-      if (parsed.programs) localStorage.setItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(parsed.programs));
-      if (parsed.workouts) localStorage.setItem(STORAGE_KEYS.WORKOUTS, JSON.stringify(parsed.workouts));
-      if (parsed.sports) localStorage.setItem(STORAGE_KEYS.SPORTS_SESSIONS, JSON.stringify(parsed.sports));
-      if (parsed.weeklySchedule) localStorage.setItem(STORAGE_KEYS.WEEKLY_SCHEDULE, JSON.stringify(parsed.weeklySchedule));
-      if (parsed.activity) localStorage.setItem(STORAGE_KEYS.CUSTOM_ACTIVITY, JSON.stringify(parsed.activity));
-      if (parsed.equipment) localStorage.setItem(STORAGE_KEYS.EQUIPMENT, JSON.stringify(parsed.equipment));
-      if (parsed.fitnessParameters) localStorage.setItem(STORAGE_KEYS.FITNESS_PARAMS, JSON.stringify(parsed.fitnessParameters));
-      if (parsed.favoriteExerciseIds) localStorage.setItem(STORAGE_KEYS.FAVORITES, JSON.stringify(parsed.favoriteExerciseIds));
+  importBackupJsonWithResult(jsonString: string): SafeWriteResult {
+    const res = validateAndMigrateBackup(jsonString);
+    if (!res.valid || !res.normalized) {
+      const msg = res.error || 'Некорректный формат резервной копии.';
+      setLastWriteError(msg);
+      console.error('Import validation failed:', msg);
       notifyListeners();
-      return true;
-    } catch (e) {
-      console.error('Import failed:', e);
-      return false;
+      return { ok: false, error: msg };
     }
+
+    const n = res.normalized;
+    const entries: Array<[string, string]> = [];
+    const collect = (key: string, val: unknown) => {
+      if (val !== undefined) {
+        entries.push([key, JSON.stringify(val)]);
+      }
+    };
+
+    collect(STORAGE_KEYS.PROFILE, n.profile);
+    collect(STORAGE_KEYS.PROGRAMS, n.programs);
+    collect(STORAGE_KEYS.WORKOUTS, n.workouts);
+    collect(STORAGE_KEYS.SPORTS_SESSIONS, n.sports);
+    collect(STORAGE_KEYS.WEEKLY_SCHEDULE, n.weeklySchedule);
+    collect(STORAGE_KEYS.CUSTOM_ACTIVITY, n.activity);
+    collect(STORAGE_KEYS.EQUIPMENT, n.equipment);
+    collect(STORAGE_KEYS.FITNESS_PARAMS, n.fitnessParameters);
+    collect(STORAGE_KEYS.FAVORITES, n.favoriteExerciseIds);
+    collect(STORAGE_KEYS.CUSTOM_EXERCISES, n.customExercises);
+    collect(STORAGE_KEYS.SETTINGS, n.settings);
+    collect(STORAGE_KEYS.WELLBEING_CHECKINS, n.wellbeingCheckins);
+    collect(STORAGE_KEYS.BODY_MEASUREMENTS, n.bodyMeasurements);
+
+    if (entries.length === 0) {
+      const emptyMsg = 'Резервная копия не содержит ни одного раздела для импорта.';
+      setLastWriteError(emptyMsg);
+      notifyListeners();
+      return { ok: false, error: emptyMsg };
+    }
+
+    // Снимаем полный снимок затрагиваемых ключей и карантинных замков до начала записи
+    const importedKeys = entries.map(([k]) => k);
+    const snapshots = captureStorageKeysSnapshot(importedKeys);
+    // Карантин и блокировки снимаем ТОЛЬКО после подтверждённой записи ВСЕХ разделов
+    const writeOpts = { allowOverwriteCorrupted: true, deferLockClear: true };
+
+    for (const [key, serialized] of entries) {
+      const w = safeSetItem(key, serialized, writeOpts);
+      if (!w.ok) {
+        const failedError =
+          w.error || 'Ошибка записи при импорте резервной копии. Выполнен откат к исходным данным.';
+        const rollbackRes = restoreStorageKeysSnapshotDetailed(snapshots);
+        const failedSummary = rollbackRes.failedDetails
+          .map((d) => `${d.key} [${d.stage}]`)
+          .join(', ');
+        const fullErr = rollbackRes.ok
+          ? `${failedError} Исходные данные полностью сохранены (откат выполнен).`
+          : `${failedError} Частичный откат: не удалось полностью восстановить (${failedSummary}). Данные для повторного восстановления сохранены.`;
+        setLastWriteError(fullErr);
+        notifyListeners();
+        return { ok: false, error: fullErr };
+      }
+    }
+
+    const clearRes = confirmClearedLocksAfterRecovery(importedKeys);
+    if (!clearRes.ok) {
+      notifyListeners();
+      return clearRes;
+    }
+
+    clearPendingRollbackState();
+    clearLastWriteError();
+    notifyListeners();
+    return { ok: true, error: null };
+  },
+
+  importBackupJson(jsonString: string): boolean {
+    return this.importBackupJsonWithResult(jsonString).ok;
   },
 };
 

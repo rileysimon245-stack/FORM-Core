@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { StorageService, normalizeMuscleKey, isSessionAfterReset } from '../services/storage';
+import { safeGetRaw, safeSetItem, safeRemoveItem } from '../services/migrations';
+import { formatLocalIsoDate, getCalendarDaysAgo } from '../training-core/dateUtils';
+import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
+import { normalizeMuscleListPure } from '../training-core/muscles';
 import {
   MUSCLE_DEFINITIONS,
   MuscleGroup,
@@ -7,7 +11,6 @@ import {
   MuscleLoadStats,
   WorkoutSession,
   SportSession,
-  EXERCISE_CATALOG,
   SPORT_DEFINITIONS,
   MuscleLoadHistoryItem,
 } from '../types/workout';
@@ -200,11 +203,10 @@ function getMuscleColorStyle(percent: number) {
 function formatRussianDate(dateStr: string | null | undefined): string {
   if (!dateStr) return 'Нет записей';
   const now = new Date();
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const todayStr = formatLocalIsoDate(now);
 
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12, 0, 0);
+  const yesterdayStr = formatLocalIsoDate(yesterday);
 
   if (dateStr === todayStr) return 'Сегодня';
   if (dateStr === yesterdayStr) return 'Вчера';
@@ -235,11 +237,21 @@ function getMuscleLastTrainedDate(
     .filter((s) => s.status === 'completed')
     .sort((a, b) => b.date.localeCompare(a.date));
 
+  const customExercises = StorageService.getCustomExercises();
   for (const s of sortedSessions) {
     const touched = s.exercises?.some((ex) => {
-      const cat = EXERCISE_CATALOG.find((c) => c.name.toLowerCase() === ex.name.toLowerCase());
-      const primary = ex.targetMuscle || cat?.primaryMuscle;
-      const secondary = ex.secondaryMuscles || cat?.secondaryMuscles || [];
+      const cat = findExerciseInUnifiedCatalog(
+        ex.exerciseId,
+        ex.name,
+        customExercises,
+        ex.targetMuscle
+      );
+      const primary = normalizeMuscleKey(ex.targetMuscle || cat?.primaryMuscle) || ex.targetMuscle;
+      const rawSecondary =
+        ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+          ? ex.secondaryMuscles
+          : cat?.secondaryMuscles || [];
+      const secondary = normalizeMuscleListPure(rawSecondary);
       if (primary === muscleKey || secondary.includes(muscleKey)) return true;
       if (muscleKey.startsWith('chest_') && (primary === 'chest' || secondary.includes('chest'))) return true;
       if (muscleKey.startsWith('front_delts') && (primary === 'shoulders' || secondary.includes('shoulders'))) return true;
@@ -809,8 +821,7 @@ export const AnatomyTab: React.FC = () => {
 
   const runChainTest = () => {
     const steps: { name: string; status: 'OK' | 'ОШИБКА'; details: string }[] = [];
-    const now = new Date();
-    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayIso = formatLocalIsoDate(new Date());
 
     // a) Create test session with 1 exercise "Жим лёжа", targetMuscle "chest", 1 set 26 x 10 completed
     const testSession: WorkoutSession = {
@@ -868,7 +879,7 @@ export const AnatomyTab: React.FC = () => {
     // c) Read back from localStorage and display raw JSON
     let rawSaved = '';
     try {
-      const storedStr = localStorage.getItem('form_workout_sessions');
+      const storedStr = safeGetRaw('form_workout_sessions');
       if (storedStr) {
         const parsed: WorkoutSession[] = JSON.parse(storedStr);
         const found = parsed.find((s) => s.id === 'test_session_diag' || (s as any).isTest);
@@ -1054,7 +1065,7 @@ export const AnatomyTab: React.FC = () => {
 
     async function loadAssets() {
       try {
-        localStorage.removeItem('form_anatomy_custom_mapping');
+        safeRemoveItem('form_anatomy_custom_mapping');
         const resJson = await fetch('/assets/aistudio/form_core_atlas_mapping.json', { cache: 'no-cache' });
         const json: MappingData = await resJson.json();
 
@@ -1335,20 +1346,20 @@ export const AnatomyTab: React.FC = () => {
   // Muscle Symmetry calculations based on actual training log for the selected period
   const symmetryData = useMemo(() => {
     const now = new Date();
-    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayIso = formatLocalIsoDate(now);
     const resetTime = StorageService.getAnatomyResetTime();
 
     const sessions = allSessions.filter((s) => {
       if (s.status !== 'completed') return false;
       if (!isSessionAfterReset(s, resetTime)) return false;
-      const sessionDate = new Date(s.date);
       if (period === 'session') {
         return s.date === todayIso;
-      } else if (period === '7d') {
-        const diffDays = Math.floor((now.getTime() - sessionDate.getTime()) / (1000 * 3600 * 24));
+      }
+      const diffDays = getCalendarDaysAgo(s.date, now);
+      if (diffDays === null) return false;
+      if (period === '7d') {
         return diffDays >= 0 && diffDays <= 7;
       } else {
-        const diffDays = Math.floor((now.getTime() - sessionDate.getTime()) / (1000 * 3600 * 24));
         return diffDays >= 0 && diffDays <= 30;
       }
     });
@@ -1546,8 +1557,8 @@ export const AnatomyTab: React.FC = () => {
               </span>
             </div>
             <pre className="text-[10px] text-[#A2B5B0] bg-[#0A1012] p-2 rounded-lg border border-[#1A2528] overflow-x-auto max-h-36 whitespace-pre-wrap break-all font-mono">
-              {localStorage.getItem('form_workout_sessions')
-                ? localStorage.getItem('form_workout_sessions')!.slice(0, 1500)
+              {safeGetRaw('form_workout_sessions')
+                ? safeGetRaw('form_workout_sessions')!.slice(0, 1500)
                 : 'Ключ form_workout_sessions пуст (в localStorage нет сохранённых тренировок)'}
             </pre>
           </div>
@@ -1692,9 +1703,22 @@ export const AnatomyTab: React.FC = () => {
                 <div className="pt-1 space-y-1 text-[11px]">
                   <div className="font-semibold text-[#858E90]">2. Упражнения в тренировке:</div>
                   {(last.exercises || []).map((ex, i) => {
-                    const cat = EXERCISE_CATALOG.find((c) => c.name.toLowerCase() === ex.name.toLowerCase());
-                    const primary = ex.targetMuscle || cat?.primaryMuscle || 'не указан';
-                    const secondaries = ex.secondaryMuscles || cat?.secondaryMuscles || [];
+                    const customExercises = StorageService.getCustomExercises();
+                    const cat = findExerciseInUnifiedCatalog(
+                      ex.exerciseId,
+                      ex.name,
+                      customExercises,
+                      ex.targetMuscle
+                    );
+                    const primary =
+                      normalizeMuscleKey(ex.targetMuscle || cat?.primaryMuscle) ||
+                      ex.targetMuscle ||
+                      'не указан';
+                    const secondaries = normalizeMuscleListPure(
+                      ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+                        ? ex.secondaryMuscles
+                        : cat?.secondaryMuscles || []
+                    );
                     const doneSets = (ex.sets || []).filter(
                       (st: any) =>
                         st &&
@@ -2756,9 +2780,7 @@ export const AnatomyTab: React.FC = () => {
 
                       const newMapping = { ...mappingData, regions: updatedRegions };
                       setMappingData(newMapping);
-                      try {
-                        localStorage.setItem('form_anatomy_custom_mapping', JSON.stringify(newMapping));
-                      } catch {}
+                      safeSetItem('form_anatomy_custom_mapping', JSON.stringify(newMapping));
                       setDebugEditingRegion(null);
                     }}
                     className="px-4 py-2 text-xs font-bold text-[#0A1012] bg-[#58C995] hover:bg-[#48b584] rounded-xl transition-colors shadow-lg"

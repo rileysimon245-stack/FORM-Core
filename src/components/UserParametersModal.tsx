@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { UserFitnessParameters, MuscleGroup, MUSCLE_DEFINITIONS, EXERCISE_CATALOG } from '../types/workout';
+import { UserFitnessParameters, MuscleGroup, MUSCLE_DEFINITIONS } from '../types/workout';
 import { StorageService } from '../services/storage';
 import { FormSelect } from './common/FormSelect';
 import { Modal } from './common/Modal';
