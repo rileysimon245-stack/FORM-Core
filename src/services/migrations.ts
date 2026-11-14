@@ -27,15 +27,30 @@ export const PRE_MIGRATION_BACKUP_KEY = 'form_backup_pre_v11';
 export const CORRUPTED_RAW_PREFIX = 'form_corrupted_raw_';
 export const CORRUPTED_LOCKS_INDEX_KEY = 'form_corrupted_locks_v1';
 export const PENDING_ROLLBACK_KEY = 'form_pending_rollback_v1';
+export const ROLLBACK_SNAPSHOT_KEY = 'form_rollback_snapshot_v1';
+export const ROLLBACK_SNAPSHOT_STAGING_KEY = 'form_rollback_snapshot_staging_v1';
+
+const INTERNAL_GATEWAY_TOKEN = Symbol('FORM_INTERNAL_GATEWAY');
 
 const corruptedKeysSet = new Set<string>();
 let locksIndexCorruptedInSession = false;
 let lastWriteError: string | null = null;
 let migrationDoneInSession = false;
+let startupAutoRecoveryAttempted = false;
 
 export interface SafeWriteResult {
   ok: boolean;
   error: string | null;
+}
+
+export type RollbackRecoveryStatus = 'none' | 'pending' | 'unknown';
+
+export interface RollbackRecoveryState {
+  status: RollbackRecoveryStatus;
+  error: string | null;
+  pendingKeys: string[];
+  rawPendingValue: string | null;
+  rawSnapshotValue: string | null;
 }
 
 export interface SafeSetOptions {
@@ -104,8 +119,60 @@ function isMetadataKey(key: string): boolean {
   return (
     key === CORRUPTED_LOCKS_INDEX_KEY ||
     key === PENDING_ROLLBACK_KEY ||
+    key === ROLLBACK_SNAPSHOT_KEY ||
+    key === ROLLBACK_SNAPSHOT_STAGING_KEY ||
     key.startsWith(CORRUPTED_RAW_PREFIX)
   );
+}
+
+// Единая низкоуровневая точка записи с обязательной проверкой перечитыванием
+function gatewayRawSet(storage: Storage, key: string, value: string): SafeWriteResult {
+  try {
+    storage.setItem(key, value);
+  } catch (err: any) {
+    return { ok: false, error: formatWriteError(err, `Ошибка записи ключа "${key}"`) };
+  }
+  let readBack: string | null = null;
+  try {
+    readBack = storage.getItem(key);
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: formatWriteError(err, `Не удалось перечитать ключ "${key}" после записи`),
+    };
+  }
+  if (readBack !== value) {
+    return {
+      ok: false,
+      error: `Проверка записи "${key}" не пройдена: сохранённое содержимое не совпадает с ожидаемым.`,
+    };
+  }
+  return { ok: true, error: null };
+}
+
+// Единая низкоуровневая точка удаления с обязательной проверкой перечитыванием
+function gatewayRawRemove(storage: Storage, key: string): SafeWriteResult {
+  try {
+    storage.removeItem(key);
+  } catch (err: any) {
+    return { ok: false, error: formatWriteError(err, `Ошибка удаления ключа "${key}"`) };
+  }
+  let readBack: string | null = null;
+  try {
+    readBack = storage.getItem(key);
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: formatWriteError(err, `Не удалось проверить удаление ключа "${key}"`),
+    };
+  }
+  if (readBack !== null) {
+    return {
+      ok: false,
+      error: `Проверка удаления "${key}" не пройдена: ключ остался в хранилище.`,
+    };
+  }
+  return { ok: true, error: null };
 }
 
 function inspectPersistedLocksIndex(storage: Storage | null): {
@@ -154,8 +221,8 @@ function inspectPersistedLocksIndex(storage: Storage | null): {
     const salvaged = raw.match(/form_[a-zA-Z0-9_]+/g) || [];
     try {
       const qKey = `${CORRUPTED_RAW_PREFIX}${CORRUPTED_LOCKS_INDEX_KEY}`;
-      if (!storage.getItem(qKey)) {
-        storage.setItem(qKey, raw);
+      if (!storage.getItem(qKey) && getRollbackRecoveryState().status === 'none') {
+        gatewayRawSet(storage, qKey, raw);
       }
     } catch {
       // ignore quarantine backup failure on corrupted index
@@ -188,17 +255,11 @@ function readPersistedLocksIndex(storage: Storage | null): string[] {
 
 function writePersistedLocksIndex(storage: Storage | null, keys: string[]): boolean {
   if (!storage) return false;
-  try {
-    const unique = Array.from(new Set(keys.filter((k) => typeof k === 'string' && k.length > 0)));
-    if (unique.length === 0) {
-      storage.removeItem(CORRUPTED_LOCKS_INDEX_KEY);
-    } else {
-      storage.setItem(CORRUPTED_LOCKS_INDEX_KEY, JSON.stringify(unique));
-    }
-    return true;
-  } catch {
-    return false;
+  const unique = Array.from(new Set(keys.filter((k) => typeof k === 'string' && k.length > 0)));
+  if (unique.length === 0) {
+    return gatewayRawRemove(storage, CORRUPTED_LOCKS_INDEX_KEY).ok;
   }
+  return gatewayRawSet(storage, CORRUPTED_LOCKS_INDEX_KEY, JSON.stringify(unique)).ok;
 }
 
 function persistCorruptedLock(storage: Storage | null, key: string): boolean {
@@ -270,6 +331,13 @@ function quarantineAndLockCorruptedKey(
   key: string,
   raw: string
 ): { lockIndexOk: boolean; quarantineOk: boolean } {
+  corruptedKeysSet.add(key);
+
+  // Во время pending/unknown не мутируем localStorage (блокировка остаётся в памяти)
+  if (getRollbackRecoveryState().status !== 'none') {
+    return { lockIndexOk: false, quarantineOk: false };
+  }
+
   const lockIndexOk = persistCorruptedLock(storage, key);
   let quarantineOk = true;
   let quarantineErrMsg: string | null = null;
@@ -278,7 +346,14 @@ function quarantineAndLockCorruptedKey(
     try {
       const qKey = `${CORRUPTED_RAW_PREFIX}${key}`;
       if (!storage.getItem(qKey)) {
-        storage.setItem(qKey, raw);
+        const qRes = gatewayRawSet(storage, qKey, raw);
+        if (!qRes.ok) {
+          quarantineOk = false;
+          quarantineErrMsg =
+            qRes.error && qRes.error.includes('QuotaExceededError')
+              ? `Не удалось сохранить полную карантинную копию для "${key}": недостаточно памяти устройства (QuotaExceededError). Ключ заблокирован от перезаписи.`
+              : `Не удалось сохранить карантинную копию для "${key}": ${qRes.error || 'ошибка записи'}. Ключ заблокирован от перезаписи.`;
+        }
       }
     } catch (quarantineErr: any) {
       quarantineOk = false;
@@ -371,17 +446,25 @@ export function isKeyLockedByCorruption(key: string): boolean {
 }
 
 export function clearCorruptedLock(key: string): SafeWriteResult {
+  const recState = getRollbackRecoveryState();
+  if (recState.status !== 'none') {
+    const msg =
+      recState.error ||
+      `Снятие блокировки "${key}" запрещено: имеется незавершённое или повреждённое восстановление (${recState.status}).`;
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
+
   const storage = getStorage();
   if (!storage) {
     corruptedKeysSet.delete(key);
     return { ok: true, error: null };
   }
 
-  try {
-    storage.removeItem(`${CORRUPTED_RAW_PREFIX}${key}`);
-  } catch (err: any) {
+  const rmQ = gatewayRawRemove(storage, `${CORRUPTED_RAW_PREFIX}${key}`);
+  if (!rmQ.ok) {
     corruptedKeysSet.add(key);
-    const msg = formatWriteError(err, `Не удалось удалить карантинную копию для "${key}"`);
+    const msg = rmQ.error || `Не удалось удалить карантинную копию для "${key}"`;
     lastWriteError = msg;
     return { ok: false, error: msg };
   }
@@ -437,14 +520,10 @@ export function clearLastWriteError(): void {
 }
 
 function confirmSingleKeyLockCleared(storage: Storage, key: string): SafeWriteResult {
-  try {
-    storage.removeItem(`${CORRUPTED_RAW_PREFIX}${key}`);
-  } catch (err: any) {
+  const rmQ = gatewayRawRemove(storage, `${CORRUPTED_RAW_PREFIX}${key}`);
+  if (!rmQ.ok) {
     corruptedKeysSet.add(key);
-    const msg = formatWriteError(
-      err,
-      `Данные "${key}" записаны, но не удалось удалить карантинную копию`
-    );
+    const msg = rmQ.error || `Данные "${key}" записаны, но не удалось удалить карантинную копию`;
     lastWriteError = msg;
     return { ok: false, error: msg };
   }
@@ -471,10 +550,10 @@ export function confirmClearedLocksAfterRecovery(keys: string[]): SafeWriteResul
   const failedKeys: string[] = [];
 
   for (const key of keys) {
-    try {
-      storage.removeItem(`${CORRUPTED_RAW_PREFIX}${key}`);
+    const rmRes = gatewayRawRemove(storage, `${CORRUPTED_RAW_PREFIX}${key}`);
+    if (rmRes.ok) {
       clearedKeys.push(key);
-    } catch {
+    } else {
       corruptedKeysSet.add(key);
       failedKeys.push(key);
     }
@@ -530,21 +609,20 @@ export function confirmClearedLocksAfterRecovery(keys: string[]): SafeWriteResul
       return { ok: false, error: msg };
     }
 
-    try {
-      storage.removeItem(`${CORRUPTED_RAW_PREFIX}${CORRUPTED_LOCKS_INDEX_KEY}`);
-      storage.removeItem(CORRUPTED_LOCKS_INDEX_KEY);
-      locksIndexCorruptedInSession = false;
-      corruptedKeysSet.delete(CORRUPTED_LOCKS_INDEX_KEY);
-      for (const k of clearedKeys) {
-        corruptedKeysSet.delete(k);
-      }
-    } catch (err: any) {
-      const msg = formatWriteError(
-        err,
-        `Данные записаны, но не удалось очистить повреждённый индекс "${CORRUPTED_LOCKS_INDEX_KEY}"`
-      );
+    const rmIdxQ = gatewayRawRemove(storage, `${CORRUPTED_RAW_PREFIX}${CORRUPTED_LOCKS_INDEX_KEY}`);
+    const rmIdx = gatewayRawRemove(storage, CORRUPTED_LOCKS_INDEX_KEY);
+    if (!rmIdxQ.ok || !rmIdx.ok) {
+      const msg =
+        rmIdx.error ||
+        rmIdxQ.error ||
+        `Данные записаны, но не удалось очистить повреждённый индекс "${CORRUPTED_LOCKS_INDEX_KEY}"`;
       lastWriteError = msg;
       return { ok: false, error: msg };
+    }
+    locksIndexCorruptedInSession = false;
+    corruptedKeysSet.delete(CORRUPTED_LOCKS_INDEX_KEY);
+    for (const k of clearedKeys) {
+      corruptedKeysSet.delete(k);
     }
   }
 
@@ -557,16 +635,37 @@ export function confirmClearedLocksAfterRecovery(keys: string[]): SafeWriteResul
   return { ok: true, error: null };
 }
 
-export function safeSetItem(
+function buildPendingBlockError(recState: RollbackRecoveryState, targetKey: string, isDelete: boolean): string {
+  const action = isDelete ? `Удаление "${targetKey}"` : `Запись в "${targetKey}"`;
+  if (recState.status === 'unknown') {
+    return `${action} заблокировано: ${recState.error || 'снимок восстановления повреждён (состояние unknown).'}`;
+  }
+  const keysSuffix = recState.pendingKeys.length > 0 ? ` (${recState.pendingKeys.join(', ')})` : '';
+  return `${action} заблокировано: имеется незавершённое восстановление предыдущей операции${keysSuffix}. Сначала завершите восстановление.`;
+}
+
+function writeViaGateway(
   key: string,
   value: string,
-  options?: SafeSetOptions
+  options?: SafeSetOptions,
+  internalToken?: symbol
 ): SafeWriteResult {
   const storage = getStorage();
   if (!storage) {
     const msg = 'Локальное хранилище (localStorage) недоступно.';
     lastWriteError = msg;
     return { ok: false, error: msg };
+  }
+
+  const isInternalContext = internalToken === INTERNAL_GATEWAY_TOKEN;
+  if (!isInternalContext) {
+    const recState = getRollbackRecoveryState();
+    if (recState.status !== 'none') {
+      const msg = buildPendingBlockError(recState, key, false);
+      lastWriteError = msg;
+      console.error('[FORM Storage]', msg, key);
+      return { ok: false, error: msg };
+    }
   }
 
   if (!options?.allowOverwriteCorrupted) {
@@ -590,30 +689,44 @@ export function safeSetItem(
     }
   }
 
-  try {
-    storage.setItem(key, value);
-    if (options?.allowOverwriteCorrupted && !options?.deferLockClear) {
-      const clearRes = confirmSingleKeyLockCleared(storage, key);
-      if (!clearRes.ok) {
-        return clearRes;
-      }
-    }
-    if (!options?.deferLockClear) {
-      lastWriteError = null;
-    }
-    return { ok: true, error: null };
-  } catch (err: any) {
-    const msg = formatWriteError(err, 'Ошибка записи в память устройства');
-    lastWriteError = msg;
-    console.error('[FORM Storage]', msg, key);
-    return { ok: false, error: msg };
+  const writeRes = gatewayRawSet(storage, key, value);
+  if (!writeRes.ok) {
+    lastWriteError = writeRes.error;
+    console.error('[FORM Storage]', writeRes.error, key);
+    return writeRes;
   }
+
+  if (options?.allowOverwriteCorrupted && !options?.deferLockClear) {
+    const clearRes = confirmSingleKeyLockCleared(storage, key);
+    if (!clearRes.ok) {
+      return clearRes;
+    }
+  }
+  if (!options?.deferLockClear) {
+    lastWriteError = null;
+  }
+  return { ok: true, error: null };
 }
 
-export function safeRemoveItem(key: string, options?: SafeRemoveOptions): SafeWriteResult {
+function removeViaGateway(
+  key: string,
+  options?: SafeRemoveOptions,
+  internalToken?: symbol
+): SafeWriteResult {
   const storage = getStorage();
   if (!storage) {
     return { ok: false, error: 'Локальное хранилище (localStorage) недоступно.' };
+  }
+
+  const isInternalContext = internalToken === INTERNAL_GATEWAY_TOKEN;
+  if (!isInternalContext) {
+    const recState = getRollbackRecoveryState();
+    if (recState.status !== 'none') {
+      const msg = buildPendingBlockError(recState, key, true);
+      lastWriteError = msg;
+      console.error('[FORM Storage]', msg, key);
+      return { ok: false, error: msg };
+    }
   }
 
   if (!options?.allowRemoveCorrupted && !isMetadataKey(key)) {
@@ -624,14 +737,24 @@ export function safeRemoveItem(key: string, options?: SafeRemoveOptions): SafeWr
     }
   }
 
-  try {
-    storage.removeItem(key);
-    return { ok: true, error: null };
-  } catch (err: any) {
-    const msg = formatWriteError(err, 'Ошибка удаления ключа из памяти устройства');
-    lastWriteError = msg;
-    return { ok: false, error: msg };
+  const rmRes = gatewayRawRemove(storage, key);
+  if (!rmRes.ok) {
+    lastWriteError = rmRes.error;
+    return rmRes;
   }
+  return { ok: true, error: null };
+}
+
+export function safeSetItem(
+  key: string,
+  value: string,
+  options?: SafeSetOptions
+): SafeWriteResult {
+  return writeViaGateway(key, value, options);
+}
+
+export function safeRemoveItem(key: string, options?: SafeRemoveOptions): SafeWriteResult {
+  return removeViaGateway(key, options);
 }
 
 export function safeGetJson<T>(
@@ -872,84 +995,480 @@ export interface DetailedRollbackResult {
   failedDetails: RollbackFailureDetail[];
 }
 
+export interface PersistedRollbackSnapshotPayload {
+  version: 1;
+  operationId: string;
+  operationName: string;
+  createdAt: string;
+  checksum: string;
+  snapshots: KeyBackupSnapshot[];
+}
+
+export interface PersistedPendingMarkerPayload {
+  version: 1;
+  operationId: string;
+  operationName: string;
+  createdAt: string;
+  status: 'in_progress' | 'rollback_failed';
+  snapshotKey: string;
+  checksum: string;
+  snapshots: KeyBackupSnapshot[];
+  failedDetails: RollbackFailureDetail[];
+}
+
+export interface ProtectedTransactionContext {
+  setItem: (key: string, value: string, options?: SafeSetOptions) => SafeWriteResult;
+  removeItem: (key: string, options?: SafeRemoveOptions) => SafeWriteResult;
+  confirmClearedLocks: (keys: string[]) => SafeWriteResult;
+}
+
+const VALID_FAILURE_STAGES = new Set<RollbackFailureDetail['stage']>([
+  'remove_new_key',
+  'remove_unused_quarantine',
+  'restore_value',
+  'restore_quarantine',
+  'restore_lock_index',
+  'clear_lock_index',
+]);
+
 let pendingRollbackSnapshots: KeyBackupSnapshot[] | null = null;
 let pendingRollbackFailedDetails: RollbackFailureDetail[] = [];
 
-function loadPendingRollbackFromStorage(storage: Storage | null): {
-  snapshots: KeyBackupSnapshot[];
-  failedDetails: RollbackFailureDetail[];
-} | null {
-  if (!storage) return null;
+function computeSnapshotChecksum(snapshots: KeyBackupSnapshot[]): string {
+  const canonical = JSON.stringify(
+    snapshots.map((s) => ({
+      key: s.key,
+      rawValue: s.rawValue,
+      quarantineRawValue: s.quarantineRawValue,
+      wasLockedInMemory: s.wasLockedInMemory,
+      wasLockedInIndex: s.wasLockedInIndex,
+    }))
+  );
+  let h1 = 0x811c9dc5;
+  let h2 = 5381;
+  for (let i = 0; i < canonical.length; i++) {
+    const code = canonical.charCodeAt(i);
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 = ((h2 << 5) + h2 + code) | 0;
+  }
+  return `v1:${canonical.length}:${(h1 >>> 0).toString(16).padStart(8, '0')}:${(h2 >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function isValidSnapshotItem(item: unknown): item is KeyBackupSnapshot {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+  const s = item as Record<string, unknown>;
+  return (
+    typeof s.key === 'string' &&
+    s.key.length > 0 &&
+    (s.rawValue === null || typeof s.rawValue === 'string') &&
+    (s.quarantineRawValue === null || typeof s.quarantineRawValue === 'string') &&
+    typeof s.wasLockedInMemory === 'boolean' &&
+    typeof s.wasLockedInIndex === 'boolean'
+  );
+}
+
+function isValidFailureDetail(item: unknown): item is RollbackFailureDetail {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+  const d = item as Record<string, unknown>;
+  return (
+    typeof d.key === 'string' &&
+    d.key.length > 0 &&
+    typeof d.stage === 'string' &&
+    VALID_FAILURE_STAGES.has(d.stage as RollbackFailureDetail['stage']) &&
+    typeof d.error === 'string'
+  );
+}
+
+function parseAndValidateSnapshotPayload(
+  raw: string
+): { valid: true; payload: PersistedRollbackSnapshotPayload } | { valid: false; error: string } {
+  if (!raw || typeof raw !== 'string') {
+    return { valid: false, error: 'Снимок восстановления пуст.' };
+  }
+  let parsed: unknown;
   try {
-    const raw = storage.getItem(PENDING_ROLLBACK_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed && Array.isArray(parsed.snapshots)) {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { valid: false, error: 'Некорректный JSON снимка восстановления.' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { valid: false, error: 'Снимок восстановления должен быть JSON-объектом.' };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (obj.version !== 1 || typeof obj.operationId !== 'string' || !obj.operationId) {
+    return { valid: false, error: 'Некорректная версия или идентификатор снимка восстановления.' };
+  }
+  if (!Array.isArray(obj.snapshots) || obj.snapshots.length === 0) {
+    return { valid: false, error: 'Список ключей в снимке восстановления отсутствует или пуст.' };
+  }
+  if (!obj.snapshots.every(isValidSnapshotItem)) {
+    return { valid: false, error: 'Один или несколько элементов снимка имеют неверную структуру.' };
+  }
+  const expectedChecksum = computeSnapshotChecksum(obj.snapshots);
+  if (typeof obj.checksum !== 'string' || obj.checksum !== expectedChecksum) {
+    return { valid: false, error: 'Контрольная сумма снимка восстановления не совпадает.' };
+  }
+  return {
+    valid: true,
+    payload: parsed as PersistedRollbackSnapshotPayload,
+  };
+}
+
+function parseAndValidatePendingMarker(
+  raw: string,
+  storage: Storage | null
+):
+  | {
+      valid: true;
+      snapshots: KeyBackupSnapshot[];
+      failedDetails: RollbackFailureDetail[];
+      operationId?: string;
+      operationName?: string;
+      snapshotKey?: string;
+      checksum?: string;
+      createdAt?: string;
+    }
+  | { valid: false; error: string } {
+  if (!raw || typeof raw !== 'string') {
+    return { valid: false, error: 'Маркер восстановления пуст.' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { valid: false, error: 'Некорректный JSON маркера восстановления.' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { valid: false, error: 'Маркер восстановления должен быть JSON-объектом.' };
+  }
+  const obj = parsed as Record<string, unknown>;
+
+  if (obj.version !== undefined && obj.version !== 1) {
+    return { valid: false, error: 'Неподдерживаемая версия маркера восстановления.' };
+  }
+  if (
+    obj.status !== undefined &&
+    obj.status !== 'in_progress' &&
+    obj.status !== 'rollback_failed'
+  ) {
+    return { valid: false, error: 'Некорректный статус маркера восстановления.' };
+  }
+  if (!Array.isArray(obj.snapshots) || obj.snapshots.length === 0) {
+    return { valid: false, error: 'В маркере восстановления отсутствуют снимки ключей.' };
+  }
+  if (!obj.snapshots.every(isValidSnapshotItem)) {
+    return { valid: false, error: 'Структура ключей в маркере восстановления повреждена.' };
+  }
+
+  let failedDetails: RollbackFailureDetail[] = [];
+  if (obj.failedDetails !== undefined) {
+    if (!Array.isArray(obj.failedDetails) || !obj.failedDetails.every(isValidFailureDetail)) {
+      return { valid: false, error: 'Структура failedDetails в маркере восстановления повреждена.' };
+    }
+    failedDetails = obj.failedDetails;
+  }
+
+  const expectedChecksum = computeSnapshotChecksum(obj.snapshots);
+  if (obj.checksum !== undefined) {
+    if (typeof obj.checksum !== 'string' || obj.checksum !== expectedChecksum) {
+      return { valid: false, error: 'Контрольная сумма маркера восстановления не совпадает.' };
+    }
+  }
+
+  if (obj.snapshotKey !== undefined) {
+    if (typeof obj.snapshotKey !== 'string' || !obj.snapshotKey) {
+      return { valid: false, error: 'Некорректная ссылка snapshotKey в маркере восстановления.' };
+    }
+    if (storage) {
+      let stagingRaw: string | null = null;
+      try {
+        stagingRaw = storage.getItem(obj.snapshotKey);
+      } catch {
+        return {
+          valid: false,
+          error: `Не удалось прочитать связанный снимок "${obj.snapshotKey}".`,
+        };
+      }
+      if (stagingRaw !== null) {
+        const stagingParsed = parseAndValidateSnapshotPayload(stagingRaw);
+        if (!stagingParsed.valid) {
+          return {
+            valid: false,
+            error: `Связанный снимок "${obj.snapshotKey}" повреждён: ${stagingParsed.error}`,
+          };
+        }
+        if (obj.checksum !== undefined && stagingParsed.payload.checksum !== obj.checksum) {
+          return {
+            valid: false,
+            error: `Контрольная сумма связанного снимка "${obj.snapshotKey}" не совпадает с маркером.`,
+          };
+        }
+      }
+    }
+  }
+
+  return {
+    valid: true,
+    snapshots: obj.snapshots,
+    failedDetails,
+    operationId: typeof obj.operationId === 'string' ? obj.operationId : undefined,
+    operationName: typeof obj.operationName === 'string' ? obj.operationName : undefined,
+    snapshotKey: typeof obj.snapshotKey === 'string' ? obj.snapshotKey : undefined,
+    checksum: typeof obj.checksum === 'string' ? obj.checksum : expectedChecksum,
+    createdAt: typeof obj.createdAt === 'string' ? obj.createdAt : undefined,
+  };
+}
+
+export function getRollbackRecoveryState(): RollbackRecoveryState {
+  const storage = getStorage();
+  if (storage) {
+    let rawPending: string | null = null;
+    try {
+      rawPending = storage.getItem(PENDING_ROLLBACK_KEY);
+    } catch {
       return {
-        snapshots: parsed.snapshots,
-        failedDetails: Array.isArray(parsed.failedDetails) ? parsed.failedDetails : [],
+        status: 'unknown',
+        error: `Не удалось прочитать маркер восстановления (${PENDING_ROLLBACK_KEY}). Запись и импорт заблокированы.`,
+        pendingKeys: [],
+        rawPendingValue: null,
+        rawSnapshotValue: null,
       };
     }
-  } catch {
-    // ignore malformed pending rollback
+
+    let rawConfirmedSnapshot: string | null = null;
+    try {
+      rawConfirmedSnapshot = storage.getItem(ROLLBACK_SNAPSHOT_KEY);
+    } catch {
+      return {
+        status: 'unknown',
+        error: `Не удалось прочитать снимок восстановления (${ROLLBACK_SNAPSHOT_KEY}). Запись и импорт заблокированы.`,
+        pendingKeys: [],
+        rawPendingValue: rawPending,
+        rawSnapshotValue: null,
+      };
+    }
+
+    if (rawPending !== null) {
+      const parsedPending = parseAndValidatePendingMarker(rawPending, storage);
+      if (!parsedPending.valid) {
+        return {
+          status: 'unknown',
+          error: `Повреждены данные незавершённого восстановления (${PENDING_ROLLBACK_KEY}): ${parsedPending.error}`,
+          pendingKeys: [],
+          rawPendingValue: rawPending,
+          rawSnapshotValue: rawConfirmedSnapshot,
+        };
+      }
+      const pendingKeys =
+        parsedPending.failedDetails.length > 0
+          ? Array.from(new Set(parsedPending.failedDetails.map((d) => d.key)))
+          : parsedPending.snapshots.map((s) => s.key);
+      return {
+        status: 'pending',
+        error: null,
+        pendingKeys,
+        rawPendingValue: rawPending,
+        rawSnapshotValue: rawConfirmedSnapshot,
+      };
+    }
+
+    if (rawConfirmedSnapshot !== null) {
+      const snapCheck = parseAndValidateSnapshotPayload(rawConfirmedSnapshot);
+      if (!snapCheck.valid) {
+        return {
+          status: 'unknown',
+          error: `Повреждён сохранённый снимок восстановления (${ROLLBACK_SNAPSHOT_KEY}): ${snapCheck.error}`,
+          pendingKeys: [],
+          rawPendingValue: null,
+          rawSnapshotValue: rawConfirmedSnapshot,
+        };
+      }
+    }
+
+    let rawStaging: string | null = null;
+    try {
+      rawStaging = storage.getItem(ROLLBACK_SNAPSHOT_STAGING_KEY);
+    } catch {
+      return {
+        status: 'unknown',
+        error: `Не удалось прочитать буферный снимок (${ROLLBACK_SNAPSHOT_STAGING_KEY}). Запись и импорт заблокированы.`,
+        pendingKeys: [],
+        rawPendingValue: null,
+        rawSnapshotValue: rawConfirmedSnapshot,
+      };
+    }
+    if (rawStaging !== null) {
+      const stagingCheck = parseAndValidateSnapshotPayload(rawStaging);
+      if (!stagingCheck.valid) {
+        return {
+          status: 'unknown',
+          error: `Повреждён буферный снимок восстановления (${ROLLBACK_SNAPSHOT_STAGING_KEY}): ${stagingCheck.error}`,
+          pendingKeys: [],
+          rawPendingValue: null,
+          rawSnapshotValue: rawStaging,
+        };
+      }
+    }
   }
-  return null;
+
+  if (pendingRollbackSnapshots && pendingRollbackSnapshots.length > 0) {
+    const pendingKeys =
+      pendingRollbackFailedDetails.length > 0
+        ? Array.from(new Set(pendingRollbackFailedDetails.map((d) => d.key)))
+        : pendingRollbackSnapshots.map((s) => s.key);
+    return {
+      status: 'pending',
+      error: null,
+      pendingKeys,
+      rawPendingValue: null,
+      rawSnapshotValue: null,
+    };
+  }
+
+  return {
+    status: 'none',
+    error: null,
+    pendingKeys: [],
+    rawPendingValue: null,
+    rawSnapshotValue: null,
+  };
 }
 
 function savePendingRollbackState(
   storage: Storage | null,
   snapshots: KeyBackupSnapshot[],
-  failedDetails: RollbackFailureDetail[]
-): void {
-  pendingRollbackSnapshots = snapshots.map((s) => ({ ...s }));
+  failedDetails: RollbackFailureDetail[],
+  meta?: { operationId?: string; operationName?: string; snapshotKey?: string; createdAt?: string }
+): SafeWriteResult {
+  const cloned = snapshots.map((s) => ({ ...s }));
+  pendingRollbackSnapshots = cloned;
   pendingRollbackFailedDetails = [...failedDetails];
-  if (!storage) return;
-  try {
-    storage.setItem(
-      PENDING_ROLLBACK_KEY,
-      JSON.stringify({
-        createdAt: new Date().toISOString(),
-        snapshots: pendingRollbackSnapshots,
-        failedDetails: pendingRollbackFailedDetails,
-      })
-    );
-  } catch {
-    // При переполнении памяти состояние для повторного восстановления сохраняется в ОЗУ текущей сессии
+
+  if (!storage) {
+    return { ok: false, error: 'Локальное хранилище (localStorage) недоступно.' };
   }
+
+  const checksum = computeSnapshotChecksum(cloned);
+  const payload: PersistedPendingMarkerPayload = {
+    version: 1,
+    operationId: meta?.operationId || `op_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    operationName: meta?.operationName || 'rollback_recovery',
+    createdAt: meta?.createdAt || new Date().toISOString(),
+    status: failedDetails.length > 0 ? 'rollback_failed' : 'in_progress',
+    snapshotKey: meta?.snapshotKey || ROLLBACK_SNAPSHOT_STAGING_KEY,
+    checksum,
+    snapshots: cloned,
+    failedDetails: [...failedDetails],
+  };
+
+  const serialized = JSON.stringify(payload);
+  const writeRes = gatewayRawSet(storage, PENDING_ROLLBACK_KEY, serialized);
+  if (!writeRes.ok) {
+    return writeRes;
+  }
+
+  const readCheck = storage.getItem(PENDING_ROLLBACK_KEY);
+  if (readCheck === null) {
+    return { ok: false, error: 'Маркер восстановления не сохранился после записи.' };
+  }
+  const validated = parseAndValidatePendingMarker(readCheck, storage);
+  if (!validated.valid) {
+    return { ok: false, error: `Записанный маркер восстановления не прошёл проверку: ${validated.error}` };
+  }
+
+  return { ok: true, error: null };
 }
 
-export function clearPendingRollbackState(): void {
+export function clearPendingRollbackState(): SafeWriteResult {
+  const storage = getStorage();
+  if (!storage) {
+    pendingRollbackSnapshots = null;
+    pendingRollbackFailedDetails = [];
+    return { ok: true, error: null };
+  }
+
+  const rmPending = gatewayRawRemove(storage, PENDING_ROLLBACK_KEY);
+  if (!rmPending.ok) {
+    // Маркер остался -> состояние остаётся pending
+    return rmPending;
+  }
+
+  gatewayRawRemove(storage, ROLLBACK_SNAPSHOT_STAGING_KEY);
   pendingRollbackSnapshots = null;
   pendingRollbackFailedDetails = [];
-  const storage = getStorage();
-  if (!storage) return;
-  try {
-    storage.removeItem(PENDING_ROLLBACK_KEY);
-  } catch {
-    // ignore cleanup error
-  }
+  return { ok: true, error: null };
 }
 
 export function hasPendingRollbackRecovery(): boolean {
-  if (pendingRollbackSnapshots && pendingRollbackSnapshots.length > 0) return true;
-  const storage = getStorage();
-  return loadPendingRollbackFromStorage(storage) !== null;
+  return getRollbackRecoveryState().status !== 'none';
 }
 
 export function getPendingRollbackKeys(): string[] {
-  if (pendingRollbackFailedDetails.length > 0) {
-    return Array.from(new Set(pendingRollbackFailedDetails.map((d) => d.key)));
+  return getRollbackRecoveryState().pendingKeys;
+}
+
+function verifyRestoredStorageMatchesSnapshot(
+  storage: Storage,
+  snapshots: KeyBackupSnapshot[]
+): RollbackFailureDetail[] {
+  const mismatches: RollbackFailureDetail[] = [];
+  const persistedInfo = inspectPersistedLocksIndex(storage);
+
+  for (const snap of snapshots) {
+    try {
+      const actualVal = storage.getItem(snap.key);
+      if (actualVal !== snap.rawValue) {
+        mismatches.push({
+          key: snap.key,
+          stage: 'restore_value',
+          error: `Проверка после отката выявила расхождение содержимого ключа "${snap.key}".`,
+        });
+      }
+    } catch (err) {
+      mismatches.push({
+        key: snap.key,
+        stage: 'restore_value',
+        error: formatWriteError(err, `Не удалось перечитать "${snap.key}" после отката`),
+      });
+    }
+
+    try {
+      const qKey = `${CORRUPTED_RAW_PREFIX}${snap.key}`;
+      const actualQ = storage.getItem(qKey);
+      if (actualQ !== snap.quarantineRawValue) {
+        mismatches.push({
+          key: snap.key,
+          stage: 'restore_quarantine',
+          error: `Проверка после отката выявила расхождение карантина для "${snap.key}".`,
+        });
+      }
+    } catch (err) {
+      mismatches.push({
+        key: snap.key,
+        stage: 'restore_quarantine',
+        error: formatWriteError(err, `Не удалось перечитать карантин "${snap.key}" после отката`),
+      });
+    }
+
+    if (snap.wasLockedInIndex) {
+      if (persistedInfo.corrupted || !persistedInfo.keys.includes(snap.key)) {
+        mismatches.push({
+          key: snap.key,
+          stage: 'restore_lock_index',
+          error: `Проверка после отката: ключ "${snap.key}" отсутствует в индексе блокировок.`,
+        });
+      }
+    } else if (!persistedInfo.corrupted && persistedInfo.keys.includes(snap.key)) {
+      mismatches.push({
+        key: snap.key,
+        stage: 'clear_lock_index',
+        error: `Проверка после отката: лишняя блокировка "${snap.key}" осталась в индексе.`,
+      });
+    }
   }
-  if (pendingRollbackSnapshots && pendingRollbackSnapshots.length > 0) {
-    return pendingRollbackSnapshots.map((s) => s.key);
-  }
-  const storage = getStorage();
-  const stored = loadPendingRollbackFromStorage(storage);
-  if (!stored) return [];
-  if (stored.failedDetails.length > 0) {
-    return Array.from(new Set(stored.failedDetails.map((d) => d.key)));
-  }
-  return stored.snapshots.map((s) => s.key);
+
+  return mismatches;
 }
 
 export function restoreStorageKeysSnapshotDetailed(
@@ -983,14 +1502,25 @@ export function restoreStorageKeysSnapshotDetailed(
     });
   };
 
-  // Шаг 1. Безопасно удаляем ТОЛЬКО те ключи и карантин, которых НЕ БЫЛО до операции (rawValue === null),
-  // чтобы освободить место без риска удалить существовавшие ранее исходные данные.
+  // Шаг 1. Безопасно удаляем ТОЛЬКО те ключи и карантин, которых НЕ БЫЛО до операции (rawValue === null)
   for (const snap of snapshots) {
     if (snap.rawValue === null) {
       try {
         const currentVal = storage.getItem(snap.key);
         if (currentVal !== null) {
-          storage.removeItem(snap.key);
+          const rmRes = removeViaGateway(
+            snap.key,
+            { allowRemoveCorrupted: true },
+            INTERNAL_GATEWAY_TOKEN
+          );
+          if (!rmRes.ok) {
+            recordFailure(
+              snap.key,
+              'remove_new_key',
+              rmRes.error || `Не удалось удалить новый ключ "${snap.key}" при откате`,
+              `Не удалось удалить новый ключ "${snap.key}" при откате`
+            );
+          }
         }
       } catch (err) {
         recordFailure(
@@ -1006,7 +1536,15 @@ export function restoreStorageKeysSnapshotDetailed(
       try {
         const qKey = `${CORRUPTED_RAW_PREFIX}${snap.key}`;
         if (storage.getItem(qKey) !== null) {
-          storage.removeItem(qKey);
+          const rmQ = gatewayRawRemove(storage, qKey);
+          if (!rmQ.ok) {
+            recordFailure(
+              snap.key,
+              'remove_unused_quarantine',
+              rmQ.error || `Не удалось удалить лишний карантин для "${snap.key}" при откате`,
+              `Не удалось удалить лишний карантин для "${snap.key}" при откате`
+            );
+          }
         }
       } catch (err) {
         recordFailure(
@@ -1020,21 +1558,31 @@ export function restoreStorageKeysSnapshotDetailed(
   }
 
   // Шаг 2. Восстанавливаем исходные значения, карантинные копии, замки в памяти и индекс блокировок
-  // максимально независимо друг от друга, проверяя результат каждой операции.
   for (const snap of snapshots) {
-    // 2a. Блокировку в памяти восстанавливаем всегда независимо от ошибок записи карантина или диска
     if (snap.wasLockedInMemory) {
       corruptedKeysSet.add(snap.key);
     } else {
       corruptedKeysSet.delete(snap.key);
     }
 
-    // 2b. Восстановление исходного значения (если ключ существовал до импорта — НИКОГДА не удаляем его предварительно)
     if (snap.rawValue !== null) {
       try {
         const currentVal = storage.getItem(snap.key);
         if (currentVal !== snap.rawValue) {
-          storage.setItem(snap.key, snap.rawValue);
+          const setRes = writeViaGateway(
+            snap.key,
+            snap.rawValue,
+            { allowOverwriteCorrupted: true, deferLockClear: true },
+            INTERNAL_GATEWAY_TOKEN
+          );
+          if (!setRes.ok) {
+            recordFailure(
+              snap.key,
+              'restore_value',
+              setRes.error || `Не удалось восстановить исходное значение "${snap.key}"`,
+              `Не удалось восстановить исходное значение "${snap.key}"`
+            );
+          }
         }
       } catch (err) {
         recordFailure(
@@ -1046,13 +1594,20 @@ export function restoreStorageKeysSnapshotDetailed(
       }
     }
 
-    // 2c. Восстановление сырой карантинной копии (независимо от locksIndex и памяти)
     if (snap.quarantineRawValue !== null) {
       try {
         const qKey = `${CORRUPTED_RAW_PREFIX}${snap.key}`;
         const currentQ = storage.getItem(qKey);
         if (currentQ !== snap.quarantineRawValue) {
-          storage.setItem(qKey, snap.quarantineRawValue);
+          const setQRes = gatewayRawSet(storage, qKey, snap.quarantineRawValue);
+          if (!setQRes.ok) {
+            recordFailure(
+              snap.key,
+              'restore_quarantine',
+              setQRes.error || `Не удалось восстановить карантинную копию "${snap.key}"`,
+              `Не удалось восстановить карантинную копию "${snap.key}"`
+            );
+          }
         }
       } catch (err) {
         recordFailure(
@@ -1064,7 +1619,6 @@ export function restoreStorageKeysSnapshotDetailed(
       }
     }
 
-    // 2d. Восстановление персистентного индекса блокировок с проверкой результата persistCorruptedLock
     if (snap.wasLockedInIndex) {
       const persistedOk = persistCorruptedLock(storage, snap.key);
       if (!persistedOk) {
@@ -1091,16 +1645,36 @@ export function restoreStorageKeysSnapshotDetailed(
     }
   }
 
-  const restoredKeys = snapshots
-    .map((s) => s.key)
-    .filter((k) => !failedKeysSet.has(k));
-  const ok = failedDetails.length === 0;
+  // Шаг 3. Обязательная проверка перечитыванием: сверяем фактическое хранилище со снимком
+  if (failedDetails.length === 0) {
+    const mismatches = verifyRestoredStorageMatchesSnapshot(storage, snapshots);
+    for (const m of mismatches) {
+      recordFailure(m.key, m.stage, m.error, m.error);
+    }
+  }
 
+  let ok = failedDetails.length === 0;
   if (!ok) {
     savePendingRollbackState(storage, snapshots, failedDetails);
   } else {
-    clearPendingRollbackState();
+    const clearRes = clearPendingRollbackState();
+    if (!clearRes.ok) {
+      ok = false;
+      const firstKey = snapshots[0]?.key || PENDING_ROLLBACK_KEY;
+      recordFailure(
+        firstKey,
+        'restore_value',
+        clearRes.error || 'Не удалось удалить маркер незавершённого восстановления.',
+        'Не удалось очистить маркер восстановления'
+      );
+      pendingRollbackSnapshots = snapshots.map((s) => ({ ...s }));
+      pendingRollbackFailedDetails = [...failedDetails];
+    }
   }
+
+  const restoredKeys = snapshots
+    .map((s) => s.key)
+    .filter((k) => !failedKeysSet.has(k));
 
   return {
     ok,
@@ -1119,15 +1693,36 @@ export function retryPendingRollbackRecovery(): SafeWriteResult {
     return { ok: false, error: 'Локальное хранилище (localStorage) недоступно.' };
   }
 
-  let snapshotsToRestore = pendingRollbackSnapshots;
-  if (!snapshotsToRestore || snapshotsToRestore.length === 0) {
-    const stored = loadPendingRollbackFromStorage(storage);
-    snapshotsToRestore = stored?.snapshots || null;
+  const recState = getRollbackRecoveryState();
+  if (recState.status === 'unknown') {
+    const errMsg =
+      recState.error ||
+      `Невозможно выполнить восстановление: повреждён снимок или маркер (${PENDING_ROLLBACK_KEY}). Исходные данные не удалены.`;
+    lastWriteError = errMsg;
+    return { ok: false, error: errMsg };
+  }
+
+  if (recState.status === 'none') {
+    const msg = 'Нет незавершённого восстановления для выполнения.';
+    return { ok: false, error: msg };
+  }
+
+  let snapshotsToRestore: KeyBackupSnapshot[] | null = null;
+  if (recState.rawPendingValue !== null) {
+    const parsed = parseAndValidatePendingMarker(recState.rawPendingValue, storage);
+    if (!parsed.valid) {
+      lastWriteError = parsed.error;
+      return { ok: false, error: parsed.error };
+    }
+    snapshotsToRestore = parsed.snapshots;
+  } else if (pendingRollbackSnapshots && pendingRollbackSnapshots.length > 0) {
+    snapshotsToRestore = pendingRollbackSnapshots;
   }
 
   if (!snapshotsToRestore || snapshotsToRestore.length === 0) {
-    clearPendingRollbackState();
-    return { ok: true, error: null };
+    const msg = 'Снимок для повторного восстановления пуст или недоступен.';
+    lastWriteError = msg;
+    return { ok: false, error: msg };
   }
 
   const res = restoreStorageKeysSnapshotDetailed(snapshotsToRestore);
@@ -1143,10 +1738,159 @@ export function retryPendingRollbackRecovery(): SafeWriteResult {
 }
 
 /**
+ * Защищённая транзакция над localStorage:
+ * 1) Проверяет отсутствие pending/unknown;
+ * 2) Записывает и перечитывает снимок в буферный слот (не затирая предыдущий ROLLBACK_SNAPSHOT_KEY);
+ * 3) Записывает и перечитывает маркер PENDING_ROLLBACK_KEY;
+ * 4) Выполняет операцию; при ошибке запускает полный откат и проверку;
+ * 5) Только после подтверждённого успеха обновляет ROLLBACK_SNAPSHOT_KEY и очищает PENDING_ROLLBACK_KEY.
+ */
+export function executeProtectedStorageTransaction(
+  keysToProtect: string[],
+  operationName: string,
+  operation: (tx: ProtectedTransactionContext) => SafeWriteResult
+): SafeWriteResult {
+  const storage = getStorage();
+  if (!storage) {
+    const msg = 'Локальное хранилище (localStorage) недоступно.';
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
+
+  const recState = getRollbackRecoveryState();
+  if (recState.status !== 'none') {
+    const msg = buildPendingBlockError(recState, operationName, false);
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
+
+  const uniqueKeys = Array.from(new Set(keysToProtect.filter((k) => Boolean(k))));
+  if (uniqueKeys.length === 0) {
+    const msg = 'Транзакция не содержит защищаемых ключей.';
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
+
+  // Шаг 1: собираем снимок затрагиваемых ключей
+  const snapshots = captureStorageKeysSnapshot(uniqueKeys);
+  const checksum = computeSnapshotChecksum(snapshots);
+  const operationId = `op_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const createdAt = new Date().toISOString();
+
+  const snapshotPayload: PersistedRollbackSnapshotPayload = {
+    version: 1,
+    operationId,
+    operationName,
+    createdAt,
+    checksum,
+    snapshots,
+  };
+  const serializedSnapshot = JSON.stringify(snapshotPayload);
+
+  // Шаг 2-4: записываем в буферный слот (ROLLBACK_SNAPSHOT_KEY остаётся нетронутым), перечитываем и валидируем
+  const stageWrite = gatewayRawSet(storage, ROLLBACK_SNAPSHOT_STAGING_KEY, serializedSnapshot);
+  if (!stageWrite.ok) {
+    gatewayRawRemove(storage, ROLLBACK_SNAPSHOT_STAGING_KEY);
+    const msg = `Не удалось сохранить снимок перед операцией (${operationName}): ${stageWrite.error}`;
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
+
+  const stageRead = storage.getItem(ROLLBACK_SNAPSHOT_STAGING_KEY);
+  const stageCheck =
+    stageRead !== null ? parseAndValidateSnapshotPayload(stageRead) : { valid: false as const, error: 'Снимок отсутствует после записи.' };
+  if (!stageCheck.valid || stageRead !== serializedSnapshot) {
+    gatewayRawRemove(storage, ROLLBACK_SNAPSHOT_STAGING_KEY);
+    const msg = `Проверка структуры снимка перед операцией (${operationName}) не пройдена: ${!stageCheck.valid ? stageCheck.error : 'расхождение содержимого'}`;
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
+
+  // Шаг 5: записываем pending-маркер и так же проверяем его перечитыванием и валидацией
+  const markerSaveRes = savePendingRollbackState(storage, snapshots, [], {
+    operationId,
+    operationName,
+    snapshotKey: ROLLBACK_SNAPSHOT_STAGING_KEY,
+    createdAt,
+  });
+  if (!markerSaveRes.ok) {
+    // Пре-флайт не удался до изменения пользовательских данных: удаляем несостоявшиеся временные записи, не трогая ROLLBACK_SNAPSHOT_KEY
+    gatewayRawRemove(storage, PENDING_ROLLBACK_KEY);
+    gatewayRawRemove(storage, ROLLBACK_SNAPSHOT_STAGING_KEY);
+    pendingRollbackSnapshots = null;
+    pendingRollbackFailedDetails = [];
+    const msg = `Не удалось зафиксировать маркер безопасности перед операцией (${operationName}): ${markerSaveRes.error}`;
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
+
+  const txContext: ProtectedTransactionContext = {
+    setItem: (k, v, opts) => writeViaGateway(k, v, opts, INTERNAL_GATEWAY_TOKEN),
+    removeItem: (k, opts) => removeViaGateway(k, opts, INTERNAL_GATEWAY_TOKEN),
+    confirmClearedLocks: (keys) => confirmClearedLocksAfterRecovery(keys),
+  };
+
+  let opRes: SafeWriteResult;
+  try {
+    opRes = operation(txContext);
+  } catch (err: any) {
+    opRes = {
+      ok: false,
+      error: formatWriteError(err, `Исключение при выполнении "${operationName}"`),
+    };
+  }
+
+  if (!opRes.ok) {
+    const failedError =
+      opRes.error || `Ошибка записи при выполнении "${operationName}". Выполняется откат к исходным данным.`;
+    const rollbackRes = restoreStorageKeysSnapshotDetailed(snapshots);
+    const failedSummary = rollbackRes.failedDetails
+      .map((d) => `${d.key} [${d.stage}]`)
+      .join(', ');
+    const fullErr = rollbackRes.ok
+      ? `${failedError} Исходные данные полностью сохранены (откат выполнен).`
+      : `${failedError} Частичный откат: не удалось полностью восстановить (${failedSummary}). Данные для повторного восстановления сохранены.`;
+    lastWriteError = fullErr;
+    return { ok: false, error: fullErr };
+  }
+
+  // Только после подтверждённого успеха операции обновляем основной слот снимка (ROLLBACK_SNAPSHOT_KEY)
+  const commitSnapshotRes = gatewayRawSet(storage, ROLLBACK_SNAPSHOT_KEY, serializedSnapshot);
+  if (!commitSnapshotRes.ok) {
+    const rollbackRes = restoreStorageKeysSnapshotDetailed(snapshots);
+    const failedSummary = rollbackRes.failedDetails
+      .map((d) => `${d.key} [${d.stage}]`)
+      .join(', ');
+    const errMsg = rollbackRes.ok
+      ? `Операция отменена: не удалось обновить подтверждённый снимок (${commitSnapshotRes.error}). Исходные данные восстановлены.`
+      : `Не удалось обновить снимок (${commitSnapshotRes.error}) и откат выполнен частично (${failedSummary}).`;
+    lastWriteError = errMsg;
+    return { ok: false, error: errMsg };
+  }
+
+  // Только после подтверждённого успеха и сохранения основного снимка очищаем pending-маркер
+  const clearPendingRes = clearPendingRollbackState();
+  if (!clearPendingRes.ok) {
+    const msg = `Операция выполнена, но не удалось очистить маркер восстановления (${PENDING_ROLLBACK_KEY}): ${clearPendingRes.error}. Состояние оставлено в pending.`;
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
+
+  lastWriteError = null;
+  return { ok: true, error: null };
+}
+
+/**
  * Неразрушающая миграция схемы до CURRENT_SCHEMA_VERSION.
  * Работает один раз на версию схемы и никогда не стирает пользовательские записи.
  */
 export function runSafeMigrations(keys: MigrationKeys): void {
+  const recState = getRollbackRecoveryState();
+  if (recState.status !== 'none') {
+    lastWriteError = buildPendingBlockError(recState, 'миграция схемы', false);
+    return;
+  }
+
   if (migrationDoneInSession) return;
   const storage = getStorage();
   if (!storage) {
@@ -1163,8 +1907,9 @@ export function runSafeMigrations(keys: MigrationKeys): void {
     }
 
     let migrationHadFailure = isLocksIndexCorrupted();
+    const plannedWrites: Array<[string, string]> = [];
 
-    // 1. Создаём одноразовый снимок существующих данных перед миграцией v11
+    // 1. Готовим одноразовый снимок существующих данных перед миграцией v11
     if (!storage.getItem(PRE_MIGRATION_BACKUP_KEY)) {
       const snapshot: Record<string, string | null> = {};
       let hasAnyData = false;
@@ -1177,15 +1922,14 @@ export function runSafeMigrations(keys: MigrationKeys): void {
         }
       });
       if (hasAnyData) {
-        const snapRes = safeSetItem(
+        plannedWrites.push([
           PRE_MIGRATION_BACKUP_KEY,
           JSON.stringify({
             createdAt: new Date().toISOString(),
             previousVersion: currentVer,
             snapshot,
-          })
-        );
-        if (!snapRes.ok) migrationHadFailure = true;
+          }),
+        ]);
       }
     }
 
@@ -1194,8 +1938,7 @@ export function runSafeMigrations(keys: MigrationKeys): void {
     if (Array.isArray(rawWorkouts)) {
       const { data, changed } = normalizeWorkoutSessionsNonDestructive(rawWorkouts);
       if (changed) {
-        const wRes = safeSetItem(keys.WORKOUTS, JSON.stringify(data));
-        if (!wRes.ok) migrationHadFailure = true;
+        plannedWrites.push([keys.WORKOUTS, JSON.stringify(data)]);
       }
     } else if (isKeyLockedByCorruption(keys.WORKOUTS)) {
       migrationHadFailure = true;
@@ -1206,8 +1949,7 @@ export function runSafeMigrations(keys: MigrationKeys): void {
     if (Array.isArray(rawPrograms)) {
       const { data, changed } = normalizeProgramsNonDestructive(rawPrograms);
       if (changed) {
-        const pRes = safeSetItem(keys.PROGRAMS, JSON.stringify(data));
-        if (!pRes.ok) migrationHadFailure = true;
+        plannedWrites.push([keys.PROGRAMS, JSON.stringify(data)]);
       }
     } else if (isKeyLockedByCorruption(keys.PROGRAMS)) {
       migrationHadFailure = true;
@@ -1230,8 +1972,7 @@ export function runSafeMigrations(keys: MigrationKeys): void {
           return sp;
         });
       if (sportsChanged) {
-        const sRes = safeSetItem(keys.SPORTS_SESSIONS, JSON.stringify(normSports));
-        if (!sRes.ok) migrationHadFailure = true;
+        plannedWrites.push([keys.SPORTS_SESSIONS, JSON.stringify(normSports)]);
       }
     } else if (isKeyLockedByCorruption(keys.SPORTS_SESSIONS)) {
       migrationHadFailure = true;
@@ -1244,11 +1985,10 @@ export function runSafeMigrations(keys: MigrationKeys): void {
     if (rawParams && Array.isArray(rawParams.preferredMuscles)) {
       const normPref = normalizeMuscleListPure(rawParams.preferredMuscles);
       if (JSON.stringify(normPref) !== JSON.stringify(rawParams.preferredMuscles)) {
-        const prRes = safeSetItem(
+        plannedWrites.push([
           keys.FITNESS_PARAMS,
-          JSON.stringify({ ...rawParams, preferredMuscles: normPref })
-        );
-        if (!prRes.ok) migrationHadFailure = true;
+          JSON.stringify({ ...rawParams, preferredMuscles: normPref }),
+        ]);
       }
     } else if (isKeyLockedByCorruption(keys.FITNESS_PARAMS)) {
       migrationHadFailure = true;
@@ -1276,8 +2016,7 @@ export function runSafeMigrations(keys: MigrationKeys): void {
           return item;
         });
         if (customChanged) {
-          const cRes = safeSetItem(keys.CUSTOM_EXERCISES, JSON.stringify(normCustom));
-          if (!cRes.ok) migrationHadFailure = true;
+          plannedWrites.push([keys.CUSTOM_EXERCISES, JSON.stringify(normCustom)]);
         }
       } else if (isKeyLockedByCorruption(keys.CUSTOM_EXERCISES)) {
         migrationHadFailure = true;
@@ -1285,12 +2024,32 @@ export function runSafeMigrations(keys: MigrationKeys): void {
     }
 
     if (!migrationHadFailure) {
-      safeSetItem(SCHEMA_VERSION_KEY, String(CURRENT_SCHEMA_VERSION));
+      plannedWrites.push([SCHEMA_VERSION_KEY, String(CURRENT_SCHEMA_VERSION)]);
     }
+
+    if (plannedWrites.length > 0) {
+      const txRes = executeProtectedStorageTransaction(
+        plannedWrites.map(([k]) => k),
+        'schema_migration',
+        (tx) => {
+          for (const [k, v] of plannedWrites) {
+            const w = tx.setItem(k, v);
+            if (!w.ok) {
+              return w;
+            }
+          }
+          return { ok: true, error: null };
+        }
+      );
+      if (!txRes.ok) {
+        migrationHadFailure = true;
+        return;
+      }
+    }
+
+    migrationDoneInSession = true;
   } catch (err) {
     console.error('[FORM Migrations] Ошибка при миграции:', err);
-  } finally {
-    migrationDoneInSession = true;
   }
 }
 
@@ -1480,8 +2239,180 @@ export function validateAndMigrateBackup(jsonString: string): ValidatedBackupPay
   return { valid: true, normalized };
 }
 
+export interface StartupRecoveryResolution {
+  state: RollbackRecoveryState;
+  autoAttempted: boolean;
+  autoError: string | null;
+}
+
+export function resolveStartupRecoveryState(): StartupRecoveryResolution {
+  const initial = getRollbackRecoveryState();
+  if (initial.status === 'none') {
+    return { state: initial, autoAttempted: false, autoError: null };
+  }
+  if (initial.status === 'unknown') {
+    const errMsg =
+      initial.error ||
+      'Состояние восстановления повреждено (unknown). Автоматическое восстановление недоступно.';
+    lastWriteError = errMsg;
+    return { state: initial, autoAttempted: false, autoError: errMsg };
+  }
+
+  if (startupAutoRecoveryAttempted) {
+    return {
+      state: initial,
+      autoAttempted: true,
+      autoError: lastWriteError,
+    };
+  }
+
+  startupAutoRecoveryAttempted = true;
+  const retryRes = retryPendingRollbackRecovery();
+  if (retryRes.ok) {
+    lastWriteError = null;
+    return {
+      state: getRollbackRecoveryState(),
+      autoAttempted: true,
+      autoError: null,
+    };
+  }
+
+  const nextState = getRollbackRecoveryState();
+  const errMsg = retryRes.error || lastWriteError || 'Не удалось выполнить автоматическое восстановление.';
+  lastWriteError = errMsg;
+  return {
+    state: nextState,
+    autoAttempted: true,
+    autoError: errMsg,
+  };
+}
+
+export interface EmergencyRawBackupPayload {
+  format: 'form_raw_emergency_backup_v1';
+  exportedAt: string;
+  recoveryState: RollbackRecoveryState;
+  rawKeys: Record<string, string>;
+  parsedBackupSections: Record<string, unknown>;
+}
+
+const BACKUP_SECTION_BY_KEY: Record<string, string> = {
+  form_user_profile: 'profile',
+  form_workout_programs: 'programs',
+  form_workout_sessions: 'workouts',
+  form_sports_sessions_v1: 'sports',
+  form_weekly_schedule_v1: 'weeklySchedule',
+  form_activity_days: 'activity',
+  form_user_equipment_v1: 'equipment',
+  form_fitness_parameters_v1: 'fitnessParameters',
+  form_favorite_exercises_v1: 'favoriteExerciseIds',
+  form_custom_exercises_v1: 'customExercises',
+  form_app_settings_v1: 'settings',
+  form_wellbeing_checkins_v1: 'wellbeingCheckins',
+  form_body_measurements_v1: 'bodyMeasurements',
+};
+
+export function exportAllStorageRawSnapshot(): EmergencyRawBackupPayload {
+  const storage = getStorage();
+  const recoveryState = getRollbackRecoveryState();
+  const rawKeys: Record<string, string> = {};
+  const parsedBackupSections: Record<string, unknown> = {};
+
+  if (storage) {
+    const keyNames: string[] = [];
+    try {
+      for (let i = 0; i < storage.length; i++) {
+        const k = storage.key(i);
+        if (k) keyNames.push(k);
+      }
+    } catch {
+      // ignore key enumeration failures
+    }
+    keyNames.sort();
+
+    for (const key of keyNames) {
+      try {
+        const val = storage.getItem(key);
+        if (val !== null) {
+          rawKeys[key] = val;
+          const section = BACKUP_SECTION_BY_KEY[key];
+          if (section) {
+            try {
+              parsedBackupSections[section] = JSON.parse(val);
+            } catch {
+              // Keep raw string intact in rawKeys when JSON is invalid
+            }
+          }
+        }
+      } catch {
+        // ignore single-key read failure
+      }
+    }
+  }
+
+  return {
+    format: 'form_raw_emergency_backup_v1',
+    exportedAt: new Date().toISOString(),
+    recoveryState,
+    rawKeys,
+    parsedBackupSections,
+  };
+}
+
+/**
+ * Внутренний сброс ТОЛЬКО служебных ключей восстановления через INTERNAL_GATEWAY_TOKEN.
+ * Пользовательские данные, карантинные копии и индекс повреждений не затрагиваются.
+ */
+export function resetRecoveryStateOnly(options: {
+  backupConfirmed: boolean;
+  userConfirmed: boolean;
+}): SafeWriteResult {
+  if (!options?.backupConfirmed) {
+    return {
+      ok: false,
+      error: 'Перед сбросом состояния восстановления необходимо сохранить или подтвердить копию данных.',
+    };
+  }
+  if (!options?.userConfirmed) {
+    return {
+      ok: false,
+      error: 'Требуется явное подтверждение пользователя для сброса состояния восстановления.',
+    };
+  }
+
+  const storage = getStorage();
+  if (!storage) {
+    return { ok: false, error: 'Локальное хранилище (localStorage) недоступно.' };
+  }
+
+  const serviceRecoveryKeys = [
+    PENDING_ROLLBACK_KEY,
+    ROLLBACK_SNAPSHOT_KEY,
+    ROLLBACK_SNAPSHOT_STAGING_KEY,
+  ];
+
+  for (const key of serviceRecoveryKeys) {
+    if (storage.getItem(key) !== null) {
+      const rmRes = removeViaGateway(
+        key,
+        { allowRemoveCorrupted: true },
+        INTERNAL_GATEWAY_TOKEN
+      );
+      if (!rmRes.ok) {
+        lastWriteError = rmRes.error || `Не удалось удалить служебный ключ восстановления "${key}".`;
+        return { ok: false, error: lastWriteError };
+      }
+    }
+  }
+
+  pendingRollbackSnapshots = null;
+  pendingRollbackFailedDetails = [];
+  lastWriteError = null;
+  return { ok: true, error: null };
+}
+
 export function resetMigrationSessionFlagForTests(): void {
   migrationDoneInSession = false;
+  startupAutoRecoveryAttempted = false;
   corruptedKeysSet.clear();
   locksIndexCorruptedInSession = false;
   lastWriteError = null;

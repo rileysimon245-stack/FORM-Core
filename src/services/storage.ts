@@ -47,7 +47,11 @@ import {
   CORRUPTED_RAW_PREFIX,
   CORRUPTED_LOCKS_INDEX_KEY,
   PENDING_ROLLBACK_KEY,
+  ROLLBACK_SNAPSHOT_KEY,
+  ROLLBACK_SNAPSHOT_STAGING_KEY,
   SafeWriteResult,
+  RollbackRecoveryState,
+  StartupRecoveryResolution,
   runSafeMigrations,
   safeGetJson,
   safeGetRaw,
@@ -55,18 +59,20 @@ import {
   safeRemoveItem,
   flagCorruptedKey,
   clearCorruptedLock,
-  confirmClearedLocksAfterRecovery,
   getCorruptedKeys,
   isLocksIndexCorrupted,
   getLastWriteError,
   setLastWriteError,
   clearLastWriteError,
-  captureStorageKeysSnapshot,
-  restoreStorageKeysSnapshotDetailed,
   hasPendingRollbackRecovery,
   getPendingRollbackKeys,
+  getRollbackRecoveryState,
   retryPendingRollbackRecovery,
+  resolveStartupRecoveryState,
+  exportAllStorageRawSnapshot,
+  resetRecoveryStateOnly,
   clearPendingRollbackState,
+  executeProtectedStorageTransaction,
   validateAndMigrateBackup,
 } from './migrations';
 
@@ -248,9 +254,9 @@ export const StorageService = {
   updateProfile(profile: Partial<UserProfile>): UserProfile {
     const current = this.getProfile();
     const updated = { ...current, ...profile };
-    safeSetItem(STORAGE_KEYS.PROFILE, JSON.stringify(updated));
+    const res = safeSetItem(STORAGE_KEYS.PROFILE, JSON.stringify(updated));
     notifyListeners();
-    return updated;
+    return res.ok ? updated : current;
   },
 
   getPrograms(): WorkoutProgram[] {
@@ -370,9 +376,9 @@ export const StorageService = {
     };
 
     list.unshift(copy);
-    safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    const res = safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
-    return copy;
+    return res.ok ? copy : null;
   },
 
   deleteProgram(programId: string): SafeWriteResult {
@@ -431,9 +437,9 @@ export const StorageService = {
       ...(status === 'archived' ? { archivedAt: nowIso } : {}),
     };
     list[index] = updated;
-    safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    const res = safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
-    return updated;
+    return res.ok ? updated : null;
   },
 
   completeProgram(programId: string, summaryNote?: string): WorkoutProgram | null {
@@ -478,9 +484,9 @@ export const StorageService = {
       ...list[index],
       goal: newGoal,
     };
-    safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
+    const res = safeSetItem(STORAGE_KEYS.PROGRAMS, JSON.stringify(list));
     notifyListeners();
-    return list[index];
+    return res.ok ? list[index] : null;
   },
 
   replaceProgram(oldProgramId: string, newProgramId: string, archiveOld: boolean = true): void {
@@ -1769,9 +1775,9 @@ export const StorageService = {
   updateSettings(settings: Partial<AppSettings>): AppSettings {
     const current = this.getSettings();
     const updated = { ...current, ...settings };
-    safeSetItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+    const res = safeSetItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
     notifyListeners();
-    return updated;
+    return res.ok ? updated : current;
   },
 
   // EQUIPMENT MANAGEMENT
@@ -1831,17 +1837,18 @@ export const StorageService = {
 
   toggleFavoriteExercise(exerciseId: string): boolean {
     const current = this.getFavoriteExerciseIds();
+    const wasFav = current.includes(exerciseId);
     let updated: string[];
     let isFav = false;
-    if (current.includes(exerciseId)) {
+    if (wasFav) {
       updated = current.filter((id) => id !== exerciseId);
     } else {
       updated = [...current, exerciseId];
       isFav = true;
     }
-    safeSetItem(STORAGE_KEYS.FAVORITES, JSON.stringify(updated));
+    const res = safeSetItem(STORAGE_KEYS.FAVORITES, JSON.stringify(updated));
     notifyListeners();
-    return isFav;
+    return res.ok ? isFav : wasFav;
   },
 
   // CUSTOM EXERCISES
@@ -1984,12 +1991,41 @@ export const StorageService = {
     return hasPendingRollbackRecovery();
   },
 
+  getRecoveryState(): RollbackRecoveryState {
+    return getRollbackRecoveryState();
+  },
+
+  resolveStartupRecoveryState(): StartupRecoveryResolution {
+    return resolveStartupRecoveryState();
+  },
+
   getPendingRecoveryKeys(): string[] {
     return getPendingRollbackKeys();
   },
 
   retryPendingRecovery(): SafeWriteResult {
     const res = retryPendingRollbackRecovery();
+    notifyListeners();
+    return res;
+  },
+
+  exportEmergencyRawBackupJson(): string {
+    const snapshot = exportAllStorageRawSnapshot();
+    const payload = {
+      ...snapshot.parsedBackupSections,
+      format: snapshot.format,
+      exportedAt: snapshot.exportedAt,
+      recoveryState: snapshot.recoveryState,
+      rawKeys: snapshot.rawKeys,
+    };
+    return JSON.stringify(payload, null, 2);
+  },
+
+  resetRecoveryStateOnly(options: {
+    backupConfirmed: boolean;
+    userConfirmed: boolean;
+  }): SafeWriteResult {
+    const res = resetRecoveryStateOnly(options);
     notifyListeners();
     return res;
   },
@@ -2024,6 +2060,17 @@ export const StorageService = {
   },
 
   resetAllData(): SafeWriteResult {
+    const recState = getRollbackRecoveryState();
+    if (recState.status !== 'none') {
+      const msg =
+        recState.status === 'unknown'
+          ? `Сброс данных заблокирован: ${recState.error || 'снимок восстановления повреждён (состояние unknown).'}`
+          : `Сброс данных заблокирован: имеется незавершённое восстановление предыдущей операции (${recState.pendingKeys.join(', ')}). Сначала завершите восстановление.`;
+      setLastWriteError(msg);
+      notifyListeners();
+      return { ok: false, error: msg };
+    }
+
     let firstError: string | null = null;
     Object.values(STORAGE_KEYS).forEach((key) => {
       const rmRes = safeRemoveItem(key, { allowRemoveCorrupted: true });
@@ -2045,11 +2092,24 @@ export const StorageService = {
     if (!idxRes.ok && !firstError) {
       firstError = idxRes.error;
     }
+    const snapRes = safeRemoveItem(ROLLBACK_SNAPSHOT_KEY, { allowRemoveCorrupted: true });
+    if (!snapRes.ok && !firstError) {
+      firstError = snapRes.error;
+    }
+    const stageRes = safeRemoveItem(ROLLBACK_SNAPSHOT_STAGING_KEY, { allowRemoveCorrupted: true });
+    if (!stageRes.ok && !firstError) {
+      firstError = stageRes.error;
+    }
     const pendRes = safeRemoveItem(PENDING_ROLLBACK_KEY, { allowRemoveCorrupted: true });
     if (!pendRes.ok && !firstError) {
       firstError = pendRes.error;
     }
-    clearPendingRollbackState();
+    if (!firstError) {
+      const clearPendRes = clearPendingRollbackState();
+      if (!clearPendRes.ok) {
+        firstError = clearPendRes.error;
+      }
+    }
     if (!firstError) {
       clearLastWriteError();
     }
@@ -2080,9 +2140,13 @@ export const StorageService = {
 
   importBackupJsonWithResult(jsonString: string): SafeWriteResult {
     if (hasPendingRollbackRecovery()) {
-      const pendingKeys = getPendingRollbackKeys();
+      const recState = getRollbackRecoveryState();
+      const pendingKeys = recState.pendingKeys;
       const keysSuffix = pendingKeys.length > 0 ? ` (${pendingKeys.join(', ')})` : '';
-      const msg = `Невозможно выполнить импорт: имеется незавершённое восстановление предыдущей операции${keysSuffix}. Сначала завершите восстановление предыдущих данных.`;
+      const msg =
+        recState.status === 'unknown'
+          ? `Невозможно выполнить импорт: состояние предыдущего восстановления повреждено (unknown). ${recState.error || ''}`.trim()
+          : `Невозможно выполнить импорт: имеется незавершённое восстановление предыдущей операции${keysSuffix}. Сначала завершите восстановление предыдущих данных.`;
       setLastWriteError(msg);
       console.error('Import rejected due to pending rollback recovery:', msg);
       notifyListeners();
@@ -2127,37 +2191,31 @@ export const StorageService = {
       return { ok: false, error: emptyMsg };
     }
 
-    // Снимаем полный снимок затрагиваемых ключей и карантинных замков до начала записи
     const importedKeys = entries.map(([k]) => k);
-    const snapshots = captureStorageKeysSnapshot(importedKeys);
-    // Карантин и блокировки снимаем ТОЛЬКО после подтверждённой записи ВСЕХ разделов
     const writeOpts = { allowOverwriteCorrupted: true, deferLockClear: true };
 
-    for (const [key, serialized] of entries) {
-      const w = safeSetItem(key, serialized, writeOpts);
-      if (!w.ok) {
-        const failedError =
-          w.error || 'Ошибка записи при импорте резервной копии. Выполнен откат к исходным данным.';
-        const rollbackRes = restoreStorageKeysSnapshotDetailed(snapshots);
-        const failedSummary = rollbackRes.failedDetails
-          .map((d) => `${d.key} [${d.stage}]`)
-          .join(', ');
-        const fullErr = rollbackRes.ok
-          ? `${failedError} Исходные данные полностью сохранены (откат выполнен).`
-          : `${failedError} Частичный откат: не удалось полностью восстановить (${failedSummary}). Данные для повторного восстановления сохранены.`;
-        setLastWriteError(fullErr);
-        notifyListeners();
-        return { ok: false, error: fullErr };
+    const txRes = executeProtectedStorageTransaction(importedKeys, 'backup_import', (tx) => {
+      for (const [key, serialized] of entries) {
+        const w = tx.setItem(key, serialized, writeOpts);
+        if (!w.ok) {
+          return w;
+        }
       }
-    }
 
-    const clearRes = confirmClearedLocksAfterRecovery(importedKeys);
-    if (!clearRes.ok) {
+      const clearRes = tx.confirmClearedLocks(importedKeys);
+      if (!clearRes.ok) {
+        return clearRes;
+      }
+
+      return { ok: true, error: null };
+    });
+
+    if (!txRes.ok) {
+      setLastWriteError(txRes.error);
       notifyListeners();
-      return clearRes;
+      return txRes;
     }
 
-    clearPendingRollbackState();
     clearLastWriteError();
     notifyListeners();
     return { ok: true, error: null };

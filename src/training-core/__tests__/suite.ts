@@ -44,11 +44,18 @@ import {
   hasPendingRollbackRecovery,
   getPendingRollbackKeys,
   retryPendingRollbackRecovery,
+  getRollbackRecoveryState,
+  resolveStartupRecoveryState,
+  exportAllStorageRawSnapshot,
+  resetRecoveryStateOnly,
   runSafeMigrations,
   resetMigrationSessionFlagForTests,
   CORRUPTED_RAW_PREFIX,
   CORRUPTED_LOCKS_INDEX_KEY,
   PENDING_ROLLBACK_KEY,
+  ROLLBACK_SNAPSHOT_KEY,
+  ROLLBACK_SNAPSHOT_STAGING_KEY,
+  type SafeWriteResult,
 } from '../../services/migrations';
 import { StorageService } from '../../services/storage';
 import { FullExerciseItem } from '../../data/exerciseTypes';
@@ -1555,6 +1562,673 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
     });
 
     return 'Повторный импорт заблокирован до завершения rollback; снимок и исходные данные сохранены';
+  });
+
+  // === ДОПОЛНИТЕЛЬНЫЕ ТЕСТЫ НАДЁЖНОСТИ (ЭТАПЫ 1–5) ===
+
+  interface FaultStorageControllers {
+    store: Map<string, string>;
+    stats: { setCalls: number; removeCalls: number; clearCalls: number };
+    setSetIntercept: (
+      fn:
+        | ((
+            key: string,
+            val: string,
+            callIndex: number
+          ) =>
+            | { action: 'throw'; quota?: boolean; message?: string }
+            | { action: 'drop' }
+            | { action: 'corrupt'; storedValue: string }
+            | { action: 'allow' })
+        | null
+    ) => void;
+    setRemoveIntercept: (
+      fn:
+        | ((
+            key: string,
+            callIndex: number
+          ) =>
+            | { action: 'throw'; quota?: boolean; message?: string }
+            | { action: 'drop' }
+            | { action: 'allow' })
+        | null
+    ) => void;
+    resetCounters: () => void;
+  }
+
+  const withFaultInjectingMockStorage = (fn: (ctrl: FaultStorageControllers) => void): boolean => {
+    const hadNativeStorage = typeof globalThis !== 'undefined' && 'localStorage' in globalThis;
+    if (hadNativeStorage) {
+      return false;
+    }
+    const store = new Map<string, string>();
+    const stats = { setCalls: 0, removeCalls: 0, clearCalls: 0 };
+    let setIntercept: Parameters<FaultStorageControllers['setSetIntercept']>[0] = null;
+    let removeIntercept: Parameters<FaultStorageControllers['setRemoveIntercept']>[0] = null;
+
+    const mockStorage: Storage = {
+      get length() {
+        return store.size;
+      },
+      clear() {
+        stats.clearCalls += 1;
+        store.clear();
+      },
+      getItem(k: string) {
+        return store.has(k) ? store.get(k)! : null;
+      },
+      key(index: number) {
+        return Array.from(store.keys())[index] ?? null;
+      },
+      removeItem(k: string) {
+        stats.removeCalls += 1;
+        if (removeIntercept) {
+          const decision = removeIntercept(k, stats.removeCalls);
+          if (decision.action === 'throw') {
+            const err: any = new Error(decision.message || `Simulated removeItem error on ${k}`);
+            if (decision.quota) {
+              err.name = 'QuotaExceededError';
+              err.code = 22;
+            }
+            throw err;
+          }
+          if (decision.action === 'drop') {
+            return;
+          }
+        }
+        store.delete(k);
+      },
+      setItem(k: string, v: string) {
+        stats.setCalls += 1;
+        const strVal = String(v);
+        if (setIntercept) {
+          const decision = setIntercept(k, strVal, stats.setCalls);
+          if (decision.action === 'throw') {
+            const err: any = new Error(decision.message || `Simulated setItem error on ${k}`);
+            if (decision.quota) {
+              err.name = 'QuotaExceededError';
+              err.code = 22;
+            }
+            throw err;
+          }
+          if (decision.action === 'drop') {
+            return;
+          }
+          if (decision.action === 'corrupt') {
+            store.set(k, decision.storedValue);
+            return;
+          }
+        }
+        store.set(k, strVal);
+      },
+    };
+
+    (globalThis as any).localStorage = mockStorage;
+    resetMigrationSessionFlagForTests();
+    try {
+      fn({
+        store,
+        stats,
+        setSetIntercept: (cb) => {
+          setIntercept = cb;
+        },
+        setRemoveIntercept: (cb) => {
+          removeIntercept = cb;
+        },
+        resetCounters: () => {
+          stats.setCalls = 0;
+          stats.removeCalls = 0;
+          stats.clearCalls = 0;
+        },
+      });
+    } finally {
+      resetMigrationSessionFlagForTests();
+      delete (globalThis as any).localStorage;
+    }
+    return true;
+  };
+
+  // 31. Сбой или тихая потеря записи staging-снимок / pending-маркера до старта операции + сохранность ROLLBACK_SNAPSHOT_KEY
+  test('Надёжность хранения (Этап 2)', 'Сбой записи или тихое искажение снимка/маркера прерывает операцию до изменения данных и бережёт прошлый снимок', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Базовый Атлет', age: 25 });
+      const initImport = StorageService.importBackupJsonWithResult(
+        JSON.stringify({ profile: { name: 'Подтверждённый Атлет', age: 26 } })
+      );
+      assert(initImport.ok === true, 'Начальный импорт должен подтвердить снимок ROLLBACK_SNAPSHOT_KEY');
+      const confirmedSnapshotBefore = ctrl.store.get(ROLLBACK_SNAPSHOT_KEY);
+      const profileBefore = ctrl.store.get('form_user_profile');
+      assert(typeof confirmedSnapshotBefore === 'string' && confirmedSnapshotBefore.length > 0, 'ROLLBACK_SNAPSHOT_KEY должен существовать');
+
+      // 31a. QuotaExceededError на записи staging-снимка
+      ctrl.setSetIntercept((k) =>
+        k === ROLLBACK_SNAPSHOT_STAGING_KEY
+          ? { action: 'throw', quota: true, message: 'Quota staging fail' }
+          : { action: 'allow' }
+      );
+      const resQuotaStage = StorageService.importBackupJsonWithResult(
+        JSON.stringify({ profile: { name: 'Не должен записаться', age: 99 } })
+      );
+      ctrl.setSetIntercept(null);
+      assert(resQuotaStage.ok === false, 'При ошибке записи staging-снимка импорт должен отмениться');
+      assert(ctrl.store.get('form_user_profile') === profileBefore, 'Профиль не должен измениться');
+      assert(ctrl.store.get(ROLLBACK_SNAPSHOT_KEY) === confirmedSnapshotBefore, 'Прошлый ROLLBACK_SNAPSHOT_KEY обязан остаться нетронутым');
+
+      // 31b. Тихая потеря / несовпадение содержимого при записи staging-снимка (без исключения)
+      ctrl.setSetIntercept((k) =>
+        k === ROLLBACK_SNAPSHOT_STAGING_KEY
+          ? { action: 'corrupt', storedValue: '{"truncated":true}' }
+          : { action: 'allow' }
+      );
+      const resSilentMismatch = StorageService.importBackupJsonWithResult(
+        JSON.stringify({ profile: { name: 'Искажённый снимок', age: 99 } })
+      );
+      ctrl.setSetIntercept(null);
+      assert(resSilentMismatch.ok === false, 'Несовпадение при перечитывании staging-снимка должно прерывать операцию');
+      assert(ctrl.store.get('form_user_profile') === profileBefore, 'Профиль не должен тронуться после mismatch снимка');
+      assert(ctrl.store.get(ROLLBACK_SNAPSHOT_KEY) === confirmedSnapshotBefore, 'Прошлый подтверждённый снимок сохранён');
+      assert(getRollbackRecoveryState().status === 'none', 'Очищенный неудачный staging не должен блокировать приложение');
+
+      // 31c. Тихая потеря записи PENDING_ROLLBACK_KEY после успешного staging-снимка
+      ctrl.setSetIntercept((k) =>
+        k === PENDING_ROLLBACK_KEY ? { action: 'drop' } : { action: 'allow' }
+      );
+      const resDropMarker = StorageService.importBackupJsonWithResult(
+        JSON.stringify({ profile: { name: 'Маркер потерялся', age: 99 } })
+      );
+      ctrl.setSetIntercept(null);
+      assert(resDropMarker.ok === false, 'Тихая потеря записи PENDING_ROLLBACK_KEY должна отменять операцию');
+      assert(ctrl.store.get('form_user_profile') === profileBefore, 'Данные пользователя не изменялись');
+      assert(ctrl.store.get(ROLLBACK_SNAPSHOT_KEY) === confirmedSnapshotBefore, 'Прошлый подтверждённый снимок сохранён');
+      assert(getRollbackRecoveryState().status === 'none', 'Неудачный пре-флайт не оставляет ложного pending');
+
+      // 31d. Сбой на N-й записи при миграции схемы (включая запись снимка перед миграцией)
+      ctrl.store.set('form_schema_version_v1', '1');
+      ctrl.store.set('form_workout_sessions', JSON.stringify([
+        {
+          id: 'mig_fail_1',
+          date: '2026-11-10',
+          name: 'М',
+          status: 'completed',
+          exercises: [{ id: 'e1', exerciseId: 'ex_1', name: 'Отжимания классические', targetMuscle: 'rearDelts', secondaryMuscles: [], isBodyweight: true, sets: [], restSeconds: 60 }],
+        },
+      ]));
+      const sessionsBeforeMig = ctrl.store.get('form_workout_sessions');
+      resetMigrationSessionFlagForTests();
+      ctrl.setSetIntercept((k) =>
+        k === ROLLBACK_SNAPSHOT_STAGING_KEY ? { action: 'drop' } : { action: 'allow' }
+      );
+      runSafeMigrations({
+        PROFILE: 'form_user_profile',
+        PROGRAMS: 'form_workout_programs',
+        WORKOUTS: 'form_workout_sessions',
+        SPORTS_SESSIONS: 'form_sports_sessions_v1',
+        WEEKLY_SCHEDULE: 'form_weekly_schedule_v1',
+        CUSTOM_ACTIVITY: 'form_activity_days',
+        EQUIPMENT: 'form_user_equipment_v1',
+        FITNESS_PARAMS: 'form_fitness_parameters_v1',
+      });
+      ctrl.setSetIntercept(null);
+      assert(ctrl.store.get('form_workout_sessions') === sessionsBeforeMig, 'Миграция не должна менять данные при сбое записи снимка');
+      assert(ctrl.store.get('form_schema_version_v1') === '1', 'Версия схемы не должна повыситься при отменённой миграции');
+    });
+
+    return 'Ошибки и тихие искажения при записи снимка/маркера надёжно отменяют операцию и берегут предыдущий снимок';
+  });
+
+  // 32. Повреждённый PENDING_ROLLBACK_KEY и ROLLBACK_SNAPSHOT_KEY -> состояние unknown, отказ без удаления, тотальная блокировка
+  test('Надёжность хранения (Этап 1)', 'Повреждённый JSON, структура или checksum снимка/маркера дают unknown и никогда не удаляются автоматически', () => {
+    const cases: Array<{ key: string; raw: string; label: string }> = [
+      { key: PENDING_ROLLBACK_KEY, raw: '{corrupted_pending_json', label: 'битый JSON pending' },
+      { key: PENDING_ROLLBACK_KEY, raw: JSON.stringify({ version: 1, snapshots: [{ key: '', rawValue: null }] }), label: 'битая структура pending' },
+      {
+        key: PENDING_ROLLBACK_KEY,
+        raw: JSON.stringify({
+          version: 1,
+          status: 'in_progress',
+          checksum: 'v1:0:deadbeef:deadbeef',
+          snapshots: [{ key: 'form_user_profile', rawValue: null, quarantineRawValue: null, wasLockedInMemory: false, wasLockedInIndex: false }],
+        }),
+        label: 'подделанная checksum pending',
+      },
+      { key: ROLLBACK_SNAPSHOT_KEY, raw: '{corrupted_snapshot_json', label: 'битый JSON snapshot' },
+      { key: ROLLBACK_SNAPSHOT_KEY, raw: JSON.stringify({ version: 1, operationId: 'op1', checksum: 'bad', snapshots: [] }), label: 'пустой/битый snapshot' },
+    ];
+
+    for (const c of cases) {
+      withFaultInjectingMockStorage((ctrl) => {
+        ctrl.store.set('form_schema_version_v1', '11');
+        ctrl.store.set('form_user_profile', JSON.stringify({ name: 'Анна', age: 24 }));
+        const origProfile = ctrl.store.get('form_user_profile');
+        ctrl.store.set(c.key, c.raw);
+        resetMigrationSessionFlagForTests();
+
+        const rec = getRollbackRecoveryState();
+        assert(rec.status === 'unknown', `[${c.label}] ожидался status=unknown, получен ${rec.status}`);
+        assert(hasPendingRollbackRecovery() === true, `[${c.label}] hasPendingRollbackRecovery() обязан быть true`);
+        assert(Boolean(rec.error), `[${c.label}] должна присутствовать ошибка диагностики`);
+
+        ctrl.resetCounters();
+        const retryRes = StorageService.retryPendingRecovery();
+        assert(retryRes.ok === false, `[${c.label}] retryPendingRecovery обязан вернуть ok: false`);
+        assert(ctrl.store.get(c.key) === c.raw, `[${c.label}] повреждённая строка не должна удаляться или перезаписываться!`);
+        assert(ctrl.store.get('form_user_profile') === origProfile, `[${c.label}] пользовательские данные не должны затираться`);
+
+        const setRes = safeSetItem('form_user_profile', JSON.stringify({ name: 'Хак', age: 99 }));
+        const rmRes = safeRemoveItem('form_user_profile');
+        const updProfile = StorageService.updateProfile({ name: 'Хак', age: 99 });
+        const updErr = StorageService.getLastWriteError();
+        const impRes = StorageService.importBackupJsonWithResult(JSON.stringify({ profile: { name: 'Имп', age: 50 } }));
+        const resetRes = StorageService.resetAllData();
+
+        assert(!setRes.ok && !rmRes.ok && updProfile.name === 'Анна' && Boolean(updErr) && !impRes.ok && !resetRes.ok, `[${c.label}] все записи, импорт и сброс обязаны быть заблокированы`);
+        assert(
+          ctrl.stats.setCalls === 0 && ctrl.stats.removeCalls === 0 && ctrl.stats.clearCalls === 0,
+          `[${c.label}] при unknown не должно быть ни одной мутации localStorage (set=${ctrl.stats.setCalls}, rm=${ctrl.stats.removeCalls}, clear=${ctrl.stats.clearCalls})`
+        );
+        assert(ctrl.store.get(c.key) === c.raw, `[${c.label}] повреждённый ключ по-прежнему сохраняется целиком`);
+      });
+    }
+
+    return 'Все варианты повреждения снимка/маркера (JSON, структура, checksum) переводят в unknown без удаления данных';
+  });
+
+  // 33. Тотальная блокировка всех обычных операций записи/удаления/миграции/сброса в состоянии pending
+  test('Надёжность хранения (Этап 3)', 'В состоянии pending заблокированы safeSetItem, safeRemoveItem, все методы StorageService, миграция и resetAllData с 0 мутациями', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Оригинал', age: 29 });
+      const origProfile = ctrl.store.get('form_user_profile')!;
+
+      // Искусственно вызываем частичный сбой rollback, чтобы оказаться в реальном persisted pending
+      ctrl.setSetIntercept((k, val) =>
+        k === 'form_workout_programs' || (k === 'form_user_profile' && val === origProfile)
+          ? { action: 'throw', quota: true }
+          : { action: 'allow' }
+      );
+      const failImport = StorageService.importBackupJsonWithResult(
+        JSON.stringify({
+          profile: { name: 'Промежуточный', age: 30 },
+          programs: [{ id: 'p1', name: 'П', description: '', goal: 'Сила', daysPerWeek: 3, workouts: [] }],
+        })
+      );
+      ctrl.setSetIntercept(null);
+      assert(failImport.ok === false, 'Импорт должен создать состояние pending');
+
+      // Перезапуск приложения в состоянии pending
+      resetMigrationSessionFlagForTests();
+      ctrl.store.set('form_schema_version_v1', '1');
+      assert(getRollbackRecoveryState().status === 'pending', 'После рестарта статус обязан быть pending');
+
+      const snapshotMapBefore = new Map(ctrl.store);
+      ctrl.resetCounters();
+
+      const results: SafeWriteResult[] = [];
+      results.push(safeSetItem('form_custom_key', 'abc'));
+      results.push(safeRemoveItem('form_user_profile'));
+
+      const blockedProfile = StorageService.updateProfile({ name: 'Новый', age: 31 });
+      assert(blockedProfile.name === 'Промежуточный' && Boolean(StorageService.getLastWriteError()), 'updateProfile обязан быть заблокирован в pending');
+
+      const blockedSettings = StorageService.updateSettings({ weightUnit: 'lbs' });
+      assert(blockedSettings.weightUnit === 'kg' && Boolean(StorageService.getLastWriteError()), 'updateSettings обязан быть заблокирован в pending');
+
+      const blockedFav = StorageService.toggleFavoriteExercise('pushups_classic');
+      assert(blockedFav === false && Boolean(StorageService.getLastWriteError()), 'toggleFavoriteExercise обязан быть заблокирован в pending');
+
+      results.push(StorageService.saveProgram({ id: 'px', name: 'X', description: '', goal: 'Сила', daysPerWeek: 3, workouts: [], isCustom: true, createdAt: '2026-11-12T10:00:00Z' }));
+      results.push(StorageService.saveWorkoutSession({ id: 'wx', name: 'W', date: '2026-11-12', startTime: '10:00', status: 'completed', durationMinutes: 30, totalVolumeKg: 500, completedSets: 3, exercises: [] }));
+      results.push(StorageService.saveSportSession({ id: 'sx', sportType: 'running', title: 'R', date: '2026-11-12', startTime: '09:00', plannedDurationMinutes: 30, actualDurationMinutes: 30, intensity: 'medium', rpe: 6, status: 'completed' }));
+      results.push(StorageService.saveWeeklySchedule([]));
+      results.push(StorageService.setDayStatus('2026-11-12', 'completed'));
+      results.push(StorageService.saveActiveDraft({ id: 'dx', name: 'D', date: '2026-11-12', startTime: '10:00', durationMinutes: 10, totalVolumeKg: 0, completedSets: 0, status: 'in_progress', exercises: [] }));
+      results.push(StorageService.clearActiveDraft());
+      results.push(StorageService.saveEquipmentList([]));
+      results.push(StorageService.saveUserParameters({ goal: 'Сила' as any, level: 'Средний' as any, location: 'Зал' as any, daysPerWeek: 3, durationMinutes: 60, availableDays: [], preferredMuscles: [], excludedExercises: [], healthRestrictions: [], notes: '' }));
+      results.push(StorageService.deleteCustomExercise('nonexistent'));
+      results.push(StorageService.saveWellbeingCheckin({ id: 'wb1', date: '2026-11-12', sleepHours: 8, fatigue: 3, soreness: 2, jointPain: 0, createdAt: 1700000000000 }));
+      results.push(StorageService.saveBodyMeasurement({ id: 'bm1', date: '2026-11-12', weightKg: 75, createdAt: 1700000000000 }));
+      results.push(StorageService.resetMuscleStats());
+      results.push(StorageService.clearAnatomyReset());
+      results.push(StorageService.importBackupJsonWithResult(JSON.stringify({ profile: { name: 'И', age: 20 } })));
+      results.push(StorageService.resetAllData());
+
+      runSafeMigrations({
+        PROFILE: 'form_user_profile',
+        PROGRAMS: 'form_workout_programs',
+        WORKOUTS: 'form_workout_sessions',
+        SPORTS_SESSIONS: 'form_sports_sessions_v1',
+        WEEKLY_SCHEDULE: 'form_weekly_schedule_v1',
+        CUSTOM_ACTIVITY: 'form_activity_days',
+        EQUIPMENT: 'form_user_equipment_v1',
+        FITNESS_PARAMS: 'form_fitness_parameters_v1',
+      });
+
+      assert(results.every((r) => r.ok === false && Boolean(r.error)), 'Каждая обычная операция записи/удаления/импорта/сброса в pending обязана вернуть ok: false с ошибкой');
+      assert(
+        ctrl.stats.setCalls === 0 && ctrl.stats.removeCalls === 0 && ctrl.stats.clearCalls === 0,
+        `В состоянии pending ни одна обычная операция не смеет вызывать setItem/removeItem/clear (set=${ctrl.stats.setCalls}, rm=${ctrl.stats.removeCalls}, clear=${ctrl.stats.clearCalls})`
+      );
+      assert(ctrl.store.size === snapshotMapBefore.size, 'Количество ключей в localStorage не изменилось');
+
+      // При этом само восстановление не заблокировано собственной защитой!
+      const recoveryRes = retryPendingRollbackRecovery();
+      assert(recoveryRes.ok === true, 'retryPendingRollbackRecovery должен выполняться в состоянии pending');
+      assert(ctrl.store.get('form_user_profile') === origProfile, 'После recovery исходный профиль полностью восстановлен');
+      assert(getRollbackRecoveryState().status === 'none', 'После recovery статус возвращается в none');
+    });
+
+    return 'Все 21+ операций записи/удаления/миграции/сброса полностью заблокированы в pending с 0 мутациями; recovery работает';
+  });
+
+  // 34. Отказ удаления PENDING_ROLLBACK_KEY, тихая потеря при rollback, и идемпотентный повторный retry после рестарта
+  test('Надёжность хранения (Этапы 4–5)', 'Тихая потеря записи rollback и ошибка удаления маркера сохраняют pending, а повторный retry идемпотентен', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Ценный Профиль', age: 27 });
+      StorageService.saveProgram({
+        id: 'p_safe',
+        name: 'Ценная Программа',
+        description: '',
+        goal: 'Сила',
+        daysPerWeek: 3,
+        workouts: [],
+        isCustom: true,
+        createdAt: '2026-11-12T10:00:00Z',
+      });
+      const origProfile = ctrl.store.get('form_user_profile')!;
+      const origPrograms = ctrl.store.get('form_workout_programs')!;
+
+      // Падаем на записи programs (2-й ключ) и откат profile тоже прерываем тихой потерей (corrupt без throw)
+      let failImportCount = 0;
+      ctrl.setSetIntercept((k, val) => {
+        if (k === 'form_workout_programs' && failImportCount === 0) {
+          failImportCount += 1;
+          return { action: 'throw', quota: true };
+        }
+        if (k === 'form_user_profile' && val === origProfile) {
+          return { action: 'corrupt', storedValue: '{"silently":"corrupted"}' };
+        }
+        return { action: 'allow' };
+      });
+
+      const failRes = StorageService.importBackupJsonWithResult(
+        JSON.stringify({
+          profile: { name: 'Новый', age: 40 },
+          programs: [{ id: 'p_new', name: 'Новая', description: '', goal: 'Сила', daysPerWeek: 3, workouts: [] }],
+        })
+      );
+      ctrl.setSetIntercept(null);
+
+      assert(failRes.ok === false, 'Импорт должен отказать');
+      assert(getRollbackRecoveryState().status === 'pending', 'Тихая порча во время отката должна перехватиться проверкой перечитывания и оставить pending');
+
+      // Имитация перезапуска + отказ removeItem на PENDING_ROLLBACK_KEY при первом retry
+      resetMigrationSessionFlagForTests();
+      ctrl.setRemoveIntercept((k) =>
+        k === PENDING_ROLLBACK_KEY ? { action: 'throw', quota: true } : { action: 'allow' }
+      );
+      const retryMarkerFail = StorageService.retryPendingRecovery();
+      ctrl.setRemoveIntercept(null);
+
+      assert(retryMarkerFail.ok === false, 'Если не удалился PENDING_ROLLBACK_KEY, recovery не имеет права вернуть ok: true');
+      assert(ctrl.store.get('form_user_profile') === origProfile, 'Данные при этом уже восстановлены на диск');
+      assert(ctrl.store.get('form_workout_programs') === origPrograms, 'Программы целы');
+      assert(getRollbackRecoveryState().status === 'pending', 'Состояние остаётся pending пока маркер не удалён');
+
+      // Имитация повторного запуска и тихого игнорирования removeItem для маркера
+      resetMigrationSessionFlagForTests();
+      ctrl.setRemoveIntercept((k) =>
+        k === PENDING_ROLLBACK_KEY ? { action: 'drop' } : { action: 'allow' }
+      );
+      const retrySilentRemove = StorageService.retryPendingRecovery();
+      ctrl.setRemoveIntercept(null);
+      assert(retrySilentRemove.ok === false, 'Тихая неудаляемость маркера тоже не считается успехом');
+      assert(getRollbackRecoveryState().status === 'pending', 'Статус остаётся pending');
+
+      // Идемпотентный повторный retry без ошибок хранилища
+      resetMigrationSessionFlagForTests();
+      const finalRetry = StorageService.retryPendingRecovery();
+      assert(finalRetry.ok === true, 'Повторный retry должен завершиться успешно и идемпотентно');
+      assert(ctrl.store.get(PENDING_ROLLBACK_KEY) === undefined, 'PENDING_ROLLBACK_KEY удалён после подтверждения');
+      assert(getRollbackRecoveryState().status === 'none', 'После завершения статус = none');
+      assert(ctrl.store.get('form_user_profile') === origProfile && ctrl.store.get('form_workout_programs') === origPrograms, 'Итоговые данные на 100% совпадают со снимком');
+
+      // Повторная запись после recovery снова работает штатно
+      const afterRecoverySave = StorageService.saveEquipmentList([]);
+      assert(afterRecoverySave.ok === true, 'После успешного recovery обычная запись снова разрешена');
+      const updatedProf = StorageService.updateProfile({ name: 'После Восстановления', age: 28 });
+      assert(updatedProf.name === 'После Восстановления', 'После recovery updateProfile снова работает');
+    });
+
+    return 'Тихая потеря отката, ошибка удаления маркера и идемпотентный повтор после рестарта подтверждены';
+  });
+
+  // 35. Реальная тихая потеря при обычной записи safeSetItem / safeRemoveItem без throw
+  test('Надёжность хранения (Этап 2)', 'Тихий отказ или искажение в localStorage.setItem/removeItem перехватываются проверкой перечитывания', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Старт', age: 20 });
+
+      ctrl.setSetIntercept((k) =>
+        k === 'form_user_profile' ? { action: 'drop' } : { action: 'allow' }
+      );
+      const dropped = safeSetItem('form_user_profile', JSON.stringify({ name: 'Потеряно', age: 21 }));
+      assert(dropped.ok === false && Boolean(dropped.error), 'Тихая потеря setItem должна вернуть ok: false');
+      const droppedProf = StorageService.updateProfile({ name: 'Потеряно', age: 21 });
+      assert(droppedProf.name === 'Старт' && Boolean(StorageService.getLastWriteError()), 'При тихой потере updateProfile возвращает прежний профиль и ошибку');
+
+      ctrl.setSetIntercept((k) =>
+        k === 'form_user_profile'
+          ? { action: 'corrupt', storedValue: '{"name":"Испорчено"}' }
+          : { action: 'allow' }
+      );
+      const corrupted = safeSetItem('form_user_profile', JSON.stringify({ name: 'Проверка', age: 22 }));
+      assert(corrupted.ok === false && (corrupted.error || '').includes('не совпадает'), 'Несовпадение при перечитывании должно вернуть ошибку');
+      ctrl.setSetIntercept(null);
+
+      ctrl.setRemoveIntercept((k) =>
+        k === 'form_active_workout_draft_v2' ? { action: 'drop' } : { action: 'allow' }
+      );
+      ctrl.store.set('form_active_workout_draft_v2', JSON.stringify({ id: 'd1' }));
+      const rmDrop = safeRemoveItem('form_active_workout_draft_v2');
+      assert(rmDrop.ok === false && Boolean(rmDrop.error), 'Тихая неудаляемость при removeItem должна вернуть ok: false');
+      ctrl.setRemoveIntercept(null);
+    });
+
+    return 'Шлюз перехватывает любые тихие потери и искажения при setItem и removeItem';
+  });
+
+  // 36. Ошибка записи ровно на N-м вызове setItem при импорте и при rollback
+  test('Надёжность хранения (Этап 5)', 'Ошибка на N-м вызове setItem при импорте и на N-м вызове rollback надёжно защищает данные', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Атлет N', age: 30 });
+      StorageService.saveProgram({
+        id: 'pn_1',
+        name: 'План N',
+        description: '',
+        goal: 'Сила',
+        daysPerWeek: 3,
+        workouts: [],
+        isCustom: true,
+        createdAt: '2026-11-12T10:00:00Z',
+      });
+      const origProfile = ctrl.store.get('form_user_profile')!;
+      const origPrograms = ctrl.store.get('form_workout_programs')!;
+
+      const backup = JSON.stringify({
+        profile: { name: 'Новый N', age: 31 },
+        programs: [{ id: 'pn_2', name: 'Новый план N', description: '', goal: 'Масса', daysPerWeek: 4, workouts: [] }],
+        workouts: [{ id: 'wn_2', name: 'Т N', date: '2026-11-12', startTime: '18:00', status: 'completed', durationMinutes: 40, totalVolumeKg: 1000, completedSets: 4, exercises: [] }],
+      });
+
+      // Считаем вызовы:
+      // 1 = staging snapshot, 2 = pending marker, 3 = profile, 4 = programs -> падаем на 4-м вызове (programs)!
+      // Затем 5-й вызов = попытка rollback profile -> тоже падаем на 5-м вызове (rollback N-й вызов)!
+      ctrl.resetCounters();
+      ctrl.setSetIntercept((_key, _val, callIndex) => {
+        if (callIndex === 4 || callIndex === 5) {
+          return { action: 'throw', quota: true, message: `Fail on N-th call #${callIndex}` };
+        }
+        return { action: 'allow' };
+      });
+
+      const res = StorageService.importBackupJsonWithResult(backup);
+      ctrl.setSetIntercept(null);
+
+      assert(res.ok === false, 'Сбой на 4-м вызове setItem должен отказать импорт');
+      assert(getRollbackRecoveryState().status === 'pending', 'Сбой на 5-м вызове (во время rollback) должен оставить статус pending');
+      assert(ctrl.store.get('form_workout_programs') === origPrograms, 'programs не повреждены');
+      assert(ctrl.store.get('form_workout_sessions') === undefined, 'workouts не создавались');
+
+      resetMigrationSessionFlagForTests();
+      const retry = StorageService.retryPendingRecovery();
+      assert(retry.ok === true, 'Повторное восстановление должно вернуть всё на место');
+      assert(ctrl.store.get('form_user_profile') === origProfile, 'Исходный profile полностью восстановлен');
+      assert(ctrl.store.get('form_workout_programs') === origPrograms, 'Исходные programs полностью восстановлены');
+      assert(getRollbackRecoveryState().status === 'none', 'Состояние восстановления очищено');
+    });
+
+    return 'Отказы на N-х вызовах setItem во время импорта и rollback полностью контролируются';
+  });
+
+  // 37. Стартовое автовосстановление: успех / повторный сбой в pending / отказ без удаления в unknown
+  test('Восстановление в UI (Шаг 1)', 'resolveStartupRecoveryState: pending восстанавливается 1 раз; при сбое или unknown данные защищены и запись заблокирована', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'До Сбоя', age: 25 });
+      const origProfile = ctrl.store.get('form_user_profile')!;
+
+      ctrl.setSetIntercept((k, val) =>
+        k === 'form_workout_programs' || (k === 'form_user_profile' && val === origProfile)
+          ? { action: 'throw', quota: true }
+          : { action: 'allow' }
+      );
+      const failImport = StorageService.importBackupJsonWithResult(
+        JSON.stringify({
+          profile: { name: 'Незавершённый', age: 99 },
+          programs: [{ id: 'p_x', name: 'X', description: '', goal: 'Сила', daysPerWeek: 3, workouts: [] }],
+        })
+      );
+      ctrl.setSetIntercept(null);
+      assert(failImport.ok === false, 'Должен сформироваться pending');
+
+      // 37a. Успешное автовосстановление при старте
+      resetMigrationSessionFlagForTests();
+      const bootOk = resolveStartupRecoveryState();
+      assert(bootOk.autoAttempted === true && bootOk.state.status === 'none' && bootOk.autoError === null, 'pending при старте должен восстановиться в none');
+      assert(ctrl.store.get('form_user_profile') === origProfile, 'Профиль восстановлен до исходного');
+      assert(ctrl.store.get(PENDING_ROLLBACK_KEY) === undefined, 'Служебный маркер удалён');
+
+      // 37b. Неудачное автовосстановление при старте: выполняется 1 раз, запись остаётся заблокированной
+      ctrl.setSetIntercept((k, val) =>
+        k === 'form_workout_programs' || (k === 'form_user_profile' && val === origProfile)
+          ? { action: 'throw', quota: true }
+          : { action: 'allow' }
+      );
+      StorageService.importBackupJsonWithResult(
+        JSON.stringify({
+          profile: { name: 'Сбой Стартовый', age: 99 },
+          programs: [{ id: 'p_x2', name: 'X2', description: '', goal: 'Сила', daysPerWeek: 3, workouts: [] }],
+        })
+      );
+      ctrl.setSetIntercept(null);
+
+      resetMigrationSessionFlagForTests();
+      ctrl.setSetIntercept((k) =>
+        k === 'form_user_profile' ? { action: 'throw', quota: true, message: 'Disk full at startup' } : { action: 'allow' }
+      );
+      ctrl.resetCounters();
+      const bootFail1 = resolveStartupRecoveryState();
+      const callsAfterFirst = ctrl.stats.setCalls;
+      // Повторный вызов в той же сессии старта не должен бесконечно дёргать retry
+      const bootFail2 = resolveStartupRecoveryState();
+      assert(ctrl.stats.setCalls === callsAfterFirst, 'Повторный resolveStartupRecoveryState в той же сессии не должен перезапускать retry');
+      ctrl.setSetIntercept(null);
+
+      assert(bootFail1.autoAttempted === true && bootFail1.state.status === 'pending' && Boolean(bootFail1.autoError), 'При сбое автовосстановления остаётся pending и ошибка');
+      assert(bootFail2.state.status === 'pending', 'Состояние остаётся pending');
+      assert(safeSetItem('form_user_profile', '{"name":"Overwrite"}').ok === false, 'После неудачного автовосстановления обычная запись заблокирована');
+
+      // Очищаем pending для проверки unknown
+      assert(StorageService.retryPendingRecovery().ok === true, 'Штатное восстановление должно очистить pending');
+
+      // 37c. Состояние unknown: автовосстановление не вызывается, повреждённый маркер не удаляется, запись заблокирована
+      const brokenMarker = '{corrupted_marker_verbatim';
+      ctrl.store.set(PENDING_ROLLBACK_KEY, brokenMarker);
+      resetMigrationSessionFlagForTests();
+      ctrl.resetCounters();
+      const bootUnknown = resolveStartupRecoveryState();
+      assert(bootUnknown.state.status === 'unknown' && bootUnknown.autoAttempted === false && Boolean(bootUnknown.autoError), 'При unknown должен вернуться статус unknown без retry');
+      assert(ctrl.stats.setCalls === 0 && ctrl.stats.removeCalls === 0, 'При unknown старта мутации localStorage запрещены');
+      assert(ctrl.store.get(PENDING_ROLLBACK_KEY) === brokenMarker, 'Повреждённый маркер обязан остаться нетронутым');
+    });
+
+    return 'Стартовое автовосстановление корректно отрабатывает успех, сбой и unknown';
+  });
+
+  // 38. Сырой аварийный экспорт и защищённый сброс только служебных ключей
+  test('Восстановление в UI (Шаг 2)', 'Сырой экспорт сохраняет все данные дословно, а resetRecoveryStateOnly удаляет ТОЛЬКО служебные ключи после подтверждений', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      const rawUserProfile = JSON.stringify({ name: 'Ценный Профиль', age: 33 });
+      const rawCorruptedWorkouts = '{broken_workouts_json';
+      const rawPendingBroken = '{broken_pending_marker';
+      const rawSnapshotPrev = '{"prev":"snapshot"}';
+      const rawStaging = '{"staging":"snap"}';
+      const rawQuarantine = '{broken_workouts_json';
+
+      ctrl.store.set('form_user_profile', rawUserProfile);
+      ctrl.store.set('form_workout_sessions', rawCorruptedWorkouts);
+      ctrl.store.set(`${CORRUPTED_RAW_PREFIX}form_workout_sessions`, rawQuarantine);
+      ctrl.store.set(PENDING_ROLLBACK_KEY, rawPendingBroken);
+      ctrl.store.set(ROLLBACK_SNAPSHOT_KEY, rawSnapshotPrev);
+      ctrl.store.set(ROLLBACK_SNAPSHOT_STAGING_KEY, rawStaging);
+      resetMigrationSessionFlagForTests();
+
+      // 38a. Проверяем сырой экспорт (дословно все ключи, включая битые и служебные)
+      const rawSnap = exportAllStorageRawSnapshot();
+      const rawExportJson = StorageService.exportEmergencyRawBackupJson();
+      const parsedExport = JSON.parse(rawExportJson);
+
+      assert(rawSnap.rawKeys['form_user_profile'] === rawUserProfile, 'Сырой экспорт должен содержать профиль дословно');
+      assert(rawSnap.rawKeys['form_workout_sessions'] === rawCorruptedWorkouts, 'Сырой экспорт должен содержать повреждённые ключи дословно');
+      assert(rawSnap.rawKeys[PENDING_ROLLBACK_KEY] === rawPendingBroken, 'Сырой экспорт должен содержать повреждённый маркер восстановления');
+      assert(rawSnap.rawKeys[ROLLBACK_SNAPSHOT_KEY] === rawSnapshotPrev, 'Сырой экспорт должен содержать ROLLBACK_SNAPSHOT_KEY');
+      assert(parsedExport.rawKeys[PENDING_ROLLBACK_KEY] === rawPendingBroken, 'JSON-дамп должен включать все rawKeys без потерь');
+
+      // 38b. Сброс запрещён без сохранения копии и без явного подтверждения
+      assert(safeSetItem('form_user_profile', '{"name":"Blocked"}').ok === false, 'До сброса обычная запись заблокирована');
+      const noBackup = resetRecoveryStateOnly({ backupConfirmed: false, userConfirmed: true });
+      const noUser = resetRecoveryStateOnly({ backupConfirmed: true, userConfirmed: false });
+      assert(!noBackup.ok && !noUser.ok, 'Сброс без обоих подтверждений обязан отказать');
+      assert(ctrl.store.get(PENDING_ROLLBACK_KEY) === rawPendingBroken, 'После отказа служебные ключи не удаляются');
+      assert(safeSetItem('form_user_profile', '{"name":"StillBlocked"}').ok === false, 'Запись остаётся заблокированной после отклонённого сброса');
+
+      // 38c. Подтверждённый сброс удаляет ТОЛЬКО служебные ключи восстановления
+      const resetOk = StorageService.resetRecoveryStateOnly({
+        backupConfirmed: true,
+        userConfirmed: true,
+      });
+      assert(resetOk.ok === true, 'Подтверждённый сброс должен завершиться успешно');
+      assert(ctrl.store.get(PENDING_ROLLBACK_KEY) === undefined, 'PENDING_ROLLBACK_KEY должен быть удалён');
+      assert(ctrl.store.get(ROLLBACK_SNAPSHOT_KEY) === undefined, 'ROLLBACK_SNAPSHOT_KEY должен быть удалён');
+      assert(ctrl.store.get(ROLLBACK_SNAPSHOT_STAGING_KEY) === undefined, 'ROLLBACK_SNAPSHOT_STAGING_KEY должен быть удалён');
+
+      // Пользовательские ключи и карантин обязаны остаться побайтово идентичными
+      assert(ctrl.store.get('form_user_profile') === rawUserProfile, 'Профиль пользователя не должен изменяться при сбросе восстановления');
+      assert(ctrl.store.get('form_workout_sessions') === rawCorruptedWorkouts, 'Повреждённый пользовательский ключ не должен удаляться');
+      assert(ctrl.store.get(`${CORRUPTED_RAW_PREFIX}form_workout_sessions`) === rawQuarantine, 'Карантинная копия не должна удаляться');
+      assert(getRollbackRecoveryState().status === 'none', 'После сброса статус восстановления = none');
+
+      // После сброса обычная запись в незаблокированный ключ снова работает
+      const writeAfterReset = safeSetItem('form_app_settings_v1', JSON.stringify({ weightUnit: 'kg' }));
+      assert(writeAfterReset.ok === true, 'После сброса восстановления обычная запись должна снова работать');
+    });
+
+    return 'Сырой экспорт сохраняет все ключи дословно; сброс удаляет только служебные ключи после двойного подтверждения';
   });
 
   const passed = results.filter((r) => r.passed).length;

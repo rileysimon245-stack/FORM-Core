@@ -2,20 +2,47 @@
  * Запуск тестов тренировочного ядра из терминала: npx tsx src/training-core/__tests__/runTests.ts
  */
 import { runTrainingCoreTestSuite } from './suite';
+import {
+  runGatewayRegressionCheck,
+  runGatewayBypassDetectionTest,
+  runAppHooksRegressionCheck,
+  runStartupAndRecoveryScreenUiTests,
+} from './integrationChecks';
 
-const summary = runTrainingCoreTestSuite();
+async function main() {
+  const coreSummary = runTrainingCoreTestSuite();
+  const gatewayCheck = runGatewayRegressionCheck();
+  const gatewayBypassCheck = runGatewayBypassDetectionTest();
+  const hooksCheck = await runAppHooksRegressionCheck();
+  const recoveryUiCheck = await runStartupAndRecoveryScreenUiTests();
 
-console.log(`\nFORM Core — Автотесты ядра: ${summary.passed}/${summary.total} пройдено\n`);
+  const allResults = [
+    ...coreSummary.results,
+    gatewayCheck,
+    gatewayBypassCheck,
+    hooksCheck,
+    recoveryUiCheck,
+  ];
+  const passed = allResults.filter((r) => r.passed).length;
+  const failed = allResults.length - passed;
 
-for (const r of summary.results) {
-  const icon = r.passed ? 'PASS' : 'FAIL';
-  console.log(`[${icon}] [${r.group}] ${r.name} — ${r.details}`);
+  console.log(`\nFORM Core — Автотесты ядра: ${passed}/${allResults.length} пройдено\n`);
+
+  for (const r of allResults) {
+    const icon = r.passed ? 'PASS' : 'FAIL';
+    console.log(`[${icon}] [${r.group}] ${r.name} — ${r.details}`);
+  }
+
+  if (failed > 0) {
+    console.error(`\nПровалено тестов: ${failed}`);
+    process.exit(1);
+  } else {
+    console.log('\nВсе тесты успешно пройдены.');
+    process.exit(0);
+  }
 }
 
-if (summary.failed > 0) {
-  console.error(`\nПровалено тестов: ${summary.failed}`);
+main().catch((err) => {
+  console.error(err);
   process.exit(1);
-} else {
-  console.log('\nВсе тесты успешно пройдены.');
-  process.exit(0);
-}
+});

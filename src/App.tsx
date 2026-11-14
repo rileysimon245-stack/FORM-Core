@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { StorageService } from './services/storage';
-import { SafeWriteResult } from './services/migrations';
+import { SafeWriteResult, StartupRecoveryResolution } from './services/migrations';
 import { findExerciseInUnifiedCatalog } from './training-core/catalog';
 import { normalizeMuscleKeyPure, normalizeMuscleListPure } from './training-core/muscles';
 import { formatLocalIsoDate } from './training-core/dateUtils';
@@ -37,7 +37,20 @@ import { UserParametersModal } from './components/UserParametersModal';
 import { WeeklyScheduleModal } from './components/WeeklyScheduleModal';
 import { SportSessionModal } from './components/SportSessionModal';
 import { ElasticScroll } from './components/ElasticScroll';
+import { RecoveryBlockingScreen } from './components/RecoveryBlockingScreen';
 import { RegionProbePage } from './dev/regionProbe/RegionProbePage';
+
+const NONE_RECOVERY_RESOLUTION: StartupRecoveryResolution = {
+  state: {
+    status: 'none',
+    error: null,
+    pendingKeys: [],
+    rawPendingValue: null,
+    rawSnapshotValue: null,
+  },
+  autoAttempted: false,
+  autoError: null,
+};
 
 function checkIsProbeMode(): boolean {
   if (typeof window === 'undefined') return false;
@@ -61,10 +74,17 @@ function checkIsProbeMode(): boolean {
 
 export default function App() {
   const [isProbeMode, setIsProbeMode] = useState<boolean>(() => checkIsProbeMode());
+  const [recoveryBoot, setRecoveryBoot] = useState<StartupRecoveryResolution>(() =>
+    checkIsProbeMode() ? NONE_RECOVERY_RESOLUTION : StorageService.resolveStartupRecoveryState()
+  );
 
   useEffect(() => {
     const handleUrlChange = () => {
-      setIsProbeMode(checkIsProbeMode());
+      const nextProbe = checkIsProbeMode();
+      if (!nextProbe) {
+        setRecoveryBoot(StorageService.resolveStartupRecoveryState());
+      }
+      setIsProbeMode(nextProbe);
     };
     window.addEventListener('popstate', handleUrlChange);
     window.addEventListener('hashchange', handleUrlChange);
@@ -74,10 +94,58 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (isProbeMode) return;
+    const unsubscribe = StorageService.subscribe(() => {
+      const nextState = StorageService.getRecoveryState();
+      setRecoveryBoot((prev) => {
+        if (
+          prev.state.status === nextState.status &&
+          prev.state.error === nextState.error &&
+          prev.state.pendingKeys.join(',') === nextState.pendingKeys.join(',')
+        ) {
+          return prev;
+        }
+        return {
+          state: nextState,
+          autoAttempted: prev.autoAttempted,
+          autoError:
+            nextState.status === 'none'
+              ? null
+              : nextState.error || StorageService.getLastWriteError(),
+        };
+      });
+    });
+    return () => unsubscribe();
+  }, [isProbeMode]);
+
+  const handleRecovered = useCallback(() => {
+    setRecoveryBoot({
+      state: StorageService.getRecoveryState(),
+      autoAttempted: true,
+      autoError: null,
+    });
+  }, []);
+
   if (isProbeMode) {
     return <RegionProbePage />;
   }
 
+  if (recoveryBoot.state.status !== 'none') {
+    return (
+      <RecoveryBlockingScreen
+        key={`${recoveryBoot.state.status}:${recoveryBoot.state.error || ''}`}
+        recoveryState={recoveryBoot.state}
+        initialError={recoveryBoot.autoError}
+        onRecovered={handleRecovered}
+      />
+    );
+  }
+
+  return <MainAppContent />;
+}
+
+function MainAppContent() {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [currentYear, setCurrentYear] = useState<number>(2026);
 
