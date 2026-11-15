@@ -98,6 +98,80 @@ export function getStorage(): Storage | null {
   return null;
 }
 
+const LEASE_KEY = 'form_storage_lease_v1';
+const LEASE_TTL_MS = 5000;
+const tabOwnerId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36);
+
+function acquireLocalStorageLease(storage: Storage): boolean {
+  const now = Date.now();
+  try {
+    const raw = storage.getItem(LEASE_KEY);
+    if (raw) {
+      try {
+        const lease = JSON.parse(raw);
+        if (lease && typeof lease.expiresAt === 'number' && lease.expiresAt > now && lease.owner !== tabOwnerId) {
+          return false;
+        }
+      } catch {}
+    }
+    const data = JSON.stringify({ owner: tabOwnerId, expiresAt: now + LEASE_TTL_MS });
+    const setRes = gatewayRawSet(storage, LEASE_KEY, data);
+    return setRes.ok;
+  } catch {}
+  return false;
+}
+
+function releaseLocalStorageLease(storage: Storage): void {
+  try {
+    const raw = storage.getItem(LEASE_KEY);
+    if (raw) {
+      const lease = JSON.parse(raw);
+      if (lease && lease.owner === tabOwnerId) {
+        gatewayRawRemove(storage, LEASE_KEY);
+      }
+    }
+  } catch {}
+}
+
+function withStorageLock<T>(opName: string, fn: () => T): T {
+  const storage = getStorage();
+  if (!storage) return fn();
+  let acquired = acquireLocalStorageLease(storage);
+  if (!acquired) {
+    for (let i = 0; i < 2; i++) {
+      const start = Date.now();
+      while (Date.now() - start < 40) {}
+      acquired = acquireLocalStorageLease(storage);
+      if (acquired) break;
+    }
+  }
+  if (!acquired) {
+    const msg = `Операция "${opName}" отклонена: хранилище заблокировано другой вкладкой или процессом.`;
+    setLastWriteError(msg);
+    throw new Error(msg);
+  }
+  try {
+    return fn();
+  } finally {
+    releaseLocalStorageLease(storage);
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (
+      e.key === PENDING_ROLLBACK_KEY ||
+      e.key === ROLLBACK_SNAPSHOT_KEY ||
+      e.key === CORRUPTED_LOCKS_INDEX_KEY ||
+      e.key === ROLLBACK_SNAPSHOT_STAGING_KEY ||
+      e.key === LEASE_KEY
+    ) {
+      getRollbackRecoveryState();
+    }
+  });
+}
+
+
 function isQuotaError(err: any): boolean {
   return Boolean(
     err &&
@@ -960,12 +1034,8 @@ export function captureStorageKeysSnapshot(keys: string[]): KeyBackupSnapshot[] 
     let rawValue: string | null = null;
     let quarantineRawValue: string | null = null;
     if (storage) {
-      try {
-        rawValue = storage.getItem(key);
-        quarantineRawValue = storage.getItem(`${CORRUPTED_RAW_PREFIX}${key}`);
-      } catch {
-        // ignore read error
-      }
+      rawValue = storage.getItem(key);
+      quarantineRawValue = storage.getItem(`${CORRUPTED_RAW_PREFIX}${key}`);
     }
     return {
       key,
@@ -1688,53 +1758,61 @@ export function restoreStorageKeysSnapshot(snapshots: KeyBackupSnapshot[]): bool
 }
 
 export function retryPendingRollbackRecovery(): SafeWriteResult {
-  const storage = getStorage();
-  if (!storage) {
-    return { ok: false, error: 'Локальное хранилище (localStorage) недоступно.' };
-  }
-
-  const recState = getRollbackRecoveryState();
-  if (recState.status === 'unknown') {
-    const errMsg =
-      recState.error ||
-      `Невозможно выполнить восстановление: повреждён снимок или маркер (${PENDING_ROLLBACK_KEY}). Исходные данные не удалены.`;
-    lastWriteError = errMsg;
-    return { ok: false, error: errMsg };
-  }
-
-  if (recState.status === 'none') {
-    const msg = 'Нет незавершённого восстановления для выполнения.';
-    return { ok: false, error: msg };
-  }
-
-  let snapshotsToRestore: KeyBackupSnapshot[] | null = null;
-  if (recState.rawPendingValue !== null) {
-    const parsed = parseAndValidatePendingMarker(recState.rawPendingValue, storage);
-    if (!parsed.valid) {
-      lastWriteError = parsed.error;
-      return { ok: false, error: parsed.error };
+  try {
+    const storage = getStorage();
+    if (!storage) {
+      return { ok: false, error: 'Локальное хранилище (localStorage) недоступно.' };
     }
-    snapshotsToRestore = parsed.snapshots;
-  } else if (pendingRollbackSnapshots && pendingRollbackSnapshots.length > 0) {
-    snapshotsToRestore = pendingRollbackSnapshots;
-  }
 
-  if (!snapshotsToRestore || snapshotsToRestore.length === 0) {
-    const msg = 'Снимок для повторного восстановления пуст или недоступен.';
+    const recState = getRollbackRecoveryState();
+    if (recState.status === 'unknown') {
+      const errMsg =
+        recState.error ||
+        `Невозможно выполнить восстановление: повреждён снимок или маркер (${PENDING_ROLLBACK_KEY}). Исходные данные не удалены.`;
+      lastWriteError = errMsg;
+      return { ok: false, error: errMsg };
+    }
+
+    if (recState.status === 'none') {
+      const msg = 'Нет незавершённого восстановления для выполнения.';
+      return { ok: false, error: msg };
+    }
+
+    return withStorageLock('retry_recovery', () => {
+      let snapshotsToRestore: KeyBackupSnapshot[] | null = null;
+      if (recState.rawPendingValue !== null) {
+        const parsed = parseAndValidatePendingMarker(recState.rawPendingValue, storage);
+        if (!parsed.valid) {
+          lastWriteError = parsed.error;
+          return { ok: false, error: parsed.error };
+        }
+        snapshotsToRestore = parsed.snapshots;
+      } else if (pendingRollbackSnapshots && pendingRollbackSnapshots.length > 0) {
+        snapshotsToRestore = pendingRollbackSnapshots;
+      }
+
+      if (!snapshotsToRestore || snapshotsToRestore.length === 0) {
+        const msg = 'Снимок для повторного восстановления пуст или недоступен.';
+        lastWriteError = msg;
+        return { ok: false, error: msg };
+      }
+
+      const res = restoreStorageKeysSnapshotDetailed(snapshotsToRestore);
+      if (res.ok) {
+        lastWriteError = null;
+        return { ok: true, error: null };
+      }
+
+      const summary = res.failedDetails.map((d) => `${d.key} (${d.stage})`).join(', ');
+      const errMsg = `Повторное восстановление выполнено частично. Остались ошибки для: ${summary}.`;
+      lastWriteError = errMsg;
+      return { ok: false, error: errMsg };
+    });
+  } catch (err: any) {
+    const msg = err?.message || 'Ошибка блокировки при повторном восстановлении.';
     lastWriteError = msg;
     return { ok: false, error: msg };
   }
-
-  const res = restoreStorageKeysSnapshotDetailed(snapshotsToRestore);
-  if (res.ok) {
-    lastWriteError = null;
-    return { ok: true, error: null };
-  }
-
-  const summary = res.failedDetails.map((d) => `${d.key} (${d.stage})`).join(', ');
-  const errMsg = `Повторное восстановление выполнено частично. Остались ошибки для: ${summary}.`;
-  lastWriteError = errMsg;
-  return { ok: false, error: errMsg };
 }
 
 /**
@@ -1750,29 +1828,38 @@ export function executeProtectedStorageTransaction(
   operationName: string,
   operation: (tx: ProtectedTransactionContext) => SafeWriteResult
 ): SafeWriteResult {
-  const storage = getStorage();
-  if (!storage) {
-    const msg = 'Локальное хранилище (localStorage) недоступно.';
-    lastWriteError = msg;
-    return { ok: false, error: msg };
-  }
+  try {
+    return withStorageLock(operationName, () => {
+      const storage = getStorage();
+      if (!storage) {
+        const msg = 'Локальное хранилище (localStorage) недоступно.';
+        lastWriteError = msg;
+        return { ok: false, error: msg };
+      }
 
-  const recState = getRollbackRecoveryState();
-  if (recState.status !== 'none') {
-    const msg = buildPendingBlockError(recState, operationName, false);
-    lastWriteError = msg;
-    return { ok: false, error: msg };
-  }
+      const recState = getRollbackRecoveryState();
+      if (recState.status !== 'none') {
+        const msg = buildPendingBlockError(recState, operationName, false);
+        lastWriteError = msg;
+        return { ok: false, error: msg };
+      }
 
-  const uniqueKeys = Array.from(new Set(keysToProtect.filter((k) => Boolean(k))));
-  if (uniqueKeys.length === 0) {
-    const msg = 'Транзакция не содержит защищаемых ключей.';
-    lastWriteError = msg;
-    return { ok: false, error: msg };
-  }
+      const uniqueKeys = Array.from(new Set(keysToProtect.filter((k) => Boolean(k))));
+      if (uniqueKeys.length === 0) {
+        const msg = 'Транзакция не содержит защищаемых ключей.';
+        lastWriteError = msg;
+        return { ok: false, error: msg };
+      }
 
-  // Шаг 1: собираем снимок затрагиваемых ключей
-  const snapshots = captureStorageKeysSnapshot(uniqueKeys);
+      // Шаг 1: собираем снимок затрагиваемых ключей (Point 1: read error throws and aborts before any changes)
+      let snapshots: KeyBackupSnapshot[];
+      try {
+        snapshots = captureStorageKeysSnapshot(uniqueKeys);
+      } catch (err: any) {
+        const msg = formatWriteError(err, `Не удалось прочитать хранилище при создании снимка перед операцией (${operationName})`);
+        lastWriteError = msg;
+        return { ok: false, error: msg };
+      }
   const checksum = computeSnapshotChecksum(snapshots);
   const operationId = `op_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
   const createdAt = new Date().toISOString();
@@ -1878,6 +1965,12 @@ export function executeProtectedStorageTransaction(
 
   lastWriteError = null;
   return { ok: true, error: null };
+    });
+  } catch (err: any) {
+    const msg = err?.message || `Ошибка блокировки при выполнении "${operationName}".`;
+    lastWriteError = msg;
+    return { ok: false, error: msg };
+  }
 }
 
 /**
@@ -2311,7 +2404,9 @@ const BACKUP_SECTION_BY_KEY: Record<string, string> = {
   form_body_measurements_v1: 'bodyMeasurements',
 };
 
-export function exportAllStorageRawSnapshot(): EmergencyRawBackupPayload {
+export let lastEmergencyExportRawHash: string | null = null;
+
+export function exportAllStorageRawSnapshot(updateExportHash: boolean = true): EmergencyRawBackupPayload {
   const storage = getStorage();
   const recoveryState = getRollbackRecoveryState();
   const rawKeys: Record<string, string> = {};
@@ -2349,6 +2444,18 @@ export function exportAllStorageRawSnapshot(): EmergencyRawBackupPayload {
     }
   }
 
+  const dummySnapshots: KeyBackupSnapshot[] = Object.entries(rawKeys).map(([key, value]) => ({
+    key,
+    rawValue: value,
+    quarantineRawValue: null,
+    wasLockedInMemory: false,
+    wasLockedInIndex: false,
+  }));
+  const checksum = computeSnapshotChecksum(dummySnapshots);
+  if (updateExportHash) {
+    lastEmergencyExportRawHash = checksum;
+  }
+
   return {
     format: 'form_raw_emergency_backup_v1',
     exportedAt: new Date().toISOString(),
@@ -2378,36 +2485,71 @@ export function resetRecoveryStateOnly(options: {
       error: 'Требуется явное подтверждение пользователя для сброса состояния восстановления.',
     };
   }
+  if (!lastEmergencyExportRawHash) {
+    return {
+      ok: false,
+      error: 'Резервная копия не была экспортирована. Перед сбросом необходимо сделать экспорт данных.',
+    };
+  }
 
   const storage = getStorage();
   if (!storage) {
     return { ok: false, error: 'Локальное хранилище (localStorage) недоступно.' };
   }
 
-  const serviceRecoveryKeys = [
-    PENDING_ROLLBACK_KEY,
-    ROLLBACK_SNAPSHOT_KEY,
-    ROLLBACK_SNAPSHOT_STAGING_KEY,
-  ];
+  const currentSnap = exportAllStorageRawSnapshot(false);
+  const currentHash = computeSnapshotChecksum(
+    Object.entries(currentSnap.rawKeys).map(([key, value]) => ({
+      key,
+      rawValue: value,
+      quarantineRawValue: null,
+      wasLockedInMemory: false,
+      wasLockedInIndex: false,
+    }))
+  );
+  if (currentHash !== lastEmergencyExportRawHash) {
+    return {
+      ok: false,
+      error: 'Резервная копия устарела: данные в хранилище изменились с момента экспорта. Сделайте свежий экспорт.',
+    };
+  }
 
-  for (const key of serviceRecoveryKeys) {
-    if (storage.getItem(key) !== null) {
-      const rmRes = removeViaGateway(
-        key,
-        { allowRemoveCorrupted: true },
-        INTERNAL_GATEWAY_TOKEN
-      );
-      if (!rmRes.ok) {
-        lastWriteError = rmRes.error || `Не удалось удалить служебный ключ восстановления "${key}".`;
+  return withStorageLock('reset_recovery', () => {
+
+    const serviceRecoveryKeys = [
+      PENDING_ROLLBACK_KEY,
+      ROLLBACK_SNAPSHOT_KEY,
+      ROLLBACK_SNAPSHOT_STAGING_KEY,
+    ];
+
+    for (const key of serviceRecoveryKeys) {
+      if (storage.getItem(key) !== null) {
+        const rmRes = removeViaGateway(
+          key,
+          { allowRemoveCorrupted: true },
+          INTERNAL_GATEWAY_TOKEN
+        );
+        if (!rmRes.ok) {
+          lastWriteError = rmRes.error || `Не удалось удалить служебный ключ восстановления "${key}".`;
+          return { ok: false, error: lastWriteError };
+        }
+      }
+    }
+
+    // Verify all 3 service keys are deleted (Point 4)
+    for (const key of serviceRecoveryKeys) {
+      if (storage.getItem(key) !== null) {
+        lastWriteError = `Не удалось подтвердить удаление служебного ключа "${key}" из хранилища.`;
         return { ok: false, error: lastWriteError };
       }
     }
-  }
 
-  pendingRollbackSnapshots = null;
-  pendingRollbackFailedDetails = [];
-  lastWriteError = null;
-  return { ok: true, error: null };
+    pendingRollbackSnapshots = null;
+    pendingRollbackFailedDetails = [];
+    lastWriteError = null;
+    lastEmergencyExportRawHash = null;
+    return { ok: true, error: null };
+  });
 }
 
 export function resetMigrationSessionFlagForTests(): void {
@@ -2418,4 +2560,5 @@ export function resetMigrationSessionFlagForTests(): void {
   lastWriteError = null;
   pendingRollbackSnapshots = null;
   pendingRollbackFailedDetails = [];
+  lastEmergencyExportRawHash = null;
 }

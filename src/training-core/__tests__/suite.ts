@@ -50,6 +50,7 @@ import {
   resetRecoveryStateOnly,
   runSafeMigrations,
   resetMigrationSessionFlagForTests,
+  executeProtectedStorageTransaction,
   CORRUPTED_RAW_PREFIX,
   CORRUPTED_LOCKS_INDEX_KEY,
   PENDING_ROLLBACK_KEY,
@@ -1593,6 +1594,15 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
             | { action: 'allow' })
         | null
     ) => void;
+    setGetIntercept: (
+      fn:
+        | ((
+            key: string
+          ) =>
+            | { action: 'throw'; message?: string }
+            | { action: 'allow' })
+        | null
+    ) => void;
     resetCounters: () => void;
   }
 
@@ -1605,6 +1615,7 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
     const stats = { setCalls: 0, removeCalls: 0, clearCalls: 0 };
     let setIntercept: Parameters<FaultStorageControllers['setSetIntercept']>[0] = null;
     let removeIntercept: Parameters<FaultStorageControllers['setRemoveIntercept']>[0] = null;
+    let getIntercept: Parameters<FaultStorageControllers['setGetIntercept']>[0] = null;
 
     const mockStorage: Storage = {
       get length() {
@@ -1615,13 +1626,21 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
         store.clear();
       },
       getItem(k: string) {
+        if (getIntercept) {
+          const decision = getIntercept(k);
+          if (decision.action === 'throw') {
+            throw new Error(decision.message || `Simulated getItem error on ${k}`);
+          }
+        }
         return store.has(k) ? store.get(k)! : null;
       },
       key(index: number) {
         return Array.from(store.keys())[index] ?? null;
       },
       removeItem(k: string) {
-        stats.removeCalls += 1;
+        if (k !== 'form_storage_lease_v1') {
+          stats.removeCalls += 1;
+        }
         if (removeIntercept) {
           const decision = removeIntercept(k, stats.removeCalls);
           if (decision.action === 'throw') {
@@ -1639,7 +1658,9 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
         store.delete(k);
       },
       setItem(k: string, v: string) {
-        stats.setCalls += 1;
+        if (k !== 'form_storage_lease_v1') {
+          stats.setCalls += 1;
+        }
         const strVal = String(v);
         if (setIntercept) {
           const decision = setIntercept(k, strVal, stats.setCalls);
@@ -1674,6 +1695,9 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
         },
         setRemoveIntercept: (cb) => {
           removeIntercept = cb;
+        },
+        setGetIntercept: (cb) => {
+          getIntercept = cb;
         },
         resetCounters: () => {
           stats.setCalls = 0;
@@ -2229,6 +2253,114 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
     });
 
     return 'Сырой экспорт сохраняет все ключи дословно; сброс удаляет только служебные ключи после двойного подтверждения';
+  });
+
+  // 39. Ошибка чтения при создании snapshot прерывает транзакцию без изменения данных
+  test('Надёжность хранения (Ревью 1)', 'Ошибка чтения при создании snapshot прерывает транзакцию ДО любых изменений', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Атлет Снапшот', age: 30 });
+      const origProfile = ctrl.store.get('form_user_profile')!;
+
+      ctrl.setGetIntercept((key) => {
+        if (key === 'form_user_profile') {
+          return { action: 'throw', message: 'Disk read failure on profile' };
+        }
+        return { action: 'allow' };
+      });
+
+      const res = executeProtectedStorageTransaction(['form_user_profile'], 'test_read_error', (tx) => {
+        return tx.setItem('form_user_profile', JSON.stringify({ name: 'Изменено', age: 31 }));
+      });
+      ctrl.setGetIntercept(null);
+
+      assert(res.ok === false, 'Транзакция должна завершиться ошибкой при сбое чтения snapshot');
+      assert(ctrl.store.get('form_user_profile') === origProfile, 'Данные профиля не изменились');
+      assert(ctrl.store.get(ROLLBACK_SNAPSHOT_STAGING_KEY) === undefined, 'Снимок staging не записан');
+      assert(ctrl.store.get(PENDING_ROLLBACK_KEY) === undefined, 'Маркер pending не записан');
+    });
+
+    return 'Ошибка чтения при создании snapshot прерывает транзакцию без изменений данных';
+  });
+
+  // 40. Межвкладлочная блокировка (Lease) предотвращает параллельные конфликты
+  test('Надёжность хранения (Ревью 2)', 'Межвкладлочная блокировка через lease корректно защищает хранилище', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Атлет Блокировка', age: 28 });
+
+      // Имитируем занятый lease другой вкладкой
+      ctrl.store.set('form_storage_lease_v1', JSON.stringify({ owner: 'other_tab_xyz', expiresAt: Date.now() + 10000 }));
+
+      const res = executeProtectedStorageTransaction(['form_user_profile'], 'locked_tx', (tx) => {
+        return tx.setItem('form_user_profile', JSON.stringify({ name: 'Должно упасть', age: 29 }));
+      });
+
+      assert(res.ok === false, 'Транзакция должна быть отклонена при занятом lease');
+      assert(Boolean(res.error && res.error.includes('заблокировано другой вкладкой')), 'Сообщение об ошибке должно упоминать блокировку');
+    });
+
+    return 'Межвкладлочная блокировка корректно отклоняет операции при занятом lease';
+  });
+
+  // 41. Подтверждение резервной копии и проверка хеша экспорта при сбросе
+  test('Надёжность хранения (Ревью 3)', 'Сброс невозможен без экспорта, с устаревшим экспортом и требует совпадения хеша', () => {
+    withFaultInjectingMockStorage((ctrl) => {
+      ctrl.store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ name: 'Атлет Экспорт', age: 35 });
+      ctrl.store.set(PENDING_ROLLBACK_KEY, '{"pending":"data"}');
+
+      // 41a. Сброс без экспорта
+      const noExport = resetRecoveryStateOnly({ backupConfirmed: true, userConfirmed: true });
+      assert(noExport.ok === false, 'Сброс без экспорта должен быть заблокирован');
+
+      // 41b. Экспорт сделан, но затем хранилище изменилось (устаревший экспорт)
+      exportAllStorageRawSnapshot();
+      ctrl.store.set('form_user_profile', JSON.stringify({ name: 'Изменено после экспорта', age: 36 }));
+
+      const outdatedExport = resetRecoveryStateOnly({ backupConfirmed: true, userConfirmed: true });
+      assert(outdatedExport.ok === false, 'Сброс с устаревшим экспортом должен быть заблокирован');
+      assert(Boolean(outdatedExport.error && outdatedExport.error.includes('устарела')), 'Ошибка должна указывать на устаревание резервной копии');
+
+      // 41c. Свежий экспорт -> сброс успешен
+      exportAllStorageRawSnapshot();
+      const freshExport = resetRecoveryStateOnly({ backupConfirmed: true, userConfirmed: true });
+      assert(freshExport.ok === true, 'Сброс со свежим актуальным экспортом должен пройти успешно');
+    });
+
+    return 'Сброс требует актуального экспорта данных без изменения хранилища';
+  });
+
+  // 42. Очистка служебных ключей и перепроверка удаления всех трёх ключей
+  test('Надёжность хранения (Ревью 4)', 'Сбой removeItem на каждом из трёх служебных ключей возвращает ошибку и не ломает повтор', () => {
+    const keysToCheck = [PENDING_ROLLBACK_KEY, ROLLBACK_SNAPSHOT_KEY, ROLLBACK_SNAPSHOT_STAGING_KEY];
+
+    for (const failKey of keysToCheck) {
+      withFaultInjectingMockStorage((ctrl) => {
+        ctrl.store.set('form_schema_version_v1', '11');
+        ctrl.store.set(PENDING_ROLLBACK_KEY, '{"pending":1}');
+        ctrl.store.set(ROLLBACK_SNAPSHOT_KEY, '{"snap":1}');
+        ctrl.store.set(ROLLBACK_SNAPSHOT_STAGING_KEY, '{"stage":1}');
+        exportAllStorageRawSnapshot();
+
+        ctrl.setRemoveIntercept((k) =>
+          k === failKey ? { action: 'throw', message: `Fail removing ${failKey}` } : { action: 'allow' }
+        );
+
+        const res = resetRecoveryStateOnly({ backupConfirmed: true, userConfirmed: true });
+        ctrl.setRemoveIntercept(null);
+
+        assert(res.ok === false, `Сбой удаления ключевого элемента ${failKey} должен возвращать ошибку`);
+
+        // Повторный вызов без сбоя должен успешно завершиться
+        exportAllStorageRawSnapshot();
+        const retryRes = resetRecoveryStateOnly({ backupConfirmed: true, userConfirmed: true });
+        assert(retryRes.ok === true, 'Повторный сброс после устранения сбоя должен проходить успешно');
+        assert(ctrl.store.get(PENDING_ROLLBACK_KEY) === undefined, 'Все служебные ключи очищены');
+      });
+    }
+
+    return 'Сбой удаления любого из трёх служебных ключей корректно отрабатывается с возможностью повтора';
   });
 
   const passed = results.filter((r) => r.passed).length;
