@@ -190,7 +190,7 @@ export function generateLocalTemplateProgram(
       requiredEquipment: chosen.requiredEquipment,
       sets: targetSets,
       reps: targetReps,
-      targetWeight: chosen.isBodyweight ? 0 : chosen.defaultWeight,
+      targetWeight: 0,
       restSeconds: restSec,
       technique: chosen.technique || 'Выполняйте в контролируемом темпе с правильной осанкой.',
     };

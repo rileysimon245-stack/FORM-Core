@@ -291,7 +291,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
   const handleAddFromCatalog = (item: any) => {
     const defaultSetsCount = item.defaultSets || 4;
     const defaultRepsCount = item.defaultReps || 12;
-    const defaultWeightVal = item.defaultWeight || (item.isBodyweight ? 0 : 80);
+    const defaultWeightVal = 0;
     const restSec = item.defaultRestSeconds || 90;
     const normPrimary =
       normalizeMuscleKeyPure(item.primaryMuscle) || item.primaryMuscle || 'quads_rectus';

@@ -235,10 +235,11 @@ function MainAppContent() {
   const handleStartProgramWorkout = (
     day: ProgramWorkoutDay,
     programName: string,
-    programId?: string
+    programId?: string,
+    overrideDate?: string
   ) => {
     const now = new Date();
-    const todayStr = formatLocalIsoDate(now);
+    const todayStr = overrideDate || formatLocalIsoDate(now);
     const customExercises = StorageService.getCustomExercises();
 
     // Create an immutable snapshot of the program day and planned exercises
@@ -314,9 +315,9 @@ function MainAppContent() {
   };
 
   // Quick start blank workout
-  const handleStartCustomQuickWorkout = () => {
+  const handleStartCustomQuickWorkout = (overrideDate?: string) => {
     const now = new Date();
-    const todayStr = formatLocalIsoDate(now);
+    const todayStr = overrideDate || formatLocalIsoDate(now);
     const quickSession: WorkoutSession = {
       id: `session_${Date.now()}`,
       name: 'Свободная тренировка',
@@ -391,16 +392,13 @@ function MainAppContent() {
   // Start workout directly on selected date
   const handleStartWorkoutOnSelectedDay = () => {
     if (!inspectingDay) return;
-    const day = programs[0]?.workouts[0] || {
-      id: 'quick_day',
-      dayName: 'Тренировка дня',
-      targetMuscleGroups: ['chest' as MuscleGroup],
-      estimatedDuration: 55,
-      exercises: [
-        { name: 'Жим штанги лежа', targetMuscle: 'chest' as MuscleGroup, isBodyweight: false, sets: 4, reps: 8, targetWeight: 75, restSeconds: 90 },
-      ],
-    };
-    handleStartProgramWorkout(day, programs[0]?.name || 'FORM', programs[0]?.id);
+    const targetDate = inspectingDay.dateStr;
+    const firstWorkout = programs[0]?.workouts[0];
+    if (firstWorkout) {
+      handleStartProgramWorkout(firstWorkout, programs[0]?.name || 'FORM', programs[0]?.id, targetDate);
+    } else {
+      handleStartCustomQuickWorkout(targetDate);
+    }
     setInspectingDay(null);
   };
 

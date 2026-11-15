@@ -15,6 +15,28 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script>
+      try {
+        if (window.parent && window.parent !== window) {
+          try {
+            void window.parent.location.href;
+          } catch (err) {
+            Object.defineProperty(window, 'parent', {
+              get: function() { return window; },
+              configurable: true
+            });
+            Object.defineProperty(window, 'top', {
+              get: function() { return window; },
+              configurable: true
+            });
+            Object.defineProperty(window, 'frames', {
+              get: function() { return window; },
+              configurable: true
+            });
+          }
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body class="bg-[#080D0E] text-[#E8E9E7] antialiased selection:bg-[#58C995] selection:text-black overflow-x-hidden font-sans">
     <div id="root"></div>

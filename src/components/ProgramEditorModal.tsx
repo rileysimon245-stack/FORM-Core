@@ -209,7 +209,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
       requiredEquipment: selected.requiredEquipment,
       sets: prevEx.sets || selected.defaultSets || 3,
       reps: prevEx.reps || selected.defaultReps || 10,
-      targetWeight: selected.isBodyweight ? 0 : (prevEx.targetWeight || selected.defaultWeight || 0),
+      targetWeight: selected.isBodyweight ? 0 : (prevEx.targetWeight || 0),
       restSeconds: prevEx.restSeconds || selected.defaultRestSeconds || 75,
       technique: selected.technique || '',
       notes: prevEx.notes,
@@ -232,7 +232,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
       requiredEquipment: selected.requiredEquipment,
       sets: selected.defaultSets || 3,
       reps: selected.defaultReps || 10,
-      targetWeight: selected.isBodyweight ? 0 : (selected.defaultWeight || 0),
+      targetWeight: 0,
       restSeconds: selected.defaultRestSeconds || 75,
       technique: selected.technique || '',
     });

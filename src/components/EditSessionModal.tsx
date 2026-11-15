@@ -107,7 +107,7 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
   const handleAddExerciseFromCatalog = (catalogItem: any) => {
     const defaultSetsCount = catalogItem.defaultSets || 3;
     const defaultRepsCount = catalogItem.defaultReps || 10;
-    const defaultWeightVal = catalogItem.defaultWeight || 0;
+    const defaultWeightVal = 0;
     const restSec = catalogItem.defaultRestSeconds || 75;
 
     const newEx: WorkoutExercise = {
