@@ -52,7 +52,7 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
     const lastSet = curSets[curSets.length - 1];
     const newSet: ExerciseSet = {
       setNumber: curSets.length + 1,
-      weightKg: lastSet ? lastSet.weightKg : (next[exIdx].isBodyweight ? 0 : 50),
+      weightKg: lastSet ? (lastSet.weightKg ?? 0) : 0,
       reps: lastSet ? lastSet.reps : 10,
       completed: true,
     };

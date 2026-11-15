@@ -267,14 +267,14 @@ export const ActiveExerciseCard: React.FC<ActiveExerciseCardProps> = ({
     const curSets = exercise.sets;
     const lastSet = curSets[curSets.length - 1];
 
-    let newWeight = 50;
+    let newWeight = 0;
     let newReps = 10;
 
     if (lastSet) {
-      newWeight = lastSet.weightKg;
+      newWeight = lastSet.weightKg ?? 0;
       newReps = lastSet.reps;
     } else if (previousResult && previousResult.sets.length > 0) {
-      newWeight = previousResult.sets[0].weightKg;
+      newWeight = previousResult.sets[0].weightKg ?? 0;
       newReps = previousResult.sets[0].reps;
     } else if (exercise.isBodyweight) {
       newWeight = 0;
