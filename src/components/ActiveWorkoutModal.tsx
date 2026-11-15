@@ -7,9 +7,10 @@ import {
   PersonalRecordInfo,
   MUSCLE_DEFINITIONS,
 } from '../types/workout';
-import { StorageService } from '../services/storage';
+import { StorageService, resolveInitialExerciseSets } from '../services/storage';
 import { SafeWriteResult } from '../services/migrations';
 import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
+import { calculateWorkoutMetrics } from '../training-core/coreMath';
 import { normalizeMuscleKeyPure, normalizeMuscleListPure } from '../training-core/muscles';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { Modal, ConfirmModal, PromptModal } from './common/Modal';
@@ -291,7 +292,6 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
   const handleAddFromCatalog = (item: any) => {
     const defaultSetsCount = item.defaultSets || 4;
     const defaultRepsCount = item.defaultReps || 12;
-    const defaultWeightVal = 0;
     const restSec = item.defaultRestSeconds || 90;
     const normPrimary =
       normalizeMuscleKeyPure(item.primaryMuscle) || item.primaryMuscle || 'quads_rectus';
@@ -309,12 +309,15 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       requiredEquipment: item.requiredEquipment,
       technique: item.technique,
       restSeconds: restSec,
-      sets: Array.from({ length: defaultSetsCount }).map((_, idx) => ({
-        setNumber: idx + 1,
-        weightKg: defaultWeightVal,
-        reps: defaultRepsCount,
-        completed: false,
-      })),
+      sets: resolveInitialExerciseSets({
+        exerciseName: item.name,
+        exerciseId: item.id,
+        targetMuscle: normPrimary,
+        setsCount: defaultSetsCount,
+        defaultReps: defaultRepsCount,
+        explicitTargetWeight: null,
+        isBodyweight: Boolean(item.isBodyweight),
+      }),
     };
 
     setExercises((prev) => [...prev, newEx]);
@@ -322,46 +325,17 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     vibrateDevice(50);
   };
 
+  const getSessionMetrics = () =>
+    calculateWorkoutMetrics(exercises, StorageService.getProfile().weightKg);
+
   // Calculate volume
-  const calculateTotalVolume = () => {
-    let volume = 0;
-    exercises.forEach((ex) => {
-      if (!ex.skipped) {
-        ex.sets.forEach((s) => {
-          if (s.completed && !ex.isBodyweight) {
-            volume += (s.weightKg || 0) * (s.reps || 0);
-          }
-        });
-      }
-    });
-    return Math.round(volume);
-  };
+  const calculateTotalVolume = () => getSessionMetrics().totalVolumeKg;
 
   // Calculate completed sets
-  const calculateCompletedSets = () => {
-    let count = 0;
-    exercises.forEach((ex) => {
-      if (!ex.skipped) {
-        ex.sets.forEach((s) => {
-          if (s.completed) count++;
-        });
-      }
-    });
-    return count;
-  };
+  const calculateCompletedSets = () => getSessionMetrics().completedSets;
 
   // Calculate total reps
-  const calculateTotalReps = () => {
-    let count = 0;
-    exercises.forEach((ex) => {
-      if (!ex.skipped) {
-        ex.sets.forEach((s) => {
-          if (s.completed) count += (s.reps || 0);
-        });
-      }
-    });
-    return count;
-  };
+  const calculateTotalReps = () => getSessionMetrics().totalReps;
 
   const totalPossibleSets = exercises.reduce((acc, ex) => acc + (ex.skipped ? 0 : ex.sets.length), 0);
   const completedSetsCount = calculateCompletedSets();
@@ -397,6 +371,10 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
 
   const handleConfirmFinish = () => {
     setSaveError(null);
+    const currentBodyWeight = Number(StorageService.getProfile().weightKg);
+    const bodyWeightKgAtWorkout =
+      Number.isFinite(currentBodyWeight) && currentBodyWeight > 0 ? currentBodyWeight : null;
+
     const finalSession: WorkoutSession = {
       ...session,
       exercises,
@@ -404,6 +382,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       totalVolumeKg: calculateTotalVolume(),
       completedSets: completedSetsCount,
       totalReps: calculateTotalReps(),
+      bodyWeightKgAtWorkout,
       notes: sessionNotes,
       status: 'completed',
       completedAt: Date.now(),

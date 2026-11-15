@@ -96,8 +96,8 @@ export const ProfileTab: React.FC<ProfileTabProps> = ({
   );
   const totalCompletedCount = completedSessions.length;
   const totalTonnageKg = useMemo(
-    () => completedSessions.reduce((acc, s) => acc + (s.totalVolumeKg || 0), 0),
-    [completedSessions]
+    () => completedSessions.reduce((acc, s) => acc + StorageService.getSessionVolumeKg(s, profile.weightKg), 0),
+    [completedSessions, profile.weightKg]
   );
   const totalTons = totalTonnageKg > 0 ? (totalTonnageKg / 1000).toFixed(1) : '0';
 

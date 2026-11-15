@@ -5,8 +5,9 @@ import {
   ExerciseSet,
   MuscleGroup,
 } from '../types/workout';
-import { StorageService } from '../services/storage';
+import { StorageService, resolveSessionBodyWeightKg } from '../services/storage';
 import { getUnifiedCatalog } from '../training-core/catalog';
+import { calculateWorkoutMetrics } from '../training-core/coreMath';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { ConfirmModal } from './common/Modal';
 import {
@@ -135,20 +136,12 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
       return;
     }
 
-    // Recalculate metrics
-    let totalVolume = 0;
-    let completedSetsCount = 0;
-    let totalRepsCount = 0;
-
-    exercises.forEach((ex) => {
-      ex.sets.forEach((set) => {
-        if (set.completed) {
-          completedSetsCount++;
-          totalRepsCount += set.reps;
-          totalVolume += (ex.isBodyweight ? 75 : set.weightKg) * set.reps;
-        }
-      });
-    });
+    // Recalculate metrics via unified load mechanism respecting historical session body weight
+    const resolvedBodyWeight = resolveSessionBodyWeightKg(
+      session,
+      StorageService.getProfile().weightKg
+    );
+    const metrics = calculateWorkoutMetrics(exercises, resolvedBodyWeight);
 
     const updated: WorkoutSession = {
       ...session,
@@ -157,9 +150,9 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
       durationMinutes: Number(durationMinutes) || 45,
       notes: notes.trim(),
       exercises,
-      totalVolumeKg: Math.round(totalVolume),
-      completedSets: completedSetsCount,
-      totalReps: totalRepsCount,
+      totalVolumeKg: metrics.totalVolumeKg,
+      completedSets: metrics.completedSets,
+      totalReps: metrics.totalReps,
       status: 'completed',
     };
 

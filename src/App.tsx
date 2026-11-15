@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { StorageService } from './services/storage';
+import { StorageService, resolveInitialExerciseSets } from './services/storage';
 import { SafeWriteResult, StartupRecoveryResolution } from './services/migrations';
 import { findExerciseInUnifiedCatalog } from './training-core/catalog';
 import { normalizeMuscleKeyPure, normalizeMuscleListPure } from './training-core/muscles';
@@ -300,12 +300,15 @@ function MainAppContent() {
           requiredEquipment: ex.requiredEquipment || catalogEntry?.requiredEquipment,
           restSeconds: ex.restSeconds || 90,
           technique: ex.technique || catalogEntry?.technique,
-          sets: Array.from({ length: ex.sets || 3 }).map((_, sIdx) => ({
-            setNumber: sIdx + 1,
-            weightKg: ex.isBodyweight ? 0 : (ex.targetWeight || 0),
-            reps: ex.reps || 10,
-            completed: false,
-          })),
+          sets: resolveInitialExerciseSets({
+            exerciseName: ex.name,
+            exerciseId: ex.exerciseId || catalogEntry?.id || null,
+            targetMuscle: resolvedPrimary,
+            setsCount: ex.sets || 3,
+            defaultReps: ex.reps || 10,
+            explicitTargetWeight: ex.targetWeight,
+            isBodyweight: Boolean(ex.isBodyweight),
+          }),
         };
       }),
     };

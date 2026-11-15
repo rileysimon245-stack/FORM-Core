@@ -560,6 +560,8 @@ export interface WorkoutSession {
   totalVolumeKg: number;
   completedSets: number;
   totalReps?: number;
+  /** Масса тела пользователя (кг) на момент завершения тренировки; undefined для старых записей без снимка, null если вес не был указан */
+  bodyWeightKgAtWorkout?: number | null;
   notes?: string;
   status: 'completed' | 'in_progress' | 'skipped';
   personalRecords?: PersonalRecordInfo[];

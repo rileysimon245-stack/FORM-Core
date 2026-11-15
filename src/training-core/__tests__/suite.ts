@@ -10,6 +10,10 @@ import {
   isConservativeAgeMode,
   calculateSportLoad,
   mapLegacySportIntensityToRpe,
+  getBodyweightEquivalentKg,
+  calculateSetLoad,
+  calculateExerciseVolumeKg,
+  calculateWorkoutMetrics,
 } from '../coreMath';
 import { evaluateSafetyGuard } from '../safetyGuard';
 import {
@@ -58,7 +62,12 @@ import {
   ROLLBACK_SNAPSHOT_STAGING_KEY,
   type SafeWriteResult,
 } from '../../services/migrations';
-import { StorageService } from '../../services/storage';
+import {
+  StorageService,
+  resolveInitialExerciseSets,
+  resolveSessionBodyWeightKg,
+} from '../../services/storage';
+import { STRENGTH_PROGRAMS, MOBILITY_PROGRAMS } from '../../data/directionsCatalog';
 import { FullExerciseItem } from '../../data/exerciseTypes';
 import { ActivityIntensity } from '../../types/workout';
 
@@ -2361,6 +2370,1505 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
     }
 
     return 'Сбой удаления любого из трёх служебных ключей корректно отрабатывается с возможностью повтора';
+  });
+
+  // === ТЕСТЫ СИСТЕМЫ РАБОЧИХ ВЕСОВ И ИСТОРИИ УПРАЖНЕНИЙ ===
+
+  // 43. Новое упражнение без истории получает 0 кг; готовые программы не содержат ненулевых весов
+  test('Рабочие веса и история', 'Новое упражнение без истории получает 0 кг; готовые программы не содержат предустановленных весов', () => {
+    const allCatalogPrograms = [...STRENGTH_PROGRAMS, ...MOBILITY_PROGRAMS];
+    assert(allCatalogPrograms.length > 0, 'Каталог программ должен содержать программы');
+    for (const prog of allCatalogPrograms) {
+      for (const workout of prog.workouts || []) {
+        for (const ex of workout.exercises || []) {
+          assert(
+            ex.targetWeight === undefined || ex.targetWeight === 0,
+            `Упражнение "${ex.name}" в программе "${prog.name}" имеет предустановленный targetWeight=${ex.targetWeight}`
+          );
+        }
+      }
+    }
+
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+
+      const prev = StorageService.getPreviousExerciseResults('Жим штанги лёжа', {
+        exerciseId: 'barbell_bench_press_flat',
+        targetMuscle: 'chest_mid',
+      });
+      assert(prev === null, 'При отсутствии завершённых тренировок история должна быть null');
+
+      const initSets = resolveInitialExerciseSets({
+        exerciseName: 'Жим штанги лёжа',
+        exerciseId: 'barbell_bench_press_flat',
+        targetMuscle: 'chest_mid',
+        setsCount: 3,
+        defaultReps: 10,
+        explicitTargetWeight: 0,
+        isBodyweight: false,
+      });
+      assert(initSets.length === 3, 'Должно быть сформировано 3 подхода');
+      assert(
+        initSets.every((s) => s.weightKg === 0 && s.reps === 10 && s.completed === false),
+        'Все подходы нового упражнения без истории должны начинаться с 0 кг'
+      );
+    });
+
+    return 'Готовые программы без чужих весов; новое упражнение стартует с 0 кг';
+  });
+
+  // 44. Упражнение с историей получает последний сохранённый вес
+  test('Рабочие веса и история', 'Упражнение с историей получает последний сохранённый вес (старт программы и добавление из каталога)', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      StorageService.saveWorkoutSession({
+        id: 'w_hist_1',
+        name: 'Грудь и трицепс',
+        date: '2026-11-10',
+        startTime: '18:00',
+        durationMinutes: 45,
+        totalVolumeKg: 1500,
+        completedSets: 3,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'ex_local_1',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest_mid',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [
+              { setNumber: 1, weightKg: 60, reps: 10, completed: true },
+              { setNumber: 2, weightKg: 65, reps: 8, completed: true },
+              { setNumber: 3, weightKg: 67.5, reps: 6, completed: true },
+            ],
+          },
+        ],
+      });
+
+      const prev = StorageService.getPreviousExerciseResults('Жим штанги лёжа', {
+        exerciseId: 'barbell_bench_press_flat',
+        targetMuscle: 'chest_mid',
+      });
+      assert(prev !== null, 'История для упражнения должна быть найдена');
+      assert(prev!.lastWeightKg === 67.5, `Ожидался последний вес 67.5 кг, получено ${prev!.lastWeightKg}`);
+      assert(prev!.sets.length === 3, 'Должны вернуться все 3 выполненных подхода');
+
+      // Запуск по программе без ручного targetWeight (targetWeight=0, 4 подхода)
+      const progSets = resolveInitialExerciseSets({
+        exerciseName: 'Жим штанги лёжа',
+        exerciseId: 'barbell_bench_press_flat',
+        targetMuscle: 'chest_mid',
+        setsCount: 4,
+        defaultReps: 8,
+        explicitTargetWeight: 0,
+        isBodyweight: false,
+      });
+      assert(
+        progSets.map((s) => s.weightKg).join(',') === '60,65,67.5,67.5',
+        `Ожидались веса 60,65,67.5,67.5, получено ${progSets.map((s) => s.weightKg).join(',')}`
+      );
+
+      // Добавление из каталога в активную тренировку (explicitTargetWeight=null)
+      const catalogSets = resolveInitialExerciseSets({
+        exerciseName: 'Жим штанги лёжа',
+        exerciseId: 'barbell_bench_press_flat',
+        targetMuscle: 'chest_mid',
+        setsCount: 3,
+        defaultReps: 10,
+        explicitTargetWeight: null,
+        isBodyweight: false,
+      });
+      assert(
+        catalogSets.map((s) => s.weightKg).join(',') === '60,65,67.5',
+        'Добавление из каталога должно подтягивать последние сохранённые веса по подходам'
+      );
+    });
+
+    return 'Последний сохранённый вес корректно подставляется при старте программы и добавлении из каталога';
+  });
+
+  // 45. При нескольких тренировках выбирается самая новая по дате и времени, независимо от порядка в массиве
+  test('Рабочие веса и история', 'При нескольких тренировках выбирается самая новая по дате, startTime и completedAt, а не по индексу массива', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+
+      // Записываем массив в «перепутанном» порядке: старая дата первой, самая новая — в конце
+      store.set(
+        'form_workout_sessions',
+        JSON.stringify([
+          {
+            id: 'w_old',
+            name: 'Старая',
+            date: '2026-11-01',
+            startTime: '20:00',
+            completedAt: 1000,
+            durationMinutes: 40,
+            totalVolumeKg: 800,
+            completedSets: 1,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e1',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 80, reps: 10, completed: true }],
+              },
+            ],
+          },
+          {
+            id: 'w_same_day_morning',
+            name: 'Утренняя',
+            date: '2026-11-12',
+            startTime: '9:05',
+            completedAt: 2000,
+            durationMinutes: 40,
+            totalVolumeKg: 700,
+            completedSets: 1,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e2',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 70, reps: 10, completed: true }],
+              },
+            ],
+          },
+          {
+            id: 'w_same_day_evening',
+            name: 'Вечерняя самая новая',
+            date: '2026-11-12',
+            startTime: '19:15',
+            completedAt: 3000,
+            durationMinutes: 40,
+            totalVolumeKg: 750,
+            completedSets: 1,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e3',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 75, reps: 10, completed: true }],
+              },
+            ],
+          },
+        ])
+      );
+
+      const res = StorageService.getPreviousExerciseResults('Жим штанги лёжа', {
+        exerciseId: 'barbell_bench_press_flat',
+      });
+      assert(res !== null && res.sessionId === 'w_same_day_evening', `Должна быть выбрана w_same_day_evening, выбрана ${res?.sessionId}`);
+      assert(res!.lastWeightKg === 75, `Ожидалось 75 кг, получено ${res!.lastWeightKg}`);
+
+      // Также проверяем выбор по completedAt при одинаковых date и startTime (даже если более новая ниже в массиве)
+      store.set(
+        'form_workout_sessions',
+        JSON.stringify([
+          {
+            id: 'w_t1',
+            name: 'Первая',
+            date: '2026-11-12',
+            startTime: '18:00',
+            completedAt: 10000,
+            durationMinutes: 30,
+            totalVolumeKg: 500,
+            completedSets: 1,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e_t1',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 62.5, reps: 8, completed: true }],
+              },
+            ],
+          },
+          {
+            id: 'w_t2',
+            name: 'Вторая позднее по completedAt',
+            date: '2026-11-12',
+            startTime: '18:00',
+            completedAt: 20000,
+            durationMinutes: 30,
+            totalVolumeKg: 600,
+            completedSets: 1,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e_t2',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 68, reps: 8, completed: true }],
+              },
+            ],
+          },
+        ])
+      );
+
+      const resByComp = StorageService.getPreviousExerciseResults('Жим штанги лёжа', {
+        exerciseId: 'barbell_bench_press_flat',
+      });
+      assert(resByComp !== null && resByComp.sessionId === 'w_t2' && resByComp.lastWeightKg === 68, 'При равных дате и времени должна побеждать более поздняя по completedAt');
+    });
+
+    return 'Хронологический выбор всегда берёт самую свежую завершённую тренировку';
+  });
+
+  // 46. Незавершённая тренировка и невыполненные/пропущенные подходы не влияют на историю
+  test('Рабочие веса и история', 'Незавершённые (in_progress/skipped) тренировки и пропущенные подходы не влияют на историю', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      store.set(
+        'form_workout_sessions',
+        JSON.stringify([
+          {
+            id: 'w_done_older',
+            name: 'Завершённая',
+            date: '2026-11-08',
+            startTime: '18:00',
+            completedAt: 1000,
+            durationMinutes: 40,
+            totalVolumeKg: 625,
+            completedSets: 1,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e1',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 62.5, reps: 10, completed: true }],
+              },
+            ],
+          },
+          {
+            id: 'w_in_progress_newer',
+            name: 'Незавершённая',
+            date: '2026-11-14',
+            startTime: '18:00',
+            completedAt: 2000,
+            durationMinutes: 15,
+            totalVolumeKg: 950,
+            completedSets: 1,
+            status: 'in_progress',
+            exercises: [
+              {
+                id: 'e2',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 95, reps: 10, completed: true }],
+              },
+            ],
+          },
+          {
+            id: 'w_skipped_newer',
+            name: 'Пропущенная',
+            date: '2026-11-15',
+            startTime: '18:00',
+            completedAt: 3000,
+            durationMinutes: 0,
+            totalVolumeKg: 0,
+            completedSets: 0,
+            status: 'skipped',
+            exercises: [
+              {
+                id: 'e3',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 100, reps: 10, completed: true }],
+              },
+            ],
+          },
+          {
+            id: 'w_done_uncompleted_sets',
+            name: 'Завершена без подходов упражнения',
+            date: '2026-11-16',
+            startTime: '18:00',
+            completedAt: 4000,
+            durationMinutes: 35,
+            totalVolumeKg: 0,
+            completedSets: 0,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e4',
+                exerciseId: 'barbell_bench_press_flat',
+                name: 'Жим штанги лёжа',
+                sets: [{ setNumber: 1, weightKg: 110, reps: 8, completed: false }],
+              },
+            ],
+          },
+        ])
+      );
+
+      const res = StorageService.getPreviousExerciseResults('Жим штанги лёжа', {
+        exerciseId: 'barbell_bench_press_flat',
+      });
+      assert(res !== null && res.sessionId === 'w_done_older', `Ожидалась w_done_older, получена ${res?.sessionId}`);
+      assert(res!.lastWeightKg === 62.5, `Вес из незавершённых/невыполненных сессий не должен попадать в историю: получено ${res!.lastWeightKg}`);
+    });
+
+    return 'Черновики, skipped и невыполненные подходы полностью игнорируются';
+  });
+
+  // 47. 0 кг обрабатывается корректно как валидный вес и не считается отсутствующим
+  test('Рабочие веса и история', 'Вес 0 кг в более новой завершённой тренировке сохраняется как история и не откатывается к старому весу', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      store.set(
+        'form_workout_sessions',
+        JSON.stringify([
+          {
+            id: 'w_old_80',
+            name: 'Старая 80 кг',
+            date: '2026-11-01',
+            startTime: '18:00',
+            completedAt: 1000,
+            durationMinutes: 40,
+            totalVolumeKg: 800,
+            completedSets: 1,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e1',
+                exerciseId: 'pullups_classic',
+                name: 'Подтягивания',
+                isBodyweight: true,
+                sets: [{ setNumber: 1, weightKg: 80, reps: 8, completed: true }],
+              },
+            ],
+          },
+          {
+            id: 'w_new_zero',
+            name: 'Новая без отягощения (0 кг)',
+            date: '2026-11-12',
+            startTime: '18:00',
+            completedAt: 2000,
+            durationMinutes: 40,
+            totalVolumeKg: 0,
+            completedSets: 2,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e2',
+                exerciseId: 'pullups_classic',
+                name: 'Подтягивания',
+                isBodyweight: true,
+                sets: [
+                  { setNumber: 1, weightKg: 0, reps: 10, completed: true },
+                  { setNumber: 2, weightKg: 0, reps: 9, completed: true },
+                ],
+              },
+            ],
+          },
+        ])
+      );
+
+      const res = StorageService.getPreviousExerciseResults('Подтягивания', {
+        exerciseId: 'pullups_classic',
+      });
+      assert(res !== null && res.sessionId === 'w_new_zero', 'Должна выбираться более новая тренировка с 0 кг');
+      assert(res!.lastWeightKg === 0, `0 кг должен возвращаться как валидный вес, получено ${res!.lastWeightKg}`);
+      assert(res!.sets.every((s) => s.weightKg === 0), 'Все подходы должны иметь weightKg === 0');
+
+      const resolved = resolveInitialExerciseSets({
+        exerciseName: 'Подтягивания',
+        exerciseId: 'pullups_classic',
+        setsCount: 3,
+        defaultReps: 10,
+        explicitTargetWeight: 0,
+        isBodyweight: true,
+      });
+      assert(
+        resolved.every((s) => s.weightKg === 0 && s.previousWeightKg === 0),
+        'resolveInitialExerciseSets обязан сохранять 0 кг из последней истории'
+      );
+    });
+
+    return 'Вес 0 кг не считается отсутствующим и перекрывает более старые ненулевые значения';
+  });
+
+  // 48. Отсутствие истории, похожие названия, позиционные ID и одноимённые упражнения
+  test('Рабочие веса и история', 'Отсутствие истории не даёт ошибок; похожие названия, позиционные ex_0 и разные мышцы не смешиваются', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+
+      // Пустое имя / пустые сессии не вызывают исключений
+      assert(StorageService.getPreviousExerciseResults('') === null, 'Пустое имя возвращает null');
+      assert(StorageService.getPreviousExerciseResults('Несуществующее упражнение') === null, 'Отсутствующая история возвращает null');
+
+      // Два кастомных упражнения с одинаковым названием, но для разных мышечных групп
+      store.set(
+        'form_custom_exercises_v1',
+        JSON.stringify([
+          {
+            id: 'custom_same_chest',
+            name: 'Тяга блока',
+            primaryMuscle: 'chest_mid',
+            secondaryMuscles: [],
+            isCustom: true,
+          },
+          {
+            id: 'custom_same_back',
+            name: 'Тяга блока',
+            primaryMuscle: 'back_lats',
+            secondaryMuscles: [],
+            isCustom: true,
+          },
+        ])
+      );
+
+      store.set(
+        'form_workout_sessions',
+        JSON.stringify([
+          {
+            id: 'w_isolation',
+            name: 'Проверка изоляции',
+            date: '2026-11-11',
+            startTime: '18:00',
+            completedAt: 1000,
+            durationMinutes: 45,
+            totalVolumeKg: 2000,
+            completedSets: 3,
+            status: 'completed',
+            exercises: [
+              {
+                id: 'e_close',
+                name: 'Жим штанги лёжа узким хватом',
+                sets: [{ setNumber: 1, weightKg: 90, reps: 6, completed: true }],
+              },
+              {
+                id: 'e_squat_pos',
+                exerciseId: 'ex_0',
+                name: 'Приседания со штангой',
+                sets: [{ setNumber: 1, weightKg: 110, reps: 5, completed: true }],
+              },
+              {
+                id: 'e_back_block',
+                exerciseId: 'custom_same_back',
+                name: 'Тяга блока',
+                targetMuscle: 'back_lats',
+                sets: [{ setNumber: 1, weightKg: 55, reps: 12, completed: true }],
+              },
+            ],
+          },
+        ])
+      );
+
+      // Похожее название ("Жим штанги лёжа" vs "Жим штанги лёжа узким хватом") НЕ должно совпадать
+      // И позиционный exerciseId: 'ex_0' НЕ должен матчить Приседания со штангой!
+      const similarRes = StorageService.getPreviousExerciseResults('Жим штанги лёжа', {
+        exerciseId: 'ex_0',
+        targetMuscle: 'chest_mid',
+      });
+      assert(similarRes === null, 'Похожее название и позиционный id ex_0 не должны подтягивать вес чужого упражнения');
+
+      // Одноимённые упражнения на разные целевые мышцы не смешиваются
+      const chestBlock = StorageService.getPreviousExerciseResults('Тяга блока', {
+        targetMuscle: 'chest_mid',
+      });
+      assert(chestBlock === null, 'Тяга блока для груди не должна брать вес от Тяги блока для спины');
+
+      const backBlock = StorageService.getPreviousExerciseResults('Тяга блока', {
+        targetMuscle: 'back_lats',
+      });
+      assert(backBlock !== null && backBlock.lastWeightKg === 55, 'Тяга блока для спины должна найти свои 55 кг');
+    });
+
+    return 'Похожие названия, позиционные ex_0 и разные целевые мышцы строго изолированы';
+  });
+
+  // 49. Вес, заданный пользователем в редакторе программы, не перезаписывается историей
+  test('Рабочие веса и история', 'Вес, явно заданный пользователем в редакторе программы, не перезаписывается историей', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      StorageService.saveWorkoutSession({
+        id: 'w_prev_bench',
+        name: 'Прошлая тренировка',
+        date: '2026-11-10',
+        startTime: '18:00',
+        durationMinutes: 40,
+        totalVolumeKg: 600,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e1',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest_mid',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 60, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      const resolved = resolveInitialExerciseSets({
+        exerciseName: 'Жим штанги лёжа',
+        exerciseId: 'barbell_bench_press_flat',
+        targetMuscle: 'chest_mid',
+        setsCount: 3,
+        defaultReps: 8,
+        explicitTargetWeight: 82.5,
+        isBodyweight: false,
+      });
+
+      assert(resolved.length === 3, 'Должно быть 3 подхода');
+      assert(
+        resolved.every((s) => s.weightKg === 82.5),
+        `Явно заданный в программе вес 82.5 кг не должен перезаписываться историей (60 кг): получено ${resolved.map((s) => s.weightKg).join(',')}`
+      );
+    });
+
+    return 'Пользовательский targetWeight > 0 из редактора программы имеет приоритет над историей';
+  });
+
+  // ============================================================================
+  // ЭТАП 2: ЕДИНЫЙ РАСЧЁТ ТРЕНИРОВОЧНОЙ НАГРУЗКИ (ТОННАЖА)
+  // ============================================================================
+
+  // 50. Чистые функции calculateSetLoad и getBodyweightEquivalentKg
+  test('Единый расчёт нагрузки', 'calculateSetLoad: обычные (0 и 20 кг), собственный вес (0 и +15 кг), неизвестный вес и битые значения', () => {
+    // Обычное упражнение с 0 кг -> строго 0 (даже при весе пользователя 80 кг)
+    const regZero = calculateSetLoad({
+      isBodyweight: false,
+      weightKg: 0,
+      reps: 10,
+      userBodyWeightKg: 80,
+    });
+    assert(regZero.effectiveWeightKg === 0 && regZero.volumeKg === 0, 'Обычное с 0 кг должно давать 0 тоннажа');
+
+    // Обычное упражнение с 20 кг -> 200 кг
+    const reg20 = calculateSetLoad({
+      isBodyweight: false,
+      weightKg: 20,
+      reps: 10,
+      userBodyWeightKg: 80,
+    });
+    assert(reg20.effectiveWeightKg === 20 && reg20.volumeKg === 200, 'Обычное 20 кг × 10 должно давать 200 кг');
+
+    // Собственный вес (профиль 80 кг -> эквивалент 40 кг), без доп. веса -> 400 кг
+    assert(getBodyweightEquivalentKg(80) === 40, 'Эквивалент собственного веса для 80 кг должен быть 40 кг');
+    const bwOnly = calculateSetLoad({
+      isBodyweight: true,
+      weightKg: 0,
+      reps: 10,
+      userBodyWeightKg: 80,
+    });
+    assert(
+      bwOnly.bodyweightEquivalentKg === 40 &&
+        bwOnly.additionalWeightKg === 0 &&
+        bwOnly.effectiveWeightKg === 40 &&
+        bwOnly.volumeKg === 400,
+      `Собственный вес 80 кг (50%=40) × 10 должен давать 400, получено ${bwOnly.volumeKg}`
+    );
+
+    // Собственный вес + 15 кг отягощения -> (40 + 15) × 10 = 550 кг
+    const bwPlus15 = calculateSetLoad({
+      isBodyweight: true,
+      weightKg: 15,
+      reps: 10,
+      userBodyWeightKg: 80,
+    });
+    assert(
+      bwPlus15.effectiveWeightKg === 55 && bwPlus15.volumeKg === 550,
+      `Собственный вес 40 + 15 × 10 должен давать 550, получено ${bwPlus15.volumeKg}`
+    );
+
+    // Явный additionalWeightKg не должен складываться дважды с weightKg
+    const bwExplicitAdditional = calculateSetLoad({
+      isBodyweight: true,
+      weightKg: 15,
+      additionalWeightKg: 15,
+      reps: 10,
+      userBodyWeightKg: 80,
+    });
+    assert(
+      bwExplicitAdditional.effectiveWeightKg === 55 && bwExplicitAdditional.volumeKg === 550,
+      'additionalWeightKg не должен давать двойной учёт'
+    );
+
+    // Неизвестный вес пользователя (0, null, undefined, -10, NaN) -> эквивалент 0 (без выдуманных 25 кг)
+    assert(getBodyweightEquivalentKg(0) === 0, 'При 0 кг профиля эквивалент должен быть 0');
+    assert(getBodyweightEquivalentKg(null) === 0, 'При null профиля эквивалент должен быть 0');
+    assert(getBodyweightEquivalentKg(undefined) === 0, 'При undefined профиля эквивалент должен быть 0');
+    assert(getBodyweightEquivalentKg(-70) === 0, 'При отрицательном весе профиля эквивалент должен быть 0');
+    assert(getBodyweightEquivalentKg(Number.NaN) === 0, 'При NaN весе профиля эквивалент должен быть 0');
+
+    const bwUnknownProfileNoExtra = calculateSetLoad({
+      isBodyweight: true,
+      weightKg: 0,
+      reps: 10,
+      userBodyWeightKg: 0,
+    });
+    assert(bwUnknownProfileNoExtra.volumeKg === 0, 'При неизвестном весе тела и 0 доп. веса тоннаж должен быть 0');
+
+    const bwUnknownProfileWith15 = calculateSetLoad({
+      isBodyweight: true,
+      weightKg: 15,
+      reps: 10,
+      userBodyWeightKg: undefined,
+    });
+    assert(
+      bwUnknownProfileWith15.effectiveWeightKg === 15 && bwUnknownProfileWith15.volumeKg === 150,
+      'При неизвестном весе тела, но +15 кг доп. веса тоннаж должен быть 150'
+    );
+
+    // Битые / отрицательные / NaN / Infinity значения
+    const malformed = calculateSetLoad({
+      isBodyweight: false,
+      weightKg: Number.NaN,
+      reps: -5,
+      userBodyWeightKg: Number.POSITIVE_INFINITY,
+    });
+    assert(
+      malformed.effectiveWeightKg === 0 && malformed.reps === 0 && malformed.volumeKg === 0,
+      'NaN и отрицательные значения должны безопасно санитизироваться в 0'
+    );
+
+    const negWeight = calculateSetLoad({
+      isBodyweight: true,
+      weightKg: -10,
+      reps: Number.POSITIVE_INFINITY,
+      userBodyWeightKg: 80,
+    });
+    assert(
+      negWeight.additionalWeightKg === 0 && negWeight.reps === 0 && negWeight.volumeKg === 0,
+      'Отрицательный weightKg и Infinity reps должны давать 0'
+    );
+
+    return 'calculateSetLoad и getBodyweightEquivalentKg корректны для всех сценариев и краевых значений';
+  });
+
+  // 51. calculateWorkoutMetrics и calculateExerciseVolumeKg (много подходов, skipped, незавершённые)
+  test('Единый расчёт нагрузки', 'calculateWorkoutMetrics: учитывает только completed и непропущенные упражнения', () => {
+    const exercises = [
+      {
+        isBodyweight: false,
+        skipped: false,
+        sets: [
+          { setNumber: 1, weightKg: 0, reps: 10, completed: true },
+          { setNumber: 2, weightKg: 20, reps: 10, completed: true },
+          { setNumber: 3, weightKg: 100, reps: 10, completed: false }, // не выполнен
+        ],
+      },
+      {
+        isBodyweight: true,
+        skipped: false,
+        sets: [
+          { setNumber: 1, weightKg: 0, reps: 10, completed: true }, // 40 * 10 = 400
+          { setNumber: 2, weightKg: 15, reps: 10, completed: true }, // 55 * 10 = 550
+        ],
+      },
+      {
+        isBodyweight: false,
+        skipped: true, // пропущено целиком
+        sets: [{ setNumber: 1, weightKg: 80, reps: 10, completed: true }],
+      },
+    ];
+
+    assert(calculateExerciseVolumeKg(exercises[0], 80) === 200, 'Обычное упражнение: 0 + 200 = 200');
+    assert(calculateExerciseVolumeKg(exercises[1], 80) === 950, 'Собственный вес: 400 + 550 = 950');
+    assert(calculateExerciseVolumeKg(exercises[2], 80) === 0, 'Пропущенное упражнение должно давать 0');
+
+    const metrics = calculateWorkoutMetrics(exercises, 80);
+    assert(
+      metrics.totalVolumeKg === 1150 && metrics.completedSets === 4 && metrics.totalReps === 40,
+      `Ожидались 1150 кг / 4 подхода / 40 повторов, получено ${metrics.totalVolumeKg}/${metrics.completedSets}/${metrics.totalReps}`
+    );
+
+    return 'Многоподходный расчёт, фильтр completed и skipped работают единообразно';
+  });
+
+  // 52. Согласованность объёма между calculateWorkoutMetrics, getSessionVolumeKg, getWorkoutAnalytics, getDayActivityData и calculateProgramStats
+  test('Единый расчёт нагрузки', 'Одинаковые данные дают идентичный объём в coreMath, аналитике, активности и статистике программы', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.updateProfile({
+        name: 'Тест',
+        age: 30,
+        heightCm: 180,
+        weightKg: 80,
+        fitnessGoal: 'Сила',
+        experienceLevel: 'Средний',
+      });
+
+      StorageService.saveProgram({
+        id: 'prog_unified_1',
+        name: 'Смешанная программа',
+        description: 'Тест',
+        goal: 'Сила',
+        daysPerWeek: 3,
+        workouts: [],
+        isCustom: true,
+        createdAt: todayIso,
+      });
+
+      const session = {
+        id: 'w_unified_consistency',
+        programId: 'prog_unified_1',
+        programName: 'Смешанная программа',
+        name: 'Смешанная тренировка',
+        date: todayIso,
+        startTime: '18:00',
+        durationMinutes: 45,
+        totalVolumeKg: 99999, // Намеренно устаревшее/неверное сохранённое значение
+        completedSets: 4,
+        totalReps: 40,
+        status: 'completed' as const,
+        exercises: [
+          {
+            id: 'e_reg',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest_mid' as const,
+            secondaryMuscles: [],
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [
+              { setNumber: 1, weightKg: 0, reps: 10, completed: true },
+              { setNumber: 2, weightKg: 20, reps: 10, completed: true },
+            ],
+          },
+          {
+            id: 'e_bw',
+            exerciseId: 'pull_ups',
+            name: 'Подтягивания',
+            targetMuscle: 'lats' as const,
+            secondaryMuscles: [],
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [
+              { setNumber: 1, weightKg: 0, reps: 10, completed: true },
+              { setNumber: 2, weightKg: 15, reps: 10, completed: true },
+            ],
+          },
+        ],
+      };
+
+      StorageService.saveWorkoutSession(session);
+
+      const coreTotal = calculateWorkoutMetrics(session.exercises, 80).totalVolumeKg;
+      const storedList = StorageService.getWorkoutSessions();
+      const dynamicTotal = StorageService.getSessionVolumeKg(storedList[0]);
+      const analytics = StorageService.getWorkoutAnalytics('30d');
+      const dayActivity = StorageService.getDayActivityData(todayIso);
+      const programStats = StorageService.calculateProgramStats('prog_unified_1');
+
+      assert(coreTotal === 1150, `coreMath ожидал 1150, получено ${coreTotal}`);
+      assert(dynamicTotal === 1150, `getSessionVolumeKg ожидал 1150, получено ${dynamicTotal}`);
+      assert(analytics.totalVolumeKg === 1150, `getWorkoutAnalytics ожидал 1150, получено ${analytics.totalVolumeKg}`);
+      assert(dayActivity.totalVolumeKg === 1150, `getDayActivityData ожидал 1150, получено ${dayActivity.totalVolumeKg}`);
+      assert(programStats.totalVolumeKg === 1150, `calculateProgramStats ожидал 1150, получено ${programStats.totalVolumeKg}`);
+    });
+
+    return 'Объём 1150 кг идентичен во всех расчётных модулях';
+  });
+
+  // 53. Обычное упражнение с 0 кг НЕ получает fallbackWeight (25 кг или 50% массы тела) в статистике и диагностике мышц
+  test('Единый расчёт нагрузки', 'Обычное упражнение с 0 кг не получает fallbackWeight (25 кг / 50% веса) в статистике и диагностике мышц', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.updateProfile({
+        name: 'Тест',
+        age: 28,
+        heightCm: 178,
+        weightKg: 80,
+        fitnessGoal: 'Сила',
+        experienceLevel: 'Новичок',
+      });
+
+      StorageService.saveWorkoutSession({
+        id: 'w_zero_reg',
+        name: 'Жим с нулевым весом',
+        date: todayIso,
+        startTime: '12:00',
+        durationMinutes: 25,
+        totalVolumeKg: 0,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e1',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest_mid',
+            secondaryMuscles: ['triceps'],
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 0, reps: 12, completed: true }],
+          },
+        ],
+      });
+
+      const stats = StorageService.getMuscleStats('7d');
+      const diag = StorageService.getDetailedMuscleDiagnostics('chest_mid', '7d');
+
+      assert(stats.chest_mid.weeklyTonnageKg === 0, `Ожидался 0 кг в stats.chest_mid, получено ${stats.chest_mid.weeklyTonnageKg}`);
+      assert(stats.chest_mid.percent === 0, `Ожидался 0% в stats.chest_mid при нулевом тоннаже, получено ${stats.chest_mid.percent}`);
+      assert(diag.totalEffectiveTonnage === 0, `Ожидался 0 кг в диагностике, получено ${diag.totalEffectiveTonnage}`);
+      assert(diag.effectivePercent === 0, `Ожидался 0% в диагностике при 0 кг, получено ${diag.effectivePercent}`);
+      assert(diag.setsDetails.length === 1 && diag.setsDetails[0].usedWeightKg === 0, 'usedWeightKg должен быть 0');
+      assert(diag.setsDetails[0].isBodyweightFallback === false, 'isBodyweightFallback должен быть false для обычного упражнения');
+    });
+
+    return 'Обычное упражнение с 0 кг даёт 0 кг и 0% нагрузки без fallbackWeight';
+  });
+
+  // 54. Упражнения с собственным весом: без отягощения, с +15 кг и при неизвестном весе тела
+  test('Единый расчёт нагрузки', 'getMuscleStats и getDetailedMuscleDiagnostics: собственный вес + доп. отягощение и неизвестный вес тела', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+
+      // Сценарий А: вес тела 80 кг (эквивалент 40 кг)
+      StorageService.updateProfile({
+        name: 'Атлет',
+        age: 29,
+        heightCm: 180,
+        weightKg: 80,
+        fitnessGoal: 'Мышцы',
+        experienceLevel: 'Средний',
+      });
+
+      StorageService.saveWorkoutSession({
+        id: 'w_bw_cases',
+        name: 'Турник',
+        date: todayIso,
+        startTime: '17:00',
+        durationMinutes: 30,
+        totalVolumeKg: 950,
+        completedSets: 2,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_pullups',
+            exerciseId: 'pull_ups',
+            name: 'Подтягивания',
+            targetMuscle: 'lats',
+            secondaryMuscles: ['biceps'],
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [
+              { setNumber: 1, weightKg: 0, reps: 10, completed: true }, // 40 * 10 = 400
+              { setNumber: 2, weightKg: 15, reps: 10, completed: true }, // (40 + 15) * 10 = 550
+            ],
+          },
+        ],
+      });
+
+      const statsKnown = StorageService.getMuscleStats('7d');
+      const diagKnown = StorageService.getDetailedMuscleDiagnostics('lats', '7d');
+      assert(statsKnown.lats.weeklyTonnageKg === 950, `Ожидалось 950 кг для lats, получено ${statsKnown.lats.weeklyTonnageKg}`);
+      assert(diagKnown.totalEffectiveTonnage === 950, `Диагностика должна вернуть 950 кг, получено ${diagKnown.totalEffectiveTonnage}`);
+      assert(diagKnown.setsDetails[0].usedWeightKg === 40 && diagKnown.setsDetails[1].usedWeightKg === 55, 'Подходы должны использовать 40 и 55 кг');
+
+      // Сценарий Б: новая тренировка при неизвестной массе тела (0 кг) -> 0 * 10 + 15 * 10 = 150 кг (без выдуманных 25 кг)
+      StorageService.deleteWorkoutSession('w_bw_cases');
+      StorageService.updateProfile({
+        name: 'Атлет',
+        age: 29,
+        heightCm: 180,
+        weightKg: 0,
+        fitnessGoal: 'Мышцы',
+        experienceLevel: 'Средний',
+      });
+      StorageService.saveWorkoutSession({
+        id: 'w_bw_cases_unknown',
+        name: 'Турник (неизвестный вес тела)',
+        date: todayIso,
+        startTime: '18:00',
+        durationMinutes: 30,
+        totalVolumeKg: 150,
+        completedSets: 2,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_pullups_2',
+            exerciseId: 'pull_ups',
+            name: 'Подтягивания',
+            targetMuscle: 'lats',
+            secondaryMuscles: ['biceps'],
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [
+              { setNumber: 1, weightKg: 0, reps: 10, completed: true },
+              { setNumber: 2, weightKg: 15, reps: 10, completed: true },
+            ],
+          },
+        ],
+      });
+
+      const statsUnknown = StorageService.getMuscleStats('7d');
+      const diagUnknown = StorageService.getDetailedMuscleDiagnostics('lats', '7d');
+      assert(statsUnknown.lats.weeklyTonnageKg === 150, `При неизвестном весе тела ожидалось 150 кг, получено ${statsUnknown.lats.weeklyTonnageKg}`);
+      assert(diagUnknown.totalEffectiveTonnage === 150, `Диагностика при 0 кг профиля должна вернуть 150 кг, получено ${diagUnknown.totalEffectiveTonnage}`);
+      assert(diagUnknown.setsDetails[0].isBodyweightFallback === false, 'При 0 кг профиля isBodyweightFallback должен быть false');
+    });
+
+    return 'Собственный вес + дополнительное отягощение и неизвестный вес тела считаются одинаково в stats и diagnostics';
+  });
+
+  // 55. Согласованность skipped, вторичных мышц (0.45) и алиасов между getMuscleStats и getDetailedMuscleDiagnostics
+  test('Единый расчёт нагрузки', 'getMuscleStats и getDetailedMuscleDiagnostics одинаково фильтруют skipped и считают вторичные мышцы (0.45)', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.saveWorkoutSession({
+        id: 'w_diag_parity',
+        name: 'Жим + пропущенное',
+        date: todayIso,
+        startTime: '19:00',
+        durationMinutes: 40,
+        totalVolumeKg: 1000,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e1',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest_mid',
+            secondaryMuscles: ['triceps', 'front_delts'],
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 100, reps: 10, completed: true }],
+          },
+          {
+            id: 'e2_skipped',
+            exerciseId: 'dips',
+            name: 'Отжимания на брусьях',
+            targetMuscle: 'triceps',
+            secondaryMuscles: ['chest_mid'],
+            isBodyweight: false,
+            skipped: true,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 50, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      const stats = StorageService.getMuscleStats('7d');
+      const diagMid = StorageService.getDetailedMuscleDiagnostics('chest_mid', '7d');
+      const diagTriceps = StorageService.getDetailedMuscleDiagnostics('triceps', '7d');
+      const diagChestRollup = StorageService.getDetailedMuscleDiagnostics('chest', '7d');
+
+      assert(stats.chest_mid.weeklyTonnageKg === 1000 && diagMid.totalEffectiveTonnage === 1000, 'chest_mid: 1000 кг в обоих методах');
+      assert(stats.triceps.weeklyTonnageKg === 450 && diagTriceps.totalEffectiveTonnage === 450, `triceps (0.45, без skipped): ожидалось 450, stats=${stats.triceps.weeklyTonnageKg}, diag=${diagTriceps.totalEffectiveTonnage}`);
+      assert(stats.chest.weeklyTonnageKg === 1000 && diagChestRollup.totalEffectiveTonnage === 1000, `chest rollup (primary head): ожидалось 1000, stats=${stats.chest.weeklyTonnageKg}, diag=${diagChestRollup.totalEffectiveTonnage}`);
+    });
+
+    return 'stats и diagnostics полностью совпадают по skipped, 0.45 и rollup-мышцам';
+  });
+
+  // 56. Изменение массы тела пользователя НЕ меняет историю завершённой тренировки и не мутирует веса подходов
+  test('Единый расчёт нагрузки', 'Изменение массы тела в профиле не пересчитывает завершённую тренировку и не мутирует подходы', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+
+      StorageService.updateProfile({
+        name: 'Пользователь',
+        age: 30,
+        heightCm: 175,
+        weightKg: 70,
+        fitnessGoal: 'Сила',
+        experienceLevel: 'Средний',
+      });
+
+      StorageService.saveWorkoutSession({
+        id: 'w_bodyweight_dynamic',
+        name: 'Брусья +10 кг',
+        date: todayIso,
+        startTime: '14:00',
+        durationMinutes: 20,
+        totalVolumeKg: 450,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_dips',
+            exerciseId: 'parallel_bar_dips',
+            name: 'Отжимания на брусьях',
+            targetMuscle: 'chest_mid',
+            secondaryMuscles: ['triceps'],
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 10, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      assert(StorageService.getWorkoutAnalytics('30d').totalVolumeKg === 450, 'При 70 кг профиля (35+10)×10 = 450 кг');
+
+      // Меняем вес профиля на 90 кг — завершённая тренировка должна сохранить снимок 70 кг и 450 кг тоннажа
+      StorageService.updateProfile({
+        name: 'Пользователь',
+        age: 30,
+        heightCm: 175,
+        weightKg: 90,
+        fitnessGoal: 'Сила',
+        experienceLevel: 'Средний',
+      });
+
+      const savedSessions = StorageService.getWorkoutSessions();
+      assert(savedSessions[0].bodyWeightKgAtWorkout === 70, 'Снимок массы тела 70 кг должен сохраниться на тренировке');
+      assert(savedSessions[0].exercises[0].sets[0].weightKg === 10, 'Исходный вес +10 кг в localStorage не должен мутироваться');
+      assert(StorageService.getSessionVolumeKg(savedSessions[0]) === 450, 'getSessionVolumeKg должен сохранять исторические 450 кг');
+      assert(StorageService.getWorkoutAnalytics('30d').totalVolumeKg === 450, 'Аналитика должна сохранять исторические 450 кг');
+      assert(StorageService.getMuscleStats('7d').chest_mid.weeklyTonnageKg === 450, 'getMuscleStats должен сохранять исторические 450 кг');
+      assert(StorageService.getDetailedMuscleDiagnostics('chest_mid', '7d').totalEffectiveTonnage === 450, 'Диагностика должна сохранять исторические 450 кг');
+      assert(StorageService.getExerciseDetailedHistory('Отжимания на брусьях')[0].volume === 450, 'История упражнения должна сохранять исторические 450 кг');
+    });
+
+    return 'Завершённая тренировка сохраняет исторический вес тела и не меняется при редактировании профиля';
+  });
+
+  // 57. getExerciseDetailedHistory и Personal Records: собственный вес vs рабочий вес
+  test('Единый расчёт нагрузки', 'getExerciseDetailedHistory использует единую формулу объёма и сохраняет корректный maxWeight/PR', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.updateProfile({
+        name: 'Тест',
+        age: 26,
+        heightCm: 177,
+        weightKg: 80,
+        fitnessGoal: 'Сила',
+        experienceLevel: 'Средний',
+      });
+
+      StorageService.saveWorkoutSession({
+        id: 'w_hist_pr',
+        name: 'Силовая + Подтягивания',
+        date: todayIso,
+        startTime: '16:00',
+        durationMinutes: 40,
+        totalVolumeKg: 1350,
+        completedSets: 3,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_bench',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest_mid',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [
+              { setNumber: 1, weightKg: 0, reps: 10, completed: true },
+              { setNumber: 2, weightKg: 80, reps: 10, completed: true },
+            ],
+          },
+          {
+            id: 'e_pullups',
+            exerciseId: 'pull_ups',
+            name: 'Подтягивания',
+            targetMuscle: 'lats',
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 15, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      const benchHist = StorageService.getExerciseDetailedHistory('Жим штанги лёжа');
+      assert(benchHist.length === 1 && benchHist[0].volume === 800, 'Жим: 0*10 + 80*10 = 800');
+      assert(benchHist[0].maxWeight === 80, 'maxWeight жима должен быть 80');
+      const pr = StorageService.getPersonalRecord('Жим штанги лёжа');
+      assert(pr !== null && pr.maxWeight === 80 && pr.maxRepsAtMax === 10, 'PR расчёт для жима не нарушен');
+
+      const pullHist = StorageService.getExerciseDetailedHistory('Подтягивания');
+      assert(pullHist.length === 1 && pullHist[0].volume === 550, 'Подтягивания: (40 + 15) * 10 = 550');
+      assert(pullHist[0].maxWeight === 15, 'maxWeight для подтягиваний должен оставаться введённым внешним весом 15 кг');
+    });
+
+    return 'История упражнения и PR работают корректно без подмены рабочих весов';
+  });
+
+  // ============================================================================
+  // ЭТАП 3: ИСТОРИЧЕСКАЯ МАССА ТЕЛА ПОЛЬЗОВАТЕЛЯ В ТРЕНИРОВКЕ
+  // ============================================================================
+
+  // 58. Новая тренировка сохраняет массу тела пользователя
+  test('Историческая масса тела', 'Новая завершённая тренировка фиксирует текущую массу тела пользователя (bodyWeightKgAtWorkout)', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.updateProfile({
+        name: 'Атлет',
+        age: 28,
+        heightCm: 180,
+        weightKg: 82.5,
+        fitnessGoal: 'Сила',
+        experienceLevel: 'Средний',
+      });
+
+      const res = StorageService.saveWorkoutSession({
+        id: 'w_snapshot_1',
+        name: 'Турник',
+        date: todayIso,
+        startTime: '18:00',
+        durationMinutes: 35,
+        totalVolumeKg: 410,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_pull',
+            exerciseId: 'pull_ups',
+            name: 'Подтягивания',
+            targetMuscle: 'lats',
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 0, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      assert(res.ok, 'Сохранение тренировки должно пройти успешно');
+      const saved = StorageService.getWorkoutSessions();
+      assert(saved.length === 1, 'Должна быть 1 сохранённая тренировка');
+      assert(
+        saved[0].bodyWeightKgAtWorkout === 82.5,
+        `Ожидался снимок bodyWeightKgAtWorkout === 82.5, получено ${saved[0].bodyWeightKgAtWorkout}`
+      );
+      assert(StorageService.getSessionVolumeKg(saved[0]) === 410, 'round(82.5*0.5)=41, 41×10=410 кг');
+    });
+
+    return 'Новая завершённая тренировка фиксирует bodyWeightKgAtWorkout из профиля';
+  });
+
+  // 59. Изменение текущей массы тела не меняет объём завершённой тренировки
+  test('Историческая масса тела', 'Изменение текущей массы тела в профиле не меняет объём уже завершённой тренировки', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.updateProfile({ weightKg: 70 });
+
+      StorageService.saveWorkoutSession({
+        id: 'w_hist_locked',
+        name: 'Брусья',
+        date: todayIso,
+        startTime: '17:00',
+        durationMinutes: 25,
+        totalVolumeKg: 350,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_dips',
+            exerciseId: 'parallel_bar_dips',
+            name: 'Отжимания на брусьях',
+            targetMuscle: 'chest_mid',
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 0, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      const beforeAnalytics = StorageService.getWorkoutAnalytics('30d').totalVolumeKg;
+      assert(beforeAnalytics === 350, `До смены профиля ожидалось 350 кг, получено ${beforeAnalytics}`);
+
+      // Пользователь поправился или похудел до 96 кг — старая тренировка остаётся с 350 кг
+      StorageService.updateProfile({ weightKg: 96 });
+
+      const sessions = StorageService.getWorkoutSessions();
+      assert(sessions[0].bodyWeightKgAtWorkout === 70, 'Исторический вес 70 кг не должен перезаписываться');
+      assert(StorageService.getSessionVolumeKg(sessions[0]) === 350, 'Объём сессии должен остаться 350 кг');
+      assert(StorageService.getWorkoutAnalytics('30d').totalVolumeKg === 350, 'Аналитика должна остаться 350 кг');
+      assert(StorageService.getMuscleStats('7d').chest_mid.weeklyTonnageKg === 350, 'Статистика мышц должна остаться 350 кг');
+      assert(StorageService.getDetailedMuscleDiagnostics('chest_mid', '7d').totalEffectiveTonnage === 350, 'Диагностика должна остаться 350 кг');
+      assert(StorageService.getExerciseDetailedHistory('Отжимания на брусьях')[0].volume === 350, 'История упражнения должна остаться 350 кг');
+      assert(StorageService.getDayActivityData(todayIso).totalVolumeKg === 350, 'Дневная активность должна остаться 350 кг');
+    });
+
+    return 'Завершённая тренировка полностью защищена от заднечислового пересчёта при смене веса профиля';
+  });
+
+  // 60. Две тренировки с разной массой тела рассчитываются независимо
+  test('Историческая масса тела', 'Две тренировки с разной массой тела в прошлом рассчитываются независимо', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const now = new Date();
+      const d1 = formatLocalIsoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 2));
+      const d2 = formatLocalIsoDate(now);
+
+      // Тренировка 1 при массе тела 70 кг -> эквивалент 35 кг, +10 кг = 45 кг × 10 = 450 кг
+      StorageService.updateProfile({ weightKg: 70 });
+      StorageService.saveWorkoutSession({
+        id: 'w_diff_1',
+        name: 'Брусья №1',
+        date: d1,
+        startTime: '18:00',
+        durationMinutes: 30,
+        totalVolumeKg: 450,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e1',
+            exerciseId: 'parallel_bar_dips',
+            name: 'Отжимания на брусьях',
+            targetMuscle: 'chest_mid',
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 10, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      // Тренировка 2 при массе тела 90 кг -> эквивалент 45 кг, +10 кг = 55 кг × 10 = 550 кг
+      StorageService.updateProfile({ weightKg: 90 });
+      StorageService.saveWorkoutSession({
+        id: 'w_diff_2',
+        name: 'Брусья №2',
+        date: d2,
+        startTime: '18:00',
+        durationMinutes: 30,
+        totalVolumeKg: 550,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e2',
+            exerciseId: 'parallel_bar_dips',
+            name: 'Отжимания на брусьях',
+            targetMuscle: 'chest_mid',
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 10, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      // Позже профиль стал 110 кг — обе прошлые тренировки всё равно считаются по своим снимкам (450 и 550)
+      StorageService.updateProfile({ weightKg: 110 });
+
+      const sessions = StorageService.getWorkoutSessions();
+      const s1 = sessions.find((s) => s.id === 'w_diff_1')!;
+      const s2 = sessions.find((s) => s.id === 'w_diff_2')!;
+      assert(s1.bodyWeightKgAtWorkout === 70 && StorageService.getSessionVolumeKg(s1) === 450, 'Первая тренировка: 70 кг -> 450 кг');
+      assert(s2.bodyWeightKgAtWorkout === 90 && StorageService.getSessionVolumeKg(s2) === 550, 'Вторая тренировка: 90 кг -> 550 кг');
+      assert(StorageService.getWorkoutAnalytics('30d').totalVolumeKg === 1000, 'Суммарная аналитика: 450 + 550 = 1000 кг');
+      assert(StorageService.getMuscleStats('7d').chest_mid.weeklyTonnageKg === 1000, 'Статистика мышц: 1000 кг');
+      assert(StorageService.getDetailedMuscleDiagnostics('chest_mid', '7d').totalEffectiveTonnage === 1000, 'Диагностика: 1000 кг');
+
+      const history = StorageService.getExerciseDetailedHistory('Отжимания на брусьях');
+      assert(history.length === 2 && history[0].volume === 450 && history[1].volume === 550, 'История: точки 450 и 550 кг');
+    });
+
+    return 'Разные тренировки используют собственные исторические снимки массы тела независимо от текущего профиля';
+  });
+
+  // 61. Неизвестная масса тела не подменяется случайным значением
+  test('Историческая масса тела', 'Неизвестная масса тела при завершении фиксируется как null и не подменяется при заполнении профиля позже', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.updateProfile({ weightKg: 0 });
+
+      StorageService.saveWorkoutSession({
+        id: 'w_unknown_bw',
+        name: 'Подтягивания без веса профиля',
+        date: todayIso,
+        startTime: '12:00',
+        durationMinutes: 25,
+        totalVolumeKg: 150,
+        completedSets: 2,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_pull',
+            exerciseId: 'pull_ups',
+            name: 'Подтягивания',
+            targetMuscle: 'lats',
+            isBodyweight: true,
+            restSeconds: 90,
+            sets: [
+              { setNumber: 1, weightKg: 0, reps: 10, completed: true },  // 0 * 10 = 0 (без 25 кг)
+              { setNumber: 2, weightKg: 15, reps: 10, completed: true }, // 15 * 10 = 150
+            ],
+          },
+        ],
+      });
+
+      const saved = StorageService.getWorkoutSessions()[0];
+      assert(saved.bodyWeightKgAtWorkout === null, `При weightKg=0 должен сохраниться null, получено ${saved.bodyWeightKgAtWorkout}`);
+      assert(StorageService.getSessionVolumeKg(saved) === 150, 'Объём должен быть 150 кг (только доп. вес)');
+
+      // Позже пользователь указал в профиле 84 кг — старая тренировка с null НЕ пересчитывается задним числом
+      StorageService.updateProfile({ weightKg: 84 });
+      const reloaded = StorageService.getWorkoutSessions()[0];
+      assert(reloaded.bodyWeightKgAtWorkout === null, 'Снимок null не должен перезаписываться');
+      assert(StorageService.getSessionVolumeKg(reloaded) === 150, 'Объём старой тренировки с неизвестным весом остаётся 150 кг');
+      assert(StorageService.getMuscleStats('7d').lats.weeklyTonnageKg === 150, 'Статистика мышц остаётся 150 кг');
+    });
+
+    return 'Неизвестный вес тела сохраняется как null и не заменяется ни 25 кг, ни будущим весом профиля';
+  });
+
+  // 62. Старые записи без поля bodyWeightKgAtWorkout продолжают корректно обрабатываться без подмены истории
+  test('Историческая масса тела', 'Старые записи без bodyWeightKgAtWorkout не заполняются задним числом и не меняются от профиля', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+
+      // Имитируем старую запись в localStorage до появления поля bodyWeightKgAtWorkout
+      const legacySessions = [
+        {
+          id: 'legacy_no_bw_field',
+          name: 'Архивная тренировка',
+          date: todayIso,
+          startTime: '19:00',
+          durationMinutes: 45,
+          totalVolumeKg: 800,
+          completedSets: 3,
+          status: 'completed',
+          exercises: [
+            {
+              id: 'e_bench',
+              exerciseId: 'barbell_bench_press_flat',
+              name: 'Жим штанги лёжа',
+              targetMuscle: 'chest_mid',
+              isBodyweight: false,
+              restSeconds: 90,
+              sets: [{ setNumber: 1, weightKg: 80, reps: 10, completed: true }], // 800 кг
+            },
+            {
+              id: 'e_pull_bw',
+              exerciseId: 'pull_ups',
+              name: 'Подтягивания',
+              targetMuscle: 'lats',
+              isBodyweight: true,
+              restSeconds: 90,
+              sets: [
+                { setNumber: 1, weightKg: 0, reps: 10, completed: true },  // вес тела неизвестен -> 0
+                { setNumber: 2, weightKg: 15, reps: 10, completed: true }, // внешний вес -> 150
+              ],
+            },
+          ],
+        },
+        {
+          id: 'legacy_summary_only',
+          name: 'Очень старая сводная запись',
+          date: todayIso,
+          startTime: '09:00',
+          durationMinutes: 30,
+          totalVolumeKg: 1200,
+          completedSets: 5,
+          status: 'completed',
+          exercises: [],
+        },
+      ];
+      store.set('form_workout_sessions', JSON.stringify(legacySessions));
+      StorageService.updateProfile({ weightKg: 80 });
+
+      // Запуск миграций и чтение не должны молча дописывать текущий вес профиля (80 кг) в старые записи
+      resetMigrationSessionFlagForTests();
+      runSafeMigrations({
+        PROFILE: 'form_user_profile',
+        PROGRAMS: 'form_workout_programs',
+        WORKOUTS: 'form_workout_sessions',
+        SPORTS_SESSIONS: 'form_sports_sessions_v1',
+        WEEKLY_SCHEDULE: 'form_weekly_schedule_v1',
+        CUSTOM_ACTIVITY: 'form_activity_days',
+        EQUIPMENT: 'form_user_equipment_v1',
+        FITNESS_PARAMS: 'form_fitness_parameters_v1',
+      });
+
+      const loaded = StorageService.getWorkoutSessions();
+      const legacy1 = loaded.find((s) => s.id === 'legacy_no_bw_field')!;
+      const legacy2 = loaded.find((s) => s.id === 'legacy_summary_only')!;
+
+      assert(
+        !Object.prototype.hasOwnProperty.call(legacy1, 'bodyWeightKgAtWorkout'),
+        'Старая запись не должна автоматически заполняться текущим весом профиля при миграции/чтении'
+      );
+      assert(resolveSessionBodyWeightKg(legacy1, 80) === null, 'Неопределённость старой завершённой записи сохраняется');
+      assert(StorageService.getSessionVolumeKg(legacy1) === 950, `Старая запись: 800 (жим) + 150 (доп. вес) = 950 кг, получено ${StorageService.getSessionVolumeKg(legacy1)}`);
+      assert(StorageService.getSessionVolumeKg(legacy2) === 1200, 'Сводная старая запись без exercises сохраняет 1200 кг');
+
+      // Изменение профиля не влияет на старую запись
+      StorageService.updateProfile({ weightKg: 105 });
+      assert(StorageService.getSessionVolumeKg(legacy1) === 950, 'Смена профиля не должна менять расчёт старой записи');
+      assert(StorageService.getMuscleStats('7d').chest_mid.weeklyTonnageKg === 800, 'Обычные упражнения старой записи сохраняют 800 кг');
+      assert(StorageService.getMuscleStats('7d').lats.weeklyTonnageKg === 150, 'Собственный вес с доп. отягощением старой записи даёт 150 кг без выдуманного веса тела');
+    });
+
+    return 'Старые записи без bodyWeightKgAtWorkout корректны и не подменяются текущим весом профиля';
+  });
+
+  // 63. Повторное открытие приложения не теряет сохранённую массу тела тренировки
+  test('Историческая масса тела', 'Перезапуск приложения и экспорт/импорт сохраняют bodyWeightKgAtWorkout без потерь', () => {
+    withIsolatedMockStorage((store) => {
+      store.set('form_schema_version_v1', '11');
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.updateProfile({ weightKg: 76 });
+
+      StorageService.saveWorkoutSession({
+        id: 'w_persist_reopen',
+        name: 'Отжимания',
+        date: todayIso,
+        startTime: '20:00',
+        durationMinutes: 20,
+        totalVolumeKg: 380,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_push',
+            exerciseId: 'push_ups',
+            name: 'Отжимания от пола',
+            targetMuscle: 'chest_mid',
+            isBodyweight: true,
+            restSeconds: 60,
+            sets: [{ setNumber: 1, weightKg: 0, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      // Имитация смены профиля + повторного открытия приложения (новая инициализация миграций и перечитывание JSON)
+      StorageService.updateProfile({ weightKg: 94 });
+      const backupJson = StorageService.exportBackupJson();
+      resetMigrationSessionFlagForTests();
+      runSafeMigrations({
+        PROFILE: 'form_user_profile',
+        PROGRAMS: 'form_workout_programs',
+        WORKOUTS: 'form_workout_sessions',
+        SPORTS_SESSIONS: 'form_sports_sessions_v1',
+        WEEKLY_SCHEDULE: 'form_weekly_schedule_v1',
+        CUSTOM_ACTIVITY: 'form_activity_days',
+        EQUIPMENT: 'form_user_equipment_v1',
+        FITNESS_PARAMS: 'form_fitness_parameters_v1',
+      });
+
+      const afterReopen = StorageService.getWorkoutSessions();
+      assert(
+        afterReopen[0]?.bodyWeightKgAtWorkout === 76,
+        `После перезапуска ожидалось bodyWeightKgAtWorkout === 76, получено ${afterReopen[0]?.bodyWeightKgAtWorkout}`
+      );
+      assert(StorageService.getSessionVolumeKg(afterReopen[0]) === 380, 'После перезапуска объём остаётся 380 кг (38 × 10)');
+
+      // Имитация импорта резервной копии на новом устройстве с другим весом профиля
+      store.clear();
+      store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ weightKg: 102 });
+      const importOk = StorageService.importBackupJson(backupJson);
+      assert(importOk, 'Импорт резервной копии должен пройти успешно');
+      const validated = validateAndMigrateBackup(backupJson);
+      assert(validated.normalized?.workouts?.[0]?.bodyWeightKgAtWorkout === 76, 'Бэкап сохраняет bodyWeightKgAtWorkout === 76');
+      assert(StorageService.getWorkoutSessions()[0]?.bodyWeightKgAtWorkout === 76, 'После импорта bodyWeightKgAtWorkout === 76');
+    });
+
+    return 'Сохранённая масса тела переживает перезапуск, миграции и экспорт/импорт бэкапа';
   });
 
   const passed = results.filter((r) => r.passed).length;

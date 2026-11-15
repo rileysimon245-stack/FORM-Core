@@ -4,7 +4,7 @@
  * ============================================================================
  */
 
-import { ExerciseSet, ActivityIntensity } from '../types/workout';
+import { ExerciseSet, WorkoutExercise, ActivityIntensity } from '../types/workout';
 import { TRAINING_ENGINE_CONFIG } from './config';
 
 export type SetClassificationStatus =
@@ -271,3 +271,155 @@ export function calculateSportLoad(params: {
     isValid: Number.isFinite(loadUnits),
   };
 }
+
+function toSafeNonNegativeNumber(val: unknown): number {
+  if (val === undefined || val === null || val === '') return 0;
+  const num = typeof val === 'number' ? val : Number(val);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  return num;
+}
+
+/**
+ * Эквивалент нагрузки для упражнений с собственным весом:
+ * 50% массы тела пользователя (округлено до целых кг).
+ * Если масса тела пользователя неизвестна (0, null, undefined, <= 0, NaN), возвращает 0 — без выдумывания веса.
+ */
+export function getBodyweightEquivalentKg(userWeightKg?: number | null): number {
+  const parsed = toSafeNonNegativeNumber(userWeightKg);
+  if (parsed <= 0) return 0;
+  return Math.round(parsed * 0.5);
+}
+
+export interface SetLoadCalculationInput {
+  isBodyweight: boolean;
+  weightKg?: number | null;
+  reps?: number | null;
+  userBodyWeightKg?: number | null;
+  /**
+   * Явное дополнительное отягощение для упражнений с собственным весом.
+   * Если передано (не undefined/null), используется вместо weightKg во избежание двойного учёта.
+   * В текущей модели ExerciseSet доп. вес хранится в weightKg.
+   */
+  additionalWeightKg?: number | null;
+}
+
+export interface SetLoadCalculationResult {
+  effectiveWeightKg: number;
+  bodyweightEquivalentKg: number;
+  additionalWeightKg: number;
+  reps: number;
+  volumeKg: number;
+}
+
+/**
+ * Единый расчёт вклада одного подхода в тренировочный тоннаж:
+ * - Обычное упражнение (isBodyweight = false):
+ *   effectiveWeight = max(0, weightKg); при 0 кг или отсутствии веса -> 0 кг (никаких fallbackWeight/массы тела).
+ * - Упражнение с собственным весом (isBodyweight = true):
+ *   effectiveWeight = getBodyweightEquivalentKg(userBodyWeightKg) + additionalWeightKg (без двойного учёта).
+ * - Объём подхода = effectiveWeight * max(0, reps).
+ */
+export function calculateSetLoad(input: SetLoadCalculationInput): SetLoadCalculationResult {
+  const isBodyweight = Boolean(input.isBodyweight);
+  const reps = toSafeNonNegativeNumber(input.reps);
+
+  if (!isBodyweight) {
+    const workingWeight = toSafeNonNegativeNumber(input.weightKg);
+    const rawVolume = workingWeight * reps;
+    return {
+      effectiveWeightKg: workingWeight,
+      bodyweightEquivalentKg: 0,
+      additionalWeightKg: 0,
+      reps,
+      volumeKg: Number.isFinite(rawVolume) ? rawVolume : 0,
+    };
+  }
+
+  const bodyweightEquivalentKg = getBodyweightEquivalentKg(input.userBodyWeightKg);
+  const hasExplicitAdditional =
+    input.additionalWeightKg !== undefined && input.additionalWeightKg !== null;
+  const additionalWeightKg = hasExplicitAdditional
+    ? toSafeNonNegativeNumber(input.additionalWeightKg)
+    : toSafeNonNegativeNumber(input.weightKg);
+
+  const effectiveWeightKg = bodyweightEquivalentKg + additionalWeightKg;
+  const rawVolume = effectiveWeightKg * reps;
+
+  return {
+    effectiveWeightKg,
+    bodyweightEquivalentKg,
+    additionalWeightKg,
+    reps,
+    volumeKg: Number.isFinite(rawVolume) ? rawVolume : 0,
+  };
+}
+
+/**
+ * Единый расчёт объёма одного упражнения по выполненным подходам.
+ */
+export function calculateExerciseVolumeKg(
+  exercise: Pick<WorkoutExercise, 'isBodyweight' | 'sets' | 'skipped'>,
+  userBodyWeightKg?: number | null,
+  options?: { includeSkipped?: boolean }
+): number {
+  if (!exercise) return 0;
+  if (!options?.includeSkipped && exercise.skipped) return 0;
+  if (!Array.isArray(exercise.sets) || exercise.sets.length === 0) return 0;
+
+  let total = 0;
+  for (const st of exercise.sets) {
+    if (!isSetCompletedPure(st)) continue;
+    const { volumeKg } = calculateSetLoad({
+      isBodyweight: Boolean(exercise.isBodyweight),
+      weightKg: st.weightKg,
+      reps: st.reps,
+      userBodyWeightKg,
+    });
+    total += volumeKg;
+  }
+
+  return Number.isFinite(total) ? Math.round(total) : 0;
+}
+
+/**
+ * Единый расчёт суммарного тоннажа, числа выполненных подходов и повторений тренировки.
+ */
+export function calculateWorkoutMetrics(
+  exercises: Array<Pick<WorkoutExercise, 'isBodyweight' | 'sets' | 'skipped'>> | undefined | null,
+  userBodyWeightKg?: number | null
+): {
+  totalVolumeKg: number;
+  completedSets: number;
+  totalReps: number;
+} {
+  if (!Array.isArray(exercises) || exercises.length === 0) {
+    return { totalVolumeKg: 0, completedSets: 0, totalReps: 0 };
+  }
+
+  let rawVolume = 0;
+  let completedSets = 0;
+  let totalReps = 0;
+
+  for (const ex of exercises) {
+    if (!ex || ex.skipped || !Array.isArray(ex.sets)) continue;
+    for (const st of ex.sets) {
+      if (!isSetCompletedPure(st)) continue;
+      completedSets += 1;
+      const load = calculateSetLoad({
+        isBodyweight: Boolean(ex.isBodyweight),
+        weightKg: st.weightKg,
+        reps: st.reps,
+        userBodyWeightKg,
+      });
+      rawVolume += load.volumeKg;
+      totalReps += load.reps;
+    }
+  }
+
+  return {
+    totalVolumeKg: Number.isFinite(rawVolume) ? Math.round(rawVolume) : 0,
+    completedSets,
+    totalReps: Number.isFinite(totalReps) ? Math.round(totalReps) : 0,
+  };
+}
+

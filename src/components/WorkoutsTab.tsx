@@ -165,9 +165,10 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
     [sessions]
   );
   const totalCompletedCount = completedSessions.length;
+  const currentWeightKg = StorageService.getProfile().weightKg;
   const totalVolumeKg = useMemo(
-    () => completedSessions.reduce((acc, s) => acc + (s.totalVolumeKg || 0), 0),
-    [completedSessions]
+    () => completedSessions.reduce((acc, s) => acc + StorageService.getSessionVolumeKg(s, currentWeightKg), 0),
+    [completedSessions, currentWeightKg]
   );
   const totalTonnageDisplay =
     totalVolumeKg >= 1000 ? `${(totalVolumeKg / 1000).toFixed(1)} т` : `${totalVolumeKg} кг`;
@@ -1518,7 +1519,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                     <Flame className="w-3.5 h-3.5 text-[#58C995]" />
                     <span>Тоннаж:</span>
                     <span className="font-mono font-bold text-[#58C995] tabular-nums">
-                      {sess.totalVolumeKg?.toLocaleString('ru-RU') || 0} кг
+                      {StorageService.getSessionVolumeKg(sess, currentWeightKg).toLocaleString('ru-RU')} кг
                     </span>
                   </div>
                   <div className="font-mono tabular-nums text-white">

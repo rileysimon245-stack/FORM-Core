@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Check, AlertCircle, Dumbbell, Play, Plus, Swords, Trophy, Zap, Bike, Waves, Activity, Moon, Trash2, Edit3, Calendar } from 'lucide-react';
 import { WorkoutSession, SportSession, SPORT_DEFINITIONS, SportType, WeeklyScheduleDay } from '../types/workout';
+import { StorageService } from '../services/storage';
 import { Modal } from './common/Modal';
 
 interface DayDetailsModalProps {
@@ -258,7 +259,7 @@ export const DayDetailsModal: React.FC<DayDetailsModalProps> = ({
                     <div>
                       <span className="text-[9px] text-[#92999A] block">Тоннаж</span>
                       <span className="font-bold text-[#58C995]">
-                        {sess.totalVolumeKg?.toLocaleString('ru-RU') || 0} кг
+                        {StorageService.getSessionVolumeKg(sess).toLocaleString('ru-RU')} кг
                       </span>
                     </div>
                     <div>

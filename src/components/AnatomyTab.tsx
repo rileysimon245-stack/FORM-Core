@@ -1364,7 +1364,7 @@ export const AnatomyTab: React.FC = () => {
       }
     });
 
-    let totalTonnage = sessions.reduce((acc, s) => acc + (s.totalVolumeKg || 0), 0);
+    let totalTonnage = sessions.reduce((acc, s) => acc + StorageService.getSessionVolumeKg(s), 0);
     if (totalTonnage === 0) {
       totalTonnage = Object.values(muscleStats).reduce((acc, st) => acc + (st.weeklyTonnageKg || 0), 0);
     }
@@ -1697,7 +1697,7 @@ export const AnatomyTab: React.FC = () => {
                   1. Последняя тренировка ({last.date}): <span className="text-[#58C995]">{last.name}</span>
                 </div>
                 <div className="text-[11px] text-[#9AA3A5]">
-                  Упражнений: {last.exercises?.length || 0} | Выполненных подходов: <strong className="text-[#58C995]">{totalCompletedSets}</strong> | Тоннаж: {last.totalVolumeKg || 0} кг
+                  Упражнений: {last.exercises?.length || 0} | Выполненных подходов: <strong className="text-[#58C995]">{totalCompletedSets}</strong> | Тоннаж: {StorageService.getSessionVolumeKg(last)} кг
                 </div>
 
                 <div className="pt-1 space-y-1 text-[11px]">
