@@ -266,7 +266,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     const newSetNumber = targetEx.sets.length + 1;
     targetEx.sets.push({
       setNumber: newSetNumber,
-      weightKg: lastSet ? lastSet.weightKg : 80,
+      weightKg: lastSet ? (lastSet.weightKg ?? 0) : 0,
       reps: lastSet ? lastSet.reps : 12,
       completed: false,
     });
@@ -654,7 +654,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
               const effectiveActiveSetIdx = activeSetIdx >= 0 ? activeSetIdx : ex.sets.length - 1;
               const currentActiveSet = ex.sets[effectiveActiveSetIdx];
 
-              const currentWeight = currentActiveSet ? currentActiveSet.weightKg || 0 : 80;
+              const currentWeight = currentActiveSet ? (currentActiveSet.weightKg ?? 0) : 0;
               const currentReps = currentActiveSet ? currentActiveSet.reps || 12 : 12;
 
               const completedCountInThisEx = ex.sets.filter((s) => s.completed).length;
@@ -822,7 +822,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                                 ? 'border-2 border-[#58C995] bg-[#162227] text-transparent'
                                 : 'border-2 border-[#253338] bg-[#0E1518] text-transparent hover:border-[#58C995]'
                             }`}
-                            title={`Подход ${st.setNumber}: ${st.weightKg || 80} кг × ${
+                            title={`Подход ${st.setNumber}: ${st.weightKg ?? 0} кг × ${
                               st.reps || 12
                             }. Нажмите для отметки`}
                             aria-label={`Подход ${st.setNumber}`}
@@ -1192,7 +1192,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                     type="number"
                     step="0.5"
                     value={
-                      exercises[editingTarget.exIndex]?.sets[editingTarget.setIndex]?.weightKg ?? 80
+                      exercises[editingTarget.exIndex]?.sets[editingTarget.setIndex]?.weightKg ?? 0
                     }
                     onChange={(e) =>
                       handleSetWeightValue(
