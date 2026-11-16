@@ -12,6 +12,11 @@ import { SafeWriteResult } from '../services/migrations';
 import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
 import { calculateWorkoutMetrics } from '../training-core/coreMath';
 import { normalizeMuscleKeyPure, normalizeMuscleListPure } from '../training-core/muscles';
+import {
+  checkAddExerciseSafety,
+  checkWeightIncreaseSafety,
+  getCurrentSafetyContext,
+} from '../services/safetyContext';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { Modal, ConfirmModal, PromptModal } from './common/Modal';
 import {
@@ -35,6 +40,7 @@ import {
   ChevronRight,
   Layers,
   Sparkles,
+  ShieldAlert,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -64,12 +70,21 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
   const [showAddExercisePicker, setShowAddExercisePicker] = useState<boolean>(false);
   const [showFinishSummary, setShowFinishSummary] = useState<boolean>(false);
   const [editingTarget, setEditingTarget] = useState<{ exIndex: number; setIndex: number } | null>(null);
+  const [editingWeightDraft, setEditingWeightDraft] = useState<string>('0');
   const [exerciseToDeleteIndex, setExerciseToDeleteIndex] = useState<number | null>(null);
   const [showExitConfirm, setShowExitConfirm] = useState<boolean>(false);
   const [showNotePrompt, setShowNotePrompt] = useState<boolean>(false);
   const [showRestoredToast, setShowRestoredToast] = useState<boolean>(Boolean(isRestoredDraft));
   const [isListeningVoice, setIsListeningVoice] = useState<boolean>(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [safetyVetoNotice, setSafetyVetoNotice] = useState<string | null>(null);
+  const [pendingWeightConfirm, setPendingWeightConfirm] = useState<{
+    exIdx: number;
+    setIdx: number;
+    proposedWeightKg: number;
+    baselineBestWeightKg: number;
+    message: string;
+  } | null>(null);
 
   // Rest timer
   const [restSecondsRemaining, setRestSecondsRemaining] = useState<number | null>(null);
@@ -218,28 +233,78 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     if (exerciseName) setActiveRestExerciseName(exerciseName);
   };
 
-  // Adjust weight for specific exercise set
-  const handleAdjustWeight = (exIdx: number, setIdx: number, delta: number) => {
+  const applyVerifiedWeightChange = (exIdx: number, setIdx: number, newW: number) => {
     const next = [...exercises];
     const targetEx = next[exIdx];
+    if (!targetEx || !targetEx.sets[setIdx]) return;
+    targetEx.sets[setIdx].weightKg = newW;
+    setExercises(next);
+    setSafetyVetoNotice(null);
+    vibrateDevice(30);
+  };
+
+  // Validate proposed weight change through Safety Guard before applying
+  const validateAndApplyWeight = (exIdx: number, setIdx: number, newW: number): boolean => {
+    const targetEx = exercises[exIdx];
+    const targetSet = targetEx?.sets[setIdx];
+    if (!targetEx || !targetSet) return false;
+
+    const currentW = targetSet.weightKg || 0;
+    const sessionMaxW = targetEx.sets.reduce((mx, st) => {
+      const w =
+        typeof st.weightKg === 'number' && Number.isFinite(st.weightKg) && st.weightKg > 0
+          ? st.weightKg
+          : 0;
+      return w > mx ? w : mx;
+    }, 0);
+    const sanitizedW = Math.max(0, Math.round(newW * 2) / 2);
+
+    if (sanitizedW > currentW) {
+      const weightCheck = checkWeightIncreaseSafety(
+        targetEx,
+        sanitizedW,
+        Math.max(currentW, sessionMaxW)
+      );
+      if (!weightCheck.allowed) {
+        if (weightCheck.canOverrideWithConfirmation) {
+          setPendingWeightConfirm({
+            exIdx,
+            setIdx,
+            proposedWeightKg: sanitizedW,
+            baselineBestWeightKg: weightCheck.baselineBestWeightKg,
+            message:
+              weightCheck.vetoReasons[0] ||
+              `Подтвердите увеличение веса для «${targetEx.name}» до ${sanitizedW} кг.`,
+          });
+          return false;
+        }
+        setSafetyVetoNotice(
+          weightCheck.vetoReasons[0] ||
+            'Повышение рабочего веса заблокировано Safety Guard.'
+        );
+        return false;
+      }
+    }
+
+    applyVerifiedWeightChange(exIdx, setIdx, sanitizedW);
+    return true;
+  };
+
+  // Adjust weight for specific exercise set
+  const handleAdjustWeight = (exIdx: number, setIdx: number, delta: number) => {
+    const targetEx = exercises[exIdx];
     if (!targetEx) return;
     const targetSet = targetEx.sets[setIdx];
     if (!targetSet) return;
 
     const curW = targetSet.weightKg || 0;
     const newW = Math.max(0, Math.round((curW + delta) * 2) / 2);
-    targetSet.weightKg = newW;
-    setExercises(next);
-    vibrateDevice(30);
+    validateAndApplyWeight(exIdx, setIdx, newW);
   };
 
   const handleSetWeightValue = (exIdx: number, setIdx: number, val: string) => {
     const num = Math.max(0, parseFloat(val) || 0);
-    const next = [...exercises];
-    const targetEx = next[exIdx];
-    if (!targetEx || !targetEx.sets[setIdx]) return;
-    targetEx.sets[setIdx].weightKg = num;
-    setExercises(next);
+    validateAndApplyWeight(exIdx, setIdx, num);
   };
 
   // Adjust reps for specific exercise set
@@ -288,8 +353,25 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     setZoomScale((prev) => Math.max(0.9, Math.round((prev - 0.05) * 100) / 100));
   };
 
-  // Add exercise from catalog (preserving custom & full catalog metadata)
+  // Add exercise from catalog (preserving custom & full catalog metadata + Safety Guard veto)
   const handleAddFromCatalog = (item: any) => {
+    const safetyDecision = checkAddExerciseSafety({
+      exerciseId: item.id,
+      name: item.name,
+      targetMuscle: item.primaryMuscle,
+      secondaryMuscles: item.secondaryMuscles,
+      requiredEquipment: item.requiredEquipment,
+      isBodyweight: Boolean(item.isBodyweight),
+    });
+
+    if (!safetyDecision.allowed) {
+      setSafetyVetoNotice(
+        safetyDecision.vetoReasons[0] ||
+          `Упражнение «${item.name}» заблокировано Safety Guard.`
+      );
+      return;
+    }
+
     const defaultSetsCount = item.defaultSets || 4;
     const defaultRepsCount = item.defaultReps || 12;
     const restSec = item.defaultRestSeconds || 90;
@@ -320,6 +402,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       }),
     };
 
+    setSafetyVetoNotice(null);
     setExercises((prev) => [...prev, newEx]);
     setShowAddExercisePicker(false);
     vibrateDevice(50);
@@ -570,6 +653,48 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
         </div>
       )}
 
+      {safetyVetoNotice && (
+        <div
+          role="alert"
+          className="relative z-40 mx-4 mt-1 px-3.5 py-2 rounded-2xl bg-[#2B1414] border border-[#5C2626] text-xs text-[#FCA5A5] flex items-center justify-between gap-2"
+        >
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <ShieldAlert className="w-4 h-4 text-[#F87171] shrink-0" />
+            <span>{safetyVetoNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSafetyVetoNotice(null)}
+            className="text-[#FCA5A5] hover:text-white p-0.5 cursor-pointer shrink-0"
+            aria-label="Скрыть предупреждение Safety Guard"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {(() => {
+        const safetyCtx = getCurrentSafetyContext();
+        const isMinor = typeof safetyCtx.age === 'number' && safetyCtx.age > 0 && safetyCtx.age < 18;
+        const hasPain =
+          (typeof safetyCtx.generalPainLevel === 'number' && safetyCtx.generalPainLevel >= 1) ||
+          Boolean(
+            safetyCtx.painByMuscle &&
+              Object.values(safetyCtx.painByMuscle).some((v) => typeof v === 'number' && v >= 1)
+          );
+        if (!isMinor && !hasPain) return null;
+        return (
+          <div className="relative z-30 mx-4 mt-1 px-3 py-1.5 rounded-xl bg-[#1F1A10] border border-[#4A3B18] text-[11px] text-[#FCD34D] flex items-center gap-2">
+            <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">
+              {isMinor
+                ? `Консервативный режим (${safetyCtx.age} лет): без отказных подходов и резких скачков веса`
+                : 'Safety Guard: отмечен дискомфорт/боль — повышение веса заблокировано'}
+            </span>
+          </div>
+        );
+      })()}
+
       {/* ======================================================== */}
       {/* 2. FLOATING RIGHT ZOOM DOCK (+ / −)                      */}
       {/* ======================================================== */}
@@ -693,9 +818,12 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                     {/* Left Column: Circular working weight gauge */}
                     <button
                       type="button"
-                      onClick={() =>
-                        setEditingTarget({ exIndex: exIdx, setIndex: effectiveActiveSetIdx })
-                      }
+                      onClick={() => {
+                        setEditingWeightDraft(
+                          String(ex.sets[effectiveActiveSetIdx]?.weightKg ?? 0)
+                        );
+                        setEditingTarget({ exIndex: exIdx, setIndex: effectiveActiveSetIdx });
+                      }}
                       className="bg-[#090E10] border border-[#1A2529] rounded-[24px] p-2.5 w-28 h-28 sm:w-32 sm:h-32 shrink-0 flex items-center justify-center relative cursor-pointer active:scale-95 transition-transform"
                       title="Нажмите для настройки веса и повторений"
                     >
@@ -1160,9 +1288,10 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() =>
-                      handleAdjustWeight(editingTarget.exIndex, editingTarget.setIndex, -2.5)
-                    }
+                    onClick={() => {
+                      const nextVal = Math.max(0, (parseFloat(editingWeightDraft) || 0) - 2.5);
+                      setEditingWeightDraft(String(Math.round(nextVal * 2) / 2));
+                    }}
                     className="w-10 h-10 rounded-xl bg-[#182327] hover:bg-[#202E34] text-white font-bold text-sm cursor-pointer"
                   >
                     -2.5
@@ -1170,23 +1299,16 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                   <input
                     type="number"
                     step="0.5"
-                    value={
-                      exercises[editingTarget.exIndex]?.sets[editingTarget.setIndex]?.weightKg ?? 0
-                    }
-                    onChange={(e) =>
-                      handleSetWeightValue(
-                        editingTarget.exIndex,
-                        editingTarget.setIndex,
-                        e.target.value
-                      )
-                    }
+                    value={editingWeightDraft}
+                    onChange={(e) => setEditingWeightDraft(e.target.value)}
                     className="flex-1 bg-[#090E10] border border-[#202E34] rounded-xl py-2 text-center text-xl font-bold font-mono text-white outline-none focus:border-[#58C995]"
                   />
                   <button
                     type="button"
-                    onClick={() =>
-                      handleAdjustWeight(editingTarget.exIndex, editingTarget.setIndex, 2.5)
-                    }
+                    onClick={() => {
+                      const nextVal = Math.max(0, (parseFloat(editingWeightDraft) || 0) + 2.5);
+                      setEditingWeightDraft(String(Math.round(nextVal * 2) / 2));
+                    }}
                     className="w-10 h-10 rounded-xl bg-[#182327] hover:bg-[#202E34] text-[#58C995] font-bold text-sm cursor-pointer"
                   >
                     +2.5
@@ -1224,7 +1346,13 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setEditingTarget(null)}
+                onClick={() => {
+                  const targetExIdx = editingTarget.exIndex;
+                  const targetSetIdx = editingTarget.setIndex;
+                  const parsed = Math.max(0, parseFloat(editingWeightDraft) || 0);
+                  validateAndApplyWeight(targetExIdx, targetSetIdx, parsed);
+                  setEditingTarget(null);
+                }}
                 className="w-full py-3 bg-[#58C995] text-[#080D0E] font-bold text-xs uppercase tracking-wider rounded-2xl shadow-lg mt-2 cursor-pointer active:scale-95"
               >
                 Сохранить
@@ -1342,13 +1470,35 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       <AnimatePresence>
         {showAddExercisePicker && (
           <div className="fixed inset-0 z-60 bg-black/90 backdrop-blur-md flex items-center justify-center p-3">
-            <div className="w-full max-w-lg bg-[#11171A] border border-[#253338] rounded-[32px] max-h-[88vh] flex flex-col overflow-y-auto p-4 shadow-2xl">
+            <div className="w-full max-w-lg bg-[#11171A] border border-[#253338] rounded-[32px] max-h-[88vh] flex flex-col overflow-y-auto p-4 shadow-2xl space-y-3">
+              {safetyVetoNotice && (
+                <div
+                  role="alert"
+                  className="px-3.5 py-2.5 rounded-2xl bg-[#2B1414] border border-[#5C2626] text-xs text-[#FCA5A5] flex items-center justify-between gap-2 shrink-0"
+                >
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    <ShieldAlert className="w-4 h-4 text-[#F87171] shrink-0" />
+                    <span>{safetyVetoNotice}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSafetyVetoNotice(null)}
+                    className="text-[#FCA5A5] hover:text-white p-0.5 cursor-pointer shrink-0"
+                    aria-label="Скрыть предупреждение Safety Guard"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
               <ExerciseLibraryView
                 selectionMode={true}
                 onSelectExercise={(selected) => {
                   handleAddFromCatalog(selected);
                 }}
-                onClose={() => setShowAddExercisePicker(false)}
+                onClose={() => {
+                  setSafetyVetoNotice(null);
+                  setShowAddExercisePicker(false);
+                }}
               />
             </div>
           </div>
@@ -1406,6 +1556,56 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
         placeholder="Например: жим шел уверенно, в 3 подходе добавил паузу внизу..."
         confirmText="Сохранить заметку"
         cancelText="Отмена"
+      />
+
+      {/* Safety Guard: Confirm Anomalous Weight Jump */}
+      <ConfirmModal
+        isOpen={Boolean(pendingWeightConfirm)}
+        onClose={() => setPendingWeightConfirm(null)}
+        onConfirm={() => {
+          if (pendingWeightConfirm) {
+            const targetEx = exercises[pendingWeightConfirm.exIdx];
+            const targetSet = targetEx?.sets[pendingWeightConfirm.setIdx];
+            if (targetEx && targetSet) {
+              const currentW = targetSet.weightKg || 0;
+              const sessionMaxW = targetEx.sets.reduce((mx, st) => {
+                const w =
+                  typeof st.weightKg === 'number' && Number.isFinite(st.weightKg) && st.weightKg > 0
+                    ? st.weightKg
+                    : 0;
+                return w > mx ? w : mx;
+              }, 0);
+              const recheck = checkWeightIncreaseSafety(
+                targetEx,
+                pendingWeightConfirm.proposedWeightKg,
+                Math.max(currentW, sessionMaxW)
+              );
+              if (!recheck.allowed && !recheck.canOverrideWithConfirmation) {
+                setSafetyVetoNotice(
+                  recheck.vetoReasons[0] ||
+                    'Подтверждение отклонено: действует жёсткое ограничение Safety Guard.'
+                );
+                setPendingWeightConfirm(null);
+                return;
+              }
+              applyVerifiedWeightChange(
+                pendingWeightConfirm.exIdx,
+                pendingWeightConfirm.setIdx,
+                pendingWeightConfirm.proposedWeightKg
+              );
+            }
+            setPendingWeightConfirm(null);
+          }
+        }}
+        title="Подтвердите скачок веса"
+        description={
+          pendingWeightConfirm
+            ? `${pendingWeightConfirm.message} Если это не опечатка, подтвердите установку ${pendingWeightConfirm.proposedWeightKg} кг.`
+            : ''
+        }
+        confirmText="Подтвердить вес"
+        cancelText="Оставить прежний"
+        variant="warning"
       />
     </motion.div>
   );

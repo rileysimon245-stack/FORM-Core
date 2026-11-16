@@ -43,6 +43,7 @@ import {
   calculateSetLoad,
   calculateWorkoutMetrics,
 } from '../training-core/coreMath';
+import { evaluateWeightIncreaseSafetyFromData } from '../training-core/safetyGuard';
 import {
   formatLocalIsoDate,
   parseIsoDateLocal,
@@ -2610,7 +2611,7 @@ export const DEFAULT_USER_PARAMETERS: UserFitnessParameters = {
 
 /**
  * Формирует начальные подходы упражнения:
- * 1. Если пользователь явно задал вес в программе (> 0 и не bodyweight), сохраняет его.
+ * 1. Если пользователь явно задал вес в программе (> 0 и не bodyweight) И он проходит Safety Guard, сохраняет его.
  * 2. Иначе запрашивает последний фактический вес из завершённой истории (включая 0 кг).
  * 3. Если истории нет, использует 0 кг.
  */
@@ -2618,6 +2619,8 @@ export function resolveInitialExerciseSets(params: {
   exerciseName: string;
   exerciseId?: string | null;
   targetMuscle?: string | null;
+  secondaryMuscles?: (MuscleGroup | string)[] | null;
+  requiredEquipment?: string | null;
   setsCount: number;
   defaultReps: number;
   explicitTargetWeight?: number | null;
@@ -2634,12 +2637,38 @@ export function resolveInitialExerciseSets(params: {
 
   if (hasExplicitWeight) {
     const explicitW = params.explicitTargetWeight as number;
-    return Array.from({ length: safeSetsCount }).map((_, sIdx) => ({
-      setNumber: sIdx + 1,
-      weightKg: explicitW,
-      reps: safeReps,
-      completed: false,
-    }));
+    const customExercises = StorageService.getCustomExercises();
+    const safetyDecision = evaluateWeightIncreaseSafetyFromData(
+      {
+        exerciseId: params.exerciseId,
+        name: params.exerciseName,
+        targetMuscle: params.targetMuscle,
+        secondaryMuscles: params.secondaryMuscles,
+        requiredEquipment: params.requiredEquipment,
+        isBodyweight: Boolean(params.isBodyweight),
+      },
+      explicitW,
+      undefined,
+      {
+        profile: StorageService.getProfile(),
+        userParameters: StorageService.getUserParameters(),
+        checkins: StorageService.getWellbeingCheckins(),
+        sessions: StorageService.getWorkoutSessions(),
+        activeDraft: StorageService.getActiveDraft(),
+        customExercises,
+      }
+    );
+
+    if (safetyDecision.allowed) {
+      return Array.from({ length: safeSetsCount }).map((_, sIdx) => ({
+        setNumber: sIdx + 1,
+        weightKg: explicitW,
+        reps: safeReps,
+        completed: false,
+      }));
+    }
+    // Если явный targetWeight не прошёл Safety Guard, не пропускаем его в подходы —
+    // откатываемся к безопасному последнему сохранённому весу или 0 кг.
   }
 
   const prev = StorageService.getPreviousExerciseResults(params.exerciseName, {

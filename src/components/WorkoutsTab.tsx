@@ -11,6 +11,7 @@ import { StorageService } from '../services/storage';
 import { isIsoDateInCurrentWeek } from '../training-core/dateUtils';
 import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
 import { normalizeMuscleKeyPure } from '../training-core/muscles';
+import { checkWorkoutLaunchSafety } from '../services/safetyContext';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { WorkoutAnalyticsView } from './WorkoutAnalyticsView';
 import { Modal, ConfirmModal } from './common/Modal';
@@ -46,6 +47,7 @@ import {
   Activity,
   ChevronLeft,
   ArrowRightLeft,
+  ShieldAlert,
 } from 'lucide-react';
 import {
   STRENGTH_PROGRAMS,
@@ -1535,121 +1537,231 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
       {/* ======================================================================= */}
       {/* 2. UNIFIED MODAL: WORKOUT PREVIEW / LAUNCH SHEET                        */}
       {/* ======================================================================= */}
-      <Modal
-        isOpen={Boolean(previewWorkoutData)}
-        onClose={() => setPreviewWorkoutData(null)}
-        title={previewWorkoutData?.day.dayName}
-        subtitle={previewWorkoutData?.programName}
-        icon={<Play className="w-5 h-5 fill-[#58C995] text-[#58C995]" />}
-        footer={
-          previewWorkoutData ? (
-            <div className="space-y-2">
-              <button
-                type="button"
-                onClick={handleConfirmStart}
-                className="w-full py-4 bg-[#58C995] hover:bg-[#68d7a4] text-[#080D0E] font-black text-sm uppercase tracking-wider rounded-2xl flex items-center justify-center gap-2.5 shadow-[0_4px_24px_rgba(88,201,149,0.35)] cursor-pointer active:scale-95 transition-all"
-              >
-                <Play className="w-5 h-5 fill-[#080D0E]" />
-                <span>Начать тренировку</span>
-              </button>
+      {(() => {
+        const customExercisesForPreview = StorageService.getCustomExercises();
+        const enrichedPreviewExercises = previewWorkoutData
+          ? (previewWorkoutData.day.exercises || []).map((ex) => {
+              const catalogItem = findExerciseInUnifiedCatalog(
+                ex.exerciseId,
+                ex.name,
+                customExercisesForPreview,
+                ex.targetMuscle
+              );
+              return {
+                ...ex,
+                exerciseId: ex.exerciseId || catalogItem?.id,
+                targetMuscle: ex.targetMuscle || catalogItem?.primaryMuscle,
+                secondaryMuscles:
+                  ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+                    ? ex.secondaryMuscles
+                    : catalogItem?.secondaryMuscles,
+                requiredEquipment: ex.requiredEquipment || catalogItem?.requiredEquipment,
+              };
+            })
+          : [];
+        const previewSafety = previewWorkoutData
+          ? checkWorkoutLaunchSafety(enrichedPreviewExercises)
+          : null;
+        const blockedIndexSet = new Set(
+          (previewSafety?.blockedExercises || []).map((b) => b.index)
+        );
+        const hasGlobalBlock = Boolean(
+          previewSafety?.blockedExercises.some(
+            (b) => b.decision.blockedByAge || b.decision.blockedByPain
+          )
+        );
+        const safeCount = previewSafety?.safeExercises.length || 0;
+        const canStartSafeOnly = Boolean(
+          previewSafety && !previewSafety.allowed && safeCount > 0 && !hasGlobalBlock
+        );
 
-              <button
-                type="button"
-                onClick={() => setPreviewWorkoutData(null)}
-                className="w-full py-2 text-xs text-[#869194] hover:text-white font-medium text-center cursor-pointer"
-              >
-                Отмена
-              </button>
-            </div>
-          ) : undefined
-        }
-      >
-        {previewWorkoutData && (
-          <div className="space-y-3.5">
-            {/* Workout Key Metrics Row */}
-            <div className="grid grid-cols-3 gap-2">
-              <div className="bg-[#121A1E] border border-[#1E292E] p-3 rounded-2xl text-center">
-                <Clock className="w-4 h-4 text-[#58C995] mx-auto mb-1" />
-                <span className="text-[10px] text-[#869194] block">Длительность</span>
-                <span className="text-xs font-bold text-[#E8E9E7] tabular-nums font-mono">
-                  ~{previewWorkoutData.day.estimatedDuration || 55} мин
-                </span>
-              </div>
+        return (
+          <Modal
+            isOpen={Boolean(previewWorkoutData)}
+            onClose={() => setPreviewWorkoutData(null)}
+            title={previewWorkoutData?.day.dayName}
+            subtitle={previewWorkoutData?.programName}
+            icon={<Play className="w-5 h-5 fill-[#58C995] text-[#58C995]" />}
+            footer={
+              previewWorkoutData ? (
+                <div className="space-y-2">
+                  {previewSafety && !previewSafety.allowed ? (
+                    canStartSafeOnly ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const filteredDay: ProgramWorkoutDay = {
+                            ...previewWorkoutData.day,
+                            exercises: (previewWorkoutData.day.exercises || []).filter(
+                              (_, idx) => !blockedIndexSet.has(idx)
+                            ),
+                          };
+                          onStartProgramWorkout(
+                            filteredDay,
+                            previewWorkoutData.programName,
+                            previewWorkoutData.programId
+                          );
+                          setPreviewWorkoutData(null);
+                        }}
+                        className="w-full py-4 bg-[#58C995] hover:bg-[#68d7a4] text-[#080D0E] font-black text-xs sm:text-sm uppercase tracking-wider rounded-2xl flex items-center justify-center gap-2 shadow-[0_4px_24px_rgba(88,201,149,0.35)] cursor-pointer active:scale-95 transition-all"
+                      >
+                        <Play className="w-4 h-4 fill-[#080D0E]" />
+                        <span>Начать без заблокированных ({safeCount})</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        className="w-full py-4 bg-[#2B1414] border border-[#5C2626] text-[#FCA5A5] font-black text-xs uppercase tracking-wider rounded-2xl flex items-center justify-center gap-2 cursor-not-allowed opacity-80"
+                      >
+                        <ShieldAlert className="w-4 h-4 text-[#F87171]" />
+                        <span>Запуск заблокирован Safety Guard</span>
+                      </button>
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleConfirmStart}
+                      className="w-full py-4 bg-[#58C995] hover:bg-[#68d7a4] text-[#080D0E] font-black text-sm uppercase tracking-wider rounded-2xl flex items-center justify-center gap-2.5 shadow-[0_4px_24px_rgba(88,201,149,0.35)] cursor-pointer active:scale-95 transition-all"
+                    >
+                      <Play className="w-5 h-5 fill-[#080D0E]" />
+                      <span>Начать тренировку</span>
+                    </button>
+                  )}
 
-              <div className="bg-[#121A1E] border border-[#1E292E] p-3 rounded-2xl text-center">
-                <Dumbbell className="w-4 h-4 text-[#58C995] mx-auto mb-1" />
-                <span className="text-[10px] text-[#869194] block">Упражнений</span>
-                <span className="text-xs font-bold text-[#E8E9E7] tabular-nums font-mono">
-                  {previewWorkoutData.day.exercises?.length || 0}
-                </span>
-              </div>
-
-              <div className="bg-[#121A1E] border border-[#1E292E] p-3 rounded-2xl text-center">
-                <Layers className="w-4 h-4 text-[#58C995] mx-auto mb-1" />
-                <span className="text-[10px] text-[#869194] block">Подходов</span>
-                <span className="text-xs font-bold text-[#58C995] tabular-nums font-mono">
-                  {previewWorkoutData.day.exercises?.reduce(
-                    (acc, ex) => acc + (ex.sets || 4),
-                    0
-                  ) || 16}
-                </span>
-              </div>
-            </div>
-
-            {/* Scrollable Exercises List */}
-            <div className="space-y-2">
-              <span className="text-[10px] font-bold text-[#7E8B8E] uppercase tracking-wider block px-0.5">
-                План упражнений ({previewWorkoutData.day.exercises?.length || 0}):
-              </span>
-
-              {(() => {
-                const customExercises = StorageService.getCustomExercises();
-                return previewWorkoutData.day.exercises?.map((ex, idx) => {
-                  const catalogItem = findExerciseInUnifiedCatalog(
-                    ex.exerciseId,
-                    ex.name,
-                    customExercises,
-                    ex.targetMuscle
-                  );
-                  const muscleKey = (normalizeMuscleKeyPure(
-                    ex.targetMuscle || catalogItem?.primaryMuscle
-                  ) || 'quads_rectus') as MuscleGroup;
-                  const muscleNameRu = MUSCLE_DEFINITIONS[muscleKey]?.nameRu || 'Мышцы';
-
-                  return (
-                  <div
-                    key={idx}
-                    className="bg-[#121A1E] border border-[#1B272C] rounded-2xl p-3 flex items-center justify-between gap-3"
+                  <button
+                    type="button"
+                    onClick={() => setPreviewWorkoutData(null)}
+                    className="w-full py-2 text-xs text-[#869194] hover:text-white font-medium text-center cursor-pointer"
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="w-6 h-6 rounded-lg bg-[#18242A] text-[#58C995] text-xs font-bold font-mono flex items-center justify-center shrink-0">
-                        {idx + 1}
-                      </span>
-                      <div className="min-w-0">
-                        <h4 className="text-xs font-bold text-[#E8E9E7] truncate">{ex.name}</h4>
-                        <span className="text-[10px] text-[#869194] flex items-center gap-1 mt-0.5">
-                          <Dumbbell className="w-2.5 h-2.5" />
-                          {muscleNameRu}
-                        </span>
+                    Отмена
+                  </button>
+                </div>
+              ) : undefined
+            }
+          >
+            {previewWorkoutData && (
+              <div className="space-y-3.5">
+                {previewSafety && !previewSafety.allowed && (
+                  <div
+                    role="alert"
+                    className="p-3 rounded-2xl bg-[#2B1414] border border-[#5C2626] text-xs text-[#FCA5A5] space-y-1"
+                  >
+                    <div className="flex items-center gap-1.5 font-bold text-[#F87171]">
+                      <ShieldAlert className="w-4 h-4 shrink-0" />
+                      <span>Safety Guard обнаружил ограничения:</span>
+                    </div>
+                    {previewSafety.vetoReasons.map((r, i) => (
+                      <div key={i} className="text-[11px]">
+                        • {r}
                       </div>
-                    </div>
-
-                    <div className="text-right shrink-0">
-                      <span className="text-xs font-bold text-[#58C995] font-mono block">
-                        {ex.sets} × {ex.reps}
-                      </span>
-                      <span className="text-[10px] text-[#7E8B8E]">
-                        {ex.targetWeight ? `${ex.targetWeight} кг` : 'рабочий вес'}
-                      </span>
-                    </div>
+                    ))}
                   </div>
-                  );
-                });
-              })()}
-            </div>
-          </div>
-        )}
-      </Modal>
+                )}
+
+                {/* Workout Key Metrics Row */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="bg-[#121A1E] border border-[#1E292E] p-3 rounded-2xl text-center">
+                    <Clock className="w-4 h-4 text-[#58C995] mx-auto mb-1" />
+                    <span className="text-[10px] text-[#869194] block">Длительность</span>
+                    <span className="text-xs font-bold text-[#E8E9E7] tabular-nums font-mono">
+                      ~{previewWorkoutData.day.estimatedDuration || 55} мин
+                    </span>
+                  </div>
+
+                  <div className="bg-[#121A1E] border border-[#1E292E] p-3 rounded-2xl text-center">
+                    <Dumbbell className="w-4 h-4 text-[#58C995] mx-auto mb-1" />
+                    <span className="text-[10px] text-[#869194] block">Упражнений</span>
+                    <span className="text-xs font-bold text-[#E8E9E7] tabular-nums font-mono">
+                      {previewWorkoutData.day.exercises?.length || 0}
+                    </span>
+                  </div>
+
+                  <div className="bg-[#121A1E] border border-[#1E292E] p-3 rounded-2xl text-center">
+                    <Layers className="w-4 h-4 text-[#58C995] mx-auto mb-1" />
+                    <span className="text-[10px] text-[#869194] block">Подходов</span>
+                    <span className="text-xs font-bold text-[#58C995] tabular-nums font-mono">
+                      {previewWorkoutData.day.exercises?.reduce(
+                        (acc, ex) => acc + (ex.sets || 4),
+                        0
+                      ) || 16}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Scrollable Exercises List */}
+                <div className="space-y-2">
+                  <span className="text-[10px] font-bold text-[#7E8B8E] uppercase tracking-wider block px-0.5">
+                    План упражнений ({previewWorkoutData.day.exercises?.length || 0}):
+                  </span>
+
+                  {previewWorkoutData.day.exercises?.map((ex, idx) => {
+                    const catalogItem = findExerciseInUnifiedCatalog(
+                      ex.exerciseId,
+                      ex.name,
+                      customExercisesForPreview,
+                      ex.targetMuscle
+                    );
+                    const muscleKey = (normalizeMuscleKeyPure(
+                      ex.targetMuscle || catalogItem?.primaryMuscle
+                    ) || 'quads_rectus') as MuscleGroup;
+                    const muscleNameRu = MUSCLE_DEFINITIONS[muscleKey]?.nameRu || 'Мышцы';
+                    const isBlockedEx = blockedIndexSet.has(idx);
+
+                    return (
+                      <div
+                        key={idx}
+                        className={`rounded-2xl p-3 flex items-center justify-between gap-3 border ${
+                          isBlockedEx
+                            ? 'bg-[#211214] border-[#5C2626]'
+                            : 'bg-[#121A1E] border-[#1B272C]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span
+                            className={`w-6 h-6 rounded-lg text-xs font-bold font-mono flex items-center justify-center shrink-0 ${
+                              isBlockedEx
+                                ? 'bg-[#3A1B1E] text-[#F87171]'
+                                : 'bg-[#18242A] text-[#58C995]'
+                            }`}
+                          >
+                            {idx + 1}
+                          </span>
+                          <div className="min-w-0">
+                            <h4 className="text-xs font-bold text-[#E8E9E7] truncate">{ex.name}</h4>
+                            <span className="text-[10px] text-[#869194] flex items-center gap-1 mt-0.5">
+                              {isBlockedEx ? (
+                                <>
+                                  <ShieldAlert className="w-2.5 h-2.5 text-[#F87171]" />
+                                  <span className="text-[#FCA5A5]">Заблокировано Safety Guard</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Dumbbell className="w-2.5 h-2.5" />
+                                  {muscleNameRu}
+                                </>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="text-right shrink-0">
+                          <span className="text-xs font-bold text-[#58C995] font-mono block">
+                            {ex.sets} × {ex.reps}
+                          </span>
+                          <span className="text-[10px] text-[#7E8B8E]">
+                            {ex.targetWeight ? `${ex.targetWeight} кг` : 'рабочий вес'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
 
       {/* ======================================================================= */}
       {/* 2. PROGRAM LIFECYCLE & MANAGEMENT MODALS                                */}

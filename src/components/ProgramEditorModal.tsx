@@ -9,10 +9,13 @@ import {
 } from '../types/workout';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { FormSelect } from './common/FormSelect';
-import { X, Plus, Trash2, ArrowRightLeft, ChevronDown, ChevronUp, BookOpen, Copy } from 'lucide-react';
+import { X, Plus, Trash2, ArrowRightLeft, ChevronDown, ChevronUp, BookOpen, Copy, ShieldAlert } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
 import { formatLocalIsoDate } from '../training-core/dateUtils';
+import { checkAddExerciseSafety, checkWorkoutLaunchSafety } from '../services/safetyContext';
+import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
+import { StorageService } from '../services/storage';
 
 interface ProgramEditorModalProps {
   initialProgram?: WorkoutProgram | null;
@@ -85,6 +88,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
   // Toast notification & highlight state for duplicated day
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [justDuplicatedId, setJustDuplicatedId] = useState<string | null>(null);
+  const [safetyError, setSafetyError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!toastMessage) return;
@@ -182,6 +186,10 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
   ) => {
     const next = [...workouts];
     (next[dayIndex].exercises[exIndex] as any)[field] = val;
+    if (field === 'isBodyweight' && val === true) {
+      next[dayIndex].exercises[exIndex].targetWeight = 0;
+    }
+    setSafetyError(null);
     setWorkouts(next);
   };
 
@@ -197,11 +205,28 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
 
   const handleSelectReplacement = (selected: any) => {
     if (!replacingTarget) return;
+    const safetyDecision = checkAddExerciseSafety({
+      exerciseId: selected.id,
+      name: selected.name,
+      targetMuscle: selected.primaryMuscle,
+      secondaryMuscles: selected.secondaryMuscles,
+      requiredEquipment: selected.requiredEquipment,
+      isBodyweight: Boolean(selected.isBodyweight),
+    });
+    if (!safetyDecision.allowed) {
+      setSafetyError(
+        safetyDecision.vetoReasons[0] ||
+          `Упражнение «${selected.name}» заблокировано Safety Guard.`
+      );
+      return;
+    }
+
     const { dayIndex, exIndex } = replacingTarget;
     const next = [...workouts];
     const prevEx = next[dayIndex].exercises[exIndex];
 
     next[dayIndex].exercises[exIndex] = {
+      exerciseId: selected.id,
       name: selected.name,
       targetMuscle: selected.primaryMuscle || 'chest',
       secondaryMuscles: selected.secondaryMuscles || [],
@@ -215,16 +240,34 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
       notes: prevEx.notes,
     };
 
+    setSafetyError(null);
     setWorkouts(next);
     setReplacingTarget(null);
   };
 
   const handleAddFromLibrary = (selected: any) => {
     if (showAddLibraryPicker === null) return;
+    const safetyDecision = checkAddExerciseSafety({
+      exerciseId: selected.id,
+      name: selected.name,
+      targetMuscle: selected.primaryMuscle,
+      secondaryMuscles: selected.secondaryMuscles,
+      requiredEquipment: selected.requiredEquipment,
+      isBodyweight: Boolean(selected.isBodyweight),
+    });
+    if (!safetyDecision.allowed) {
+      setSafetyError(
+        safetyDecision.vetoReasons[0] ||
+          `Упражнение «${selected.name}» заблокировано Safety Guard.`
+      );
+      return;
+    }
+
     const dayIndex = showAddLibraryPicker;
     const next = [...workouts];
 
     next[dayIndex].exercises.push({
+      exerciseId: selected.id,
       name: selected.name,
       targetMuscle: selected.primaryMuscle || 'chest',
       secondaryMuscles: selected.secondaryMuscles || [],
@@ -237,6 +280,7 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
       technique: selected.technique || '',
     });
 
+    setSafetyError(null);
     setWorkouts(next);
     setShowAddLibraryPicker(null);
   };
@@ -245,17 +289,62 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
     e.preventDefault();
     if (!name.trim()) return;
 
+    const customExercises = StorageService.getCustomExercises();
+    const allExercises = workouts.flatMap((d) =>
+      (d.exercises || []).map((ex) => {
+        const entry = findExerciseInUnifiedCatalog(
+          ex.exerciseId,
+          ex.name,
+          customExercises,
+          ex.targetMuscle
+        );
+        return {
+          ...ex,
+          exerciseId: ex.exerciseId || entry?.id,
+          targetMuscle: ex.targetMuscle || entry?.primaryMuscle,
+          secondaryMuscles:
+            ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+              ? ex.secondaryMuscles
+              : entry?.secondaryMuscles,
+          requiredEquipment: ex.requiredEquipment || entry?.requiredEquipment,
+          targetWeight: ex.isBodyweight
+            ? typeof ex.targetWeight === 'number' && ex.targetWeight < 0
+              ? ex.targetWeight
+              : 0
+            : ex.targetWeight,
+        };
+      })
+    );
+
+    const safetyEval = checkWorkoutLaunchSafety(allExercises);
+    if (!safetyEval.allowed) {
+      setSafetyError(
+        safetyEval.vetoReasons[0] ||
+          'В программе присутствуют небезопасные упражнения или рабочий вес, заблокированные Safety Guard.'
+      );
+      return;
+    }
+
+    const sanitizedWorkouts = workouts.map((d) => ({
+      ...d,
+      exercises: (d.exercises || []).map((ex) => ({
+        ...ex,
+        targetWeight: ex.isBodyweight ? 0 : ex.targetWeight,
+      })),
+    }));
+
     const programToSave: WorkoutProgram = {
       id: initialProgram?.id || `prog_${Date.now()}`,
       name: name.trim(),
       description: description.trim(),
       goal,
       daysPerWeek,
-      workouts,
+      workouts: sanitizedWorkouts,
       isCustom: true,
       createdAt: initialProgram?.createdAt || formatLocalIsoDate(new Date()),
     };
 
+    setSafetyError(null);
     onSave(programToSave);
   };
 
@@ -315,6 +404,24 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 space-y-4 text-xs [overscroll-behavior:contain] min-h-0">
+          {safetyError && (
+            <div
+              role="alert"
+              className="p-2.5 rounded-xl bg-[#2B1414] border border-[#5C2626] text-[11px] text-[#FCA5A5] flex items-center justify-between gap-2"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <ShieldAlert className="w-4 h-4 text-[#F87171] shrink-0" />
+                <span>{safetyError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSafetyError(null)}
+                className="text-[#FCA5A5] hover:text-white shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
           <div>
             <label className="block text-[11px] font-semibold text-[#92999A] mb-1">
               Название программы
@@ -581,7 +688,25 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
       {/* Exercise Replacement & Add Picker Modal */}
       {(replacingTarget !== null || showAddLibraryPicker !== null) && (
         <div className="fixed inset-0 z-60 bg-black/90 backdrop-blur-sm flex items-center justify-center p-3 animate-in fade-in">
-          <div className="w-full max-w-md bg-[#080D0E] border border-[#252D2F] rounded-2xl max-h-[85vh] flex flex-col overflow-hidden p-3 shadow-2xl">
+          <div className="w-full max-w-md bg-[#080D0E] border border-[#252D2F] rounded-2xl max-h-[85vh] flex flex-col overflow-hidden p-3 shadow-2xl space-y-2">
+            {safetyError && (
+              <div
+                role="alert"
+                className="p-2.5 rounded-xl bg-[#2B1414] border border-[#5C2626] text-[11px] text-[#FCA5A5] flex items-center justify-between gap-2 shrink-0"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <ShieldAlert className="w-4 h-4 text-[#F87171] shrink-0" />
+                  <span>{safetyError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSafetyError(null)}
+                  className="text-[#FCA5A5] hover:text-white shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             <ExerciseLibraryView
               selectionMode={true}
               onSelectExercise={(selected) => {

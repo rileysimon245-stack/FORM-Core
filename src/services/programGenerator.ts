@@ -5,8 +5,11 @@ import {
   MuscleGroup,
 } from '../types/workout';
 import { StorageService } from './storage';
+import { getCurrentSafetyContext } from './safetyContext';
 import { FullExerciseItem } from '../data/exerciseTypes';
 import { formatLocalIsoDate } from '../training-core/dateUtils';
+import { evaluateExerciseSafety, SafetyUserContext } from '../training-core/safetyGuard';
+import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
 
 export interface GeneratorParams {
   goal: string;
@@ -20,6 +23,39 @@ export interface GeneratorParams {
   healthRestrictions?: string[];
 }
 
+function buildGeneratorSafetyContext(params: GeneratorParams): SafetyUserContext {
+  const liveCtx = getCurrentSafetyContext();
+  return {
+    age: params.age !== undefined ? params.age : liveCtx.age,
+    excludedExercises:
+      params.excludedExercises !== undefined ? params.excludedExercises : liveCtx.excludedExercises,
+    healthRestrictions:
+      params.healthRestrictions !== undefined
+        ? params.healthRestrictions
+        : liveCtx.healthRestrictions,
+    generalPainLevel: liveCtx.generalPainLevel,
+    painByMuscle: liveCtx.painByMuscle,
+    daysSinceLastSession: liveCtx.daysSinceLastSession,
+  };
+}
+
+function isExerciseSafeForGenerator(
+  item: FullExerciseItem,
+  safetyContext: SafetyUserContext
+): boolean {
+  return evaluateExerciseSafety(
+    {
+      exerciseId: item.id,
+      name: item.name,
+      targetMuscle: item.primaryMuscle,
+      secondaryMuscles: item.secondaryMuscles,
+      requiredEquipment: item.requiredEquipment,
+      isBodyweight: Boolean(item.isBodyweight),
+    },
+    safetyContext
+  ).allowed;
+}
+
 export async function generateWorkoutProgram(
   params: GeneratorParams
 ): Promise<{ program: WorkoutProgram; source: 'ai' | 'algorithmic'; message?: string }> {
@@ -31,10 +67,18 @@ export async function generateWorkoutProgram(
 
   const enrichedParams: GeneratorParams = {
     ...params,
-    age: profile.age,
-    excludedExercises: userParams.excludedExercises || [],
-    healthRestrictions: userParams.healthRestrictions || [],
+    age: params.age !== undefined ? params.age : profile.age,
+    excludedExercises:
+      params.excludedExercises !== undefined
+        ? params.excludedExercises
+        : userParams.excludedExercises || [],
+    healthRestrictions:
+      params.healthRestrictions !== undefined
+        ? params.healthRestrictions
+        : userParams.healthRestrictions || [],
   };
+
+  const safetyContext = buildGeneratorSafetyContext(enrichedParams);
 
   // Attempt backend AI generation
   try {
@@ -50,29 +94,86 @@ export async function generateWorkoutProgram(
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.program && data.program.workouts) {
+        const customExercises = StorageService.getCustomExercises();
+        const catalog = StorageService.getAllExercises();
+        const safeCatalog = catalog.filter((item) =>
+          isExerciseSafeForGenerator(item, safetyContext)
+        );
+
         const fullProgram: WorkoutProgram = {
           id: `prog_ai_${Date.now()}`,
           name: data.program.name || `${params.goal}: ${params.daysPerWeek} дня`,
           description: data.program.description || 'Индивидуальная программа с учетом вашего инвентаря и ограничений',
           goal: params.goal,
           daysPerWeek: params.daysPerWeek,
-          workouts: data.program.workouts.map((w: any, idx: number) => ({
-            id: `w_gen_${idx}_${Date.now()}`,
-            dayName: w.dayName || `День ${idx + 1}`,
-            targetMuscleGroups: w.targetMuscleGroups || ['chest'],
-            estimatedDuration: w.estimatedDuration || params.duration,
-            exercises: (w.exercises || []).map((ex: any) => ({
-              exerciseId: ex.exerciseId || `ex_gen_${Math.random().toString(36).substring(2, 6)}`,
-              name: ex.name,
-              targetMuscle: ex.targetMuscle || 'chest',
-              isBodyweight: Boolean(ex.isBodyweight),
-              sets: Number(ex.sets) || 3,
-              reps: Number(ex.reps) || 10,
-              targetWeight: Number(ex.targetWeight) || 0,
-              restSeconds: Number(ex.restSeconds) || 75,
-              technique: ex.technique || 'Выполняйте в контролируемом темпе с правильной осанкой',
-            })),
-          })),
+          workouts: data.program.workouts.map((w: any, idx: number) => {
+            const sanitizedExercises: ProgramExerciseTemplate[] = [];
+            for (const ex of w.exercises || []) {
+              const catalogMatch = findExerciseInUnifiedCatalog(
+                ex.exerciseId,
+                ex.name,
+                customExercises,
+                ex.targetMuscle
+              );
+              const safetyCheck = evaluateExerciseSafety(
+                {
+                  exerciseId: ex.exerciseId || catalogMatch?.id,
+                  name: ex.name,
+                  targetMuscle: ex.targetMuscle || catalogMatch?.primaryMuscle || 'chest',
+                  secondaryMuscles: catalogMatch?.secondaryMuscles,
+                  requiredEquipment: catalogMatch?.requiredEquipment,
+                  isBodyweight: Boolean(ex.isBodyweight),
+                },
+                safetyContext
+              );
+
+              if (safetyCheck.allowed) {
+                sanitizedExercises.push({
+                  exerciseId: ex.exerciseId || catalogMatch?.id || `ex_gen_${Math.random().toString(36).substring(2, 6)}`,
+                  name: ex.name,
+                  targetMuscle: ex.targetMuscle || catalogMatch?.primaryMuscle || 'chest',
+                  secondaryMuscles: catalogMatch?.secondaryMuscles,
+                  isBodyweight: Boolean(ex.isBodyweight),
+                  requiredEquipment: catalogMatch?.requiredEquipment,
+                  sets: Number(ex.sets) || 3,
+                  reps: Number(ex.reps) || 10,
+                  targetWeight: 0,
+                  restSeconds: Number(ex.restSeconds) || 75,
+                  technique: ex.technique || 'Выполняйте в контролируемом темпе с правильной осанкой',
+                });
+              } else {
+                const targetMuscle = (ex.targetMuscle || catalogMatch?.primaryMuscle || 'chest') as MuscleGroup;
+                const safeReplacement = safeCatalog.find(
+                  (c) =>
+                    c.primaryMuscle === targetMuscle &&
+                    !sanitizedExercises.some((already) => already.name === c.name)
+                );
+                if (safeReplacement) {
+                  sanitizedExercises.push({
+                    exerciseId: safeReplacement.id,
+                    name: safeReplacement.name,
+                    targetMuscle: safeReplacement.primaryMuscle,
+                    secondaryMuscles: safeReplacement.secondaryMuscles,
+                    isBodyweight: safeReplacement.isBodyweight,
+                    requiredEquipment: safeReplacement.requiredEquipment,
+                    sets: Number(ex.sets) || safeReplacement.defaultSets || 3,
+                    reps: Number(ex.reps) || safeReplacement.defaultReps || 10,
+                    targetWeight: 0,
+                    restSeconds: Number(ex.restSeconds) || safeReplacement.defaultRestSeconds || 75,
+                    technique: safeReplacement.technique || 'Выполняйте в контролируемом темпе с правильной осанкой',
+                  });
+                }
+              }
+            }
+
+            return {
+              id: `w_gen_${idx}_${Date.now()}`,
+              dayName: w.dayName || `День ${idx + 1}`,
+              targetMuscleGroups: w.targetMuscleGroups || ['chest'],
+              estimatedDuration: w.estimatedDuration || params.duration,
+              exercises: sanitizedExercises,
+            };
+          }),
           isCustom: true,
           createdAt: formatLocalIsoDate(new Date()),
         };
@@ -97,15 +198,15 @@ export function generateLocalTemplateProgram(
   params: GeneratorParams,
   availableEquipmentIds?: string[]
 ): WorkoutProgram {
-  const { goal, daysPerWeek, duration, experience, age = 28 } = params;
+  const { goal, daysPerWeek, duration, experience, age } = params;
+  const effectiveAge = typeof age === 'number' && Number.isFinite(age) ? age : 0;
 
-  // 1. Get ALL exercises strictly from catalog (built-in 181 + custom exercises)
+  // 1. Get ALL exercises strictly from catalog (built-in + custom exercises)
   const catalog: FullExerciseItem[] = StorageService.getAllExercises();
+  const safetyContext = buildGeneratorSafetyContext(params);
 
   // Read available equipment
   const eqList = availableEquipmentIds || StorageService.getEquipmentList().filter((e) => e.selected).map((e) => e.id);
-  const excluded = (params.excludedExercises || []).map((e) => e.toLowerCase().trim());
-  const healthLimits = (params.healthRestrictions || []).map((h) => h.toLowerCase().trim());
 
   const hasBarbell = eqList.includes('barbell');
   const hasDumbbells = eqList.includes('dumbbells_adjustable') || eqList.includes('dumbbells_fixed');
@@ -117,58 +218,52 @@ export function generateLocalTemplateProgram(
   const hasJumpRope = eqList.includes('jump_rope');
   const hasBodyweight = eqList.includes('bodyweight') || eqList.length === 0;
 
-  const avoidSpine = healthLimits.some((h) => h.includes('позвоночник') || h.includes('осевой'));
-  const protectKnees = healthLimits.some((h) => h.includes('колен'));
-  const protectShoulders = healthLimits.some((h) => h.includes('плеч'));
+  const isEquipmentAvailable = (ex: FullExerciseItem): boolean => {
+    if (ex.requiredEquipment === 'barbell' && !hasBarbell) return false;
+    if ((ex.requiredEquipment === 'dumbbells_adjustable' || ex.requiredEquipment === 'dumbbells_fixed') && !hasDumbbells) return false;
+    if (ex.requiredEquipment === 'pullup_bar' && !hasPullupBar) return false;
+    if (ex.requiredEquipment === 'dip_bars' && !hasDipBars) return false;
+    if (ex.requiredEquipment === 'gym_machines' && !hasMachines) return false;
+    if (ex.requiredEquipment === 'kettlebells' && !hasKettlebells) return false;
+    if (ex.requiredEquipment === 'resistance_bands' && !hasBands) return false;
+    if (ex.requiredEquipment === 'jump_rope' && !hasJumpRope) return false;
+    if (ex.requiredEquipment === 'bodyweight' && !hasBodyweight) return false;
+    return true;
+  };
 
-  // Helper to pick exercise matching equipment strictly, muscle, and avoiding excluded
+  // Предварительная жёсткая фильтрация Safety Guard (возраст, исключения, ограничения здоровья, боль)
+  const safeCatalog = catalog.filter((ex) => isExerciseSafeForGenerator(ex, safetyContext));
+
+  // Helper to pick exercise matching equipment strictly, muscle, and Safety Guard
   const pickExercise = (
     primaryMuscle: MuscleGroup
-  ): ProgramExerciseTemplate => {
-    // 2. Filter candidate list strictly from catalog exercises
-    const candidates = catalog.filter((ex) => {
-      // Must target muscle
+  ): ProgramExerciseTemplate | null => {
+    const candidates = safeCatalog.filter((ex) => {
       if (ex.primaryMuscle !== primaryMuscle && !ex.secondaryMuscles?.includes(primaryMuscle)) {
         return false;
       }
-      // Must not be in user excluded list
-      if (excluded.includes(ex.name.toLowerCase().trim())) {
-        return false;
-      }
-      // Health restrictions
-      if (avoidSpine && (ex.name.includes('Становая тяга') || ex.name.includes('Приседания со штангой'))) {
-        return false;
-      }
-      if (protectKnees && ex.name.includes('Выпады')) {
-        return false;
-      }
-      if (protectShoulders && ex.name.includes('Армейский жим')) {
-        return false;
-      }
-      // Equipment check
-      if (ex.requiredEquipment === 'barbell' && !hasBarbell) return false;
-      if ((ex.requiredEquipment === 'dumbbells_adjustable' || ex.requiredEquipment === 'dumbbells_fixed') && !hasDumbbells) return false;
-      if (ex.requiredEquipment === 'pullup_bar' && !hasPullupBar) return false;
-      if (ex.requiredEquipment === 'dip_bars' && !hasDipBars) return false;
-      if (ex.requiredEquipment === 'gym_machines' && !hasMachines) return false;
-      if (ex.requiredEquipment === 'kettlebells' && !hasKettlebells) return false;
-      if (ex.requiredEquipment === 'resistance_bands' && !hasBands) return false;
-      if (ex.requiredEquipment === 'jump_rope' && !hasJumpRope) return false;
-      if (ex.requiredEquipment === 'bodyweight' && !hasBodyweight) return false;
-
-      return true;
+      return isEquipmentAvailable(ex);
     });
 
-    // Fallback to any catalog exercise matching primary muscle if equipment filter was too strict
-    const fallbackCandidates = catalog.filter((ex) => ex.primaryMuscle === primaryMuscle);
-    const chosen = candidates.length > 0 ? candidates[0] : (fallbackCandidates.length > 0 ? fallbackCandidates[0] : catalog[0]);
+    // Безопасный fallback: ТОЛЬКО из safeCatalog (никогда не обходит Safety Guard!)
+    const safeFallbackCandidates = safeCatalog.filter((ex) => ex.primaryMuscle === primaryMuscle);
+    const chosen =
+      candidates.length > 0
+        ? candidates[0]
+        : safeFallbackCandidates.length > 0
+        ? safeFallbackCandidates[0]
+        : null;
+
+    if (!chosen) {
+      return null;
+    }
 
     let targetReps = 10;
     let targetSets = 3;
     let restSec = chosen.defaultRestSeconds || 75;
 
     if (goal === 'Сила') {
-      targetReps = age > 50 ? 8 : 6;
+      targetReps = effectiveAge > 50 ? 8 : 6;
       targetSets = 4;
       restSec = 120;
     } else if (goal === 'Выносливость') {
@@ -196,6 +291,9 @@ export function generateLocalTemplateProgram(
     };
   };
 
+  const compactExercises = (list: Array<ProgramExerciseTemplate | null>): ProgramExerciseTemplate[] =>
+    list.filter((item): item is ProgramExerciseTemplate => item !== null);
+
   let workouts: ProgramWorkoutDay[] = [];
 
   if (daysPerWeek === 2) {
@@ -205,25 +303,25 @@ export function generateLocalTemplateProgram(
         dayName: 'День 1: Верх тела (Грудь, Спина, Плечи, Руки)',
         targetMuscleGroups: ['chest', 'lats', 'shoulders', 'biceps', 'triceps'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('chest'),
           pickExercise('lats'),
           pickExercise('shoulders'),
           pickExercise('biceps'),
           pickExercise('triceps'),
-        ],
+        ]),
       },
       {
         id: `w_gen_l_${Date.now()}`,
         dayName: 'День 2: Низ тела и Кор (Квадрицепсы, Бедра, Пресс)',
         targetMuscleGroups: ['quads', 'hamstrings', 'calves', 'abs'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('quads'),
           pickExercise('hamstrings'),
           pickExercise('calves'),
           pickExercise('abs'),
-        ],
+        ]),
       },
     ];
   } else if (daysPerWeek === 3) {
@@ -233,35 +331,35 @@ export function generateLocalTemplateProgram(
         dayName: 'День 1: Push (Грудь, Плечи, Трицепс)',
         targetMuscleGroups: ['chest', 'shoulders', 'triceps'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('chest'),
           pickExercise('shoulders'),
           pickExercise('triceps'),
           pickExercise('abs'),
-        ],
+        ]),
       },
       {
         id: `w_gen_pull_${Date.now()}`,
         dayName: 'День 2: Pull (Спина, Задние дельты, Бицепс)',
         targetMuscleGroups: ['lats', 'rearDelts', 'biceps'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('lats'),
           pickExercise('rearDelts'),
           pickExercise('biceps'),
-        ],
+        ]),
       },
       {
         id: `w_gen_legs_${Date.now()}`,
         dayName: 'День 3: Legs (Квадрицепсы, Бедра, Икры)',
         targetMuscleGroups: ['quads', 'hamstrings', 'calves'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('quads'),
           pickExercise('hamstrings'),
           pickExercise('calves'),
           pickExercise('abs'),
-        ],
+        ]),
       },
     ];
   } else {
@@ -271,44 +369,44 @@ export function generateLocalTemplateProgram(
         dayName: 'День 1: Верх А (Сила — Грудь и Спина)',
         targetMuscleGroups: ['chest', 'lats'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('chest'),
           pickExercise('lats'),
           pickExercise('shoulders'),
-        ],
+        ]),
       },
       {
         id: `w_gen_l1_${Date.now()}`,
         dayName: 'День 2: Низ А (Квадрицепсы и Икры)',
         targetMuscleGroups: ['quads', 'calves', 'abs'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('quads'),
           pickExercise('calves'),
           pickExercise('abs'),
-        ],
+        ]),
       },
       {
         id: `w_gen_u2_${Date.now()}`,
         dayName: 'День 3: Верх Б (Плечи и Руки)',
         targetMuscleGroups: ['shoulders', 'biceps', 'triceps'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('shoulders'),
           pickExercise('biceps'),
           pickExercise('triceps'),
-        ],
+        ]),
       },
       {
         id: `w_gen_l2_${Date.now()}`,
         dayName: 'День 4: Низ Б (Задняя поверхность бедра и Кор)',
         targetMuscleGroups: ['hamstrings', 'glutes', 'abs'],
         estimatedDuration: duration,
-        exercises: [
+        exercises: compactExercises([
           pickExercise('hamstrings'),
           pickExercise('glutes'),
           pickExercise('abs'),
-        ],
+        ]),
       },
     ];
   }

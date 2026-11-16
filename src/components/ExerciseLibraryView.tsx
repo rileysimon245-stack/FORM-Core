@@ -14,6 +14,7 @@ import {
   EQUIPMENT_OPTIONS_CONFIG,
 } from '../data/exerciseTypes';
 import { StorageService } from '../services/storage';
+import { checkAddExerciseSafety } from '../services/safetyContext';
 import {
   Search,
   Star,
@@ -33,6 +34,7 @@ import {
   Sparkles,
   SlidersHorizontal,
   TrendingUp,
+  ShieldAlert,
 } from 'lucide-react';
 import { ExerciseProgressModal } from './ExerciseProgressModal';
 
@@ -100,6 +102,9 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
   // Show secondary filters bar toggle
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
+  // Safety Guard feedback banner if blocked exercise selection is attempted
+  const [selectionBlockNotice, setSelectionBlockNotice] = useState<string | null>(null);
+
   // Listen to StorageService updates
   useEffect(() => {
     const unsub = StorageService.subscribe(() => {
@@ -126,6 +131,35 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
     e.stopPropagation();
     StorageService.toggleFavoriteExercise(id);
     setFavorites(StorageService.getFavoriteExerciseIds());
+  };
+
+  // Unified guarded selection handler for all selection buttons ("Выбрать" and "Использовать это упражнение")
+  const handleSelectExerciseSafely = (
+    e: React.MouseEvent,
+    item: FullExerciseItem
+  ) => {
+    e.stopPropagation();
+    if (!selectionMode || !onSelectExercise) return;
+
+    const freshDecision = checkAddExerciseSafety({
+      exerciseId: item.id,
+      name: item.name,
+      targetMuscle: item.primaryMuscle,
+      secondaryMuscles: item.secondaryMuscles,
+      requiredEquipment: item.requiredEquipment,
+      isBodyweight: Boolean(item.isBodyweight),
+    });
+
+    if (!freshDecision.allowed) {
+      setSelectionBlockNotice(
+        freshDecision.vetoReasons[0] ||
+          `Упражнение «${item.name}» заблокировано Safety Guard.`
+      );
+      return;
+    }
+
+    setSelectionBlockNotice(null);
+    onSelectExercise(item);
   };
 
   // Derive unique subcategories for the currently selected category
@@ -316,6 +350,26 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
           )}
         </div>
       </div>
+
+      {selectionMode && selectionBlockNotice && (
+        <div
+          role="alert"
+          className="px-3.5 py-2.5 rounded-2xl bg-[#2B1414] border border-[#5C2626] text-xs text-[#FCA5A5] flex items-center justify-between gap-2"
+        >
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <ShieldAlert className="w-4 h-4 text-[#F87171] shrink-0" />
+            <span>{selectionBlockNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectionBlockNotice(null)}
+            className="text-[#FCA5A5] hover:text-white p-0.5 cursor-pointer shrink-0"
+            aria-label="Закрыть предупреждение Safety Guard"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Search Input Bar */}
       <div className="relative">
@@ -583,13 +637,26 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
             const isFav = favorites.includes(item.id);
             const isExpanded = expandedId === item.id;
             const primaryMuscleRu = MUSCLE_DEFINITIONS[item.primaryMuscle]?.nameRu || item.primaryMuscle;
+            const safetyDecision = selectionMode
+              ? checkAddExerciseSafety({
+                  exerciseId: item.id,
+                  name: item.name,
+                  targetMuscle: item.primaryMuscle,
+                  secondaryMuscles: item.secondaryMuscles,
+                  requiredEquipment: item.requiredEquipment,
+                  isBodyweight: Boolean(item.isBodyweight),
+                })
+              : null;
+            const isSafetyBlocked = Boolean(safetyDecision && !safetyDecision.allowed);
 
             return (
               <div
                 key={item.id}
                 onClick={() => setExpandedId(isExpanded ? null : item.id)}
                 className={`rounded-[28px] bg-[#13171B] border p-4.5 space-y-3 transition-all cursor-pointer shadow-xl ${
-                  isExpanded
+                  isSafetyBlocked
+                    ? 'border-[#5C2626] opacity-80'
+                    : isExpanded
                     ? 'border-[#58C995] shadow-[0_8px_30px_rgba(88,201,149,0.1)]'
                     : 'border-[#1F2730] hover:border-[#2D3945]'
                 }`}
@@ -640,6 +707,17 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
                       {item.isCustom && (
                         <span className="text-[10px] text-[#FFB347] bg-[#FFB347]/10 border border-[#FFB347]/30 px-1.5 py-0.5 rounded-md font-semibold">
                           Своё
+                        </span>
+                      )}
+
+                      {/* Safety Guard blocked badge */}
+                      {isSafetyBlocked && safetyDecision && (
+                        <span
+                          title={safetyDecision.vetoReasons.join(' ')}
+                          className="text-[10px] text-[#FCA5A5] bg-[#2B1414] border border-[#5C2626] px-1.5 py-0.5 rounded-md font-semibold flex items-center gap-1"
+                        >
+                          <ShieldAlert className="w-2.5 h-2.5 text-[#F87171]" />
+                          <span>Safety Guard</span>
                         </span>
                       )}
                     </div>
@@ -726,13 +804,21 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
                     {selectionMode && onSelectExercise && (
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectExercise(item);
-                        }}
-                        className="px-3 py-1.5 bg-[#58C995] hover:bg-[#48b885] text-[#080D0E] font-bold text-xs rounded-xl transition-all cursor-pointer shadow-sm"
+                        disabled={isSafetyBlocked}
+                        aria-disabled={isSafetyBlocked}
+                        onClick={(e) => handleSelectExerciseSafely(e, item)}
+                        title={
+                          isSafetyBlocked && safetyDecision
+                            ? safetyDecision.vetoReasons.join(' ')
+                            : 'Выбрать упражнение'
+                        }
+                        className={`px-3 py-1.5 font-bold text-xs rounded-xl transition-all shadow-sm ${
+                          isSafetyBlocked
+                            ? 'bg-[#2B1414] border border-[#5C2626] text-[#FCA5A5] cursor-not-allowed opacity-75'
+                            : 'bg-[#58C995] hover:bg-[#48b885] text-[#080D0E] cursor-pointer'
+                        }`}
                       >
-                        Выбрать
+                        {isSafetyBlocked ? 'Ограничено' : 'Выбрать'}
                       </button>
                     )}
                   </div>
@@ -816,17 +902,43 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
                       <span>Открыть график прогресса и историю</span>
                     </button>
 
+                    {/* Safety Guard Notice inside expanded card */}
+                    {isSafetyBlocked && safetyDecision && (
+                      <div
+                        role="alert"
+                        className="p-3 rounded-xl bg-[#2B1414] border border-[#5C2626] text-[11px] text-[#FCA5A5] space-y-1"
+                      >
+                        <div className="flex items-center gap-1.5 font-bold text-[#F87171]">
+                          <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                          <span>Упражнение недоступно по ограничениям Safety Guard:</span>
+                        </div>
+                        {safetyDecision.vetoReasons.map((reason, rIdx) => (
+                          <div key={rIdx}>• {reason}</div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Big Select Button inside expanded view for convenience */}
                     {selectionMode && onSelectExercise && (
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectExercise(item);
-                        }}
-                        className="w-full py-2.5 bg-[#58C995] hover:bg-[#48b885] text-[#080D0E] font-bold text-xs rounded-xl mt-2 cursor-pointer shadow-md transition-all"
+                        disabled={isSafetyBlocked}
+                        aria-disabled={isSafetyBlocked}
+                        onClick={(e) => handleSelectExerciseSafely(e, item)}
+                        title={
+                          isSafetyBlocked && safetyDecision
+                            ? safetyDecision.vetoReasons.join(' ')
+                            : 'Использовать это упражнение'
+                        }
+                        className={`w-full py-2.5 font-bold text-xs rounded-xl mt-2 transition-all shadow-md ${
+                          isSafetyBlocked
+                            ? 'bg-[#2B1414] border border-[#5C2626] text-[#FCA5A5] cursor-not-allowed opacity-75'
+                            : 'bg-[#58C995] hover:bg-[#48b885] text-[#080D0E] cursor-pointer'
+                        }`}
                       >
-                        Использовать это упражнение
+                        {isSafetyBlocked
+                          ? 'Ограничено Safety Guard'
+                          : 'Использовать это упражнение'}
                       </button>
                     )}
                   </div>

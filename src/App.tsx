@@ -10,6 +10,9 @@ import { SafeWriteResult, StartupRecoveryResolution } from './services/migration
 import { findExerciseInUnifiedCatalog } from './training-core/catalog';
 import { normalizeMuscleKeyPure, normalizeMuscleListPure } from './training-core/muscles';
 import { formatLocalIsoDate } from './training-core/dateUtils';
+import { checkWorkoutLaunchSafety } from './services/safetyContext';
+import { Modal } from './components/common/Modal';
+import { ShieldAlert, AlertTriangle } from 'lucide-react';
 import {
   UserProfile,
   WorkoutProgram,
@@ -183,6 +186,14 @@ function MainAppContent() {
     dateStr: string;
     status: 'completed' | 'skipped' | 'none';
   } | null>(null);
+  const [safetyBlockModal, setSafetyBlockModal] = useState<{
+    title: string;
+    vetoReasons: string[];
+    blockedExercises: Array<{ name: string; reasons: string[] }>;
+    safeExercisesCount: number;
+    canContinueSafeOnly: boolean;
+    onProceedSafeOnly?: () => void;
+  } | null>(null);
 
   // Lock body scroll when any modal is open
   const isAnyModalOpen = Boolean(
@@ -194,7 +205,8 @@ function MainAppContent() {
     showSettings ||
     showWeeklyScheduleModal ||
     sportModalDate ||
-    inspectingDay
+    inspectingDay ||
+    safetyBlockModal
   );
 
   useEffect(() => {
@@ -231,8 +243,8 @@ function MainAppContent() {
     return () => unsubscribe();
   }, [reloadData]);
 
-  // Handle launching workout from a program day
-  const handleStartProgramWorkout = (
+  // Build & launch program workout session (called only after passing Safety Guard)
+  const launchProgramWorkoutSession = (
     day: ProgramWorkoutDay,
     programName: string,
     programId?: string,
@@ -304,6 +316,8 @@ function MainAppContent() {
             exerciseName: ex.name,
             exerciseId: ex.exerciseId || catalogEntry?.id || null,
             targetMuscle: resolvedPrimary,
+            secondaryMuscles: resolvedSecondary,
+            requiredEquipment: ex.requiredEquipment || catalogEntry?.requiredEquipment,
             setsCount: ex.sets || 3,
             defaultReps: ex.reps || 10,
             explicitTargetWeight: ex.targetWeight,
@@ -317,8 +331,91 @@ function MainAppContent() {
     setActiveWorkoutSession(newSession);
   };
 
-  // Quick start blank workout
+  // Handle launching workout from a program day (with mandatory Safety Guard check)
+  const handleStartProgramWorkout = (
+    day: ProgramWorkoutDay,
+    programName: string,
+    programId?: string,
+    overrideDate?: string
+  ) => {
+    const customExercises = StorageService.getCustomExercises();
+    const enrichedCandidates = (day.exercises || []).map((ex) => {
+      const catalogEntry = findExerciseInUnifiedCatalog(
+        ex.exerciseId,
+        ex.name,
+        customExercises,
+        ex.targetMuscle
+      );
+      return {
+        ...ex,
+        exerciseId: ex.exerciseId || catalogEntry?.id,
+        targetMuscle: ex.targetMuscle || catalogEntry?.primaryMuscle,
+        secondaryMuscles:
+          ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+            ? ex.secondaryMuscles
+            : catalogEntry?.secondaryMuscles,
+        requiredEquipment: ex.requiredEquipment || catalogEntry?.requiredEquipment,
+      };
+    });
+
+    const safetyEval = checkWorkoutLaunchSafety(enrichedCandidates);
+    if (!safetyEval.allowed) {
+      const blockedIndices = new Set(safetyEval.blockedExercises.map((b) => b.index));
+      const safeOriginalExercises = (day.exercises || []).filter((_, idx) => !blockedIndices.has(idx));
+      const hasGlobalBlock = safetyEval.blockedExercises.some(
+        (b) => b.decision.blockedByAge || b.decision.blockedByPain
+      );
+      const canContinueSafeOnly =
+        safeOriginalExercises.length > 0 &&
+        !hasGlobalBlock &&
+        checkWorkoutLaunchSafety(
+          enrichedCandidates.filter((_, idx) => !blockedIndices.has(idx))
+        ).allowed;
+
+      setSafetyBlockModal({
+        title: `Запуск «${day.dayName}» заблокирован`,
+        vetoReasons: safetyEval.vetoReasons,
+        blockedExercises: safetyEval.blockedExercises.map((b) => ({
+          name: b.exercise.name,
+          reasons: b.decision.vetoReasons,
+        })),
+        safeExercisesCount: safeOriginalExercises.length,
+        canContinueSafeOnly,
+        onProceedSafeOnly: canContinueSafeOnly
+          ? () => {
+              const filteredDay: ProgramWorkoutDay = {
+                ...day,
+                exercises: safeOriginalExercises,
+              };
+              const recheck = checkWorkoutLaunchSafety(
+                enrichedCandidates.filter((_, idx) => !blockedIndices.has(idx))
+              );
+              if (!recheck.allowed) return;
+              setSafetyBlockModal(null);
+              launchProgramWorkoutSession(filteredDay, programName, programId, overrideDate);
+            }
+          : undefined,
+      });
+      return;
+    }
+
+    launchProgramWorkoutSession(day, programName, programId, overrideDate);
+  };
+
+  // Quick start blank workout (with Safety Guard age / pain check)
   const handleStartCustomQuickWorkout = (overrideDate?: string) => {
+    const safetyEval = checkWorkoutLaunchSafety([]);
+    if (!safetyEval.allowed) {
+      setSafetyBlockModal({
+        title: 'Свободная тренировка заблокирована',
+        vetoReasons: safetyEval.vetoReasons,
+        blockedExercises: [],
+        safeExercisesCount: 0,
+        canContinueSafeOnly: false,
+      });
+      return;
+    }
+
     const now = new Date();
     const todayStr = overrideDate || formatLocalIsoDate(now);
     const quickSession: WorkoutSession = {
@@ -356,8 +453,70 @@ function MainAppContent() {
     return res;
   };
 
-  // Resume or discard draft
+  // Resume or discard draft (with mandatory Safety Guard check against current parameters)
   const handleResumeDraft = (draft: WorkoutSession) => {
+    const customExercises = StorageService.getCustomExercises();
+    const enrichedCandidates = (draft.exercises || []).map((ex) => {
+      const catalogEntry = findExerciseInUnifiedCatalog(
+        ex.exerciseId,
+        ex.name,
+        customExercises,
+        ex.targetMuscle
+      );
+      return {
+        ...ex,
+        exerciseId: ex.exerciseId || catalogEntry?.id,
+        targetMuscle: ex.targetMuscle || catalogEntry?.primaryMuscle,
+        secondaryMuscles:
+          ex.secondaryMuscles && ex.secondaryMuscles.length > 0
+            ? ex.secondaryMuscles
+            : catalogEntry?.secondaryMuscles,
+        requiredEquipment: ex.requiredEquipment || catalogEntry?.requiredEquipment,
+      };
+    });
+
+    const safetyEval = checkWorkoutLaunchSafety(enrichedCandidates);
+    if (!safetyEval.allowed) {
+      const blockedIndices = new Set(safetyEval.blockedExercises.map((b) => b.index));
+      const safeDraftExercises = (draft.exercises || []).filter((_, idx) => !blockedIndices.has(idx));
+      const hasGlobalBlock = safetyEval.blockedExercises.some(
+        (b) => b.decision.blockedByAge || b.decision.blockedByPain
+      );
+      const canContinueSafeOnly =
+        safeDraftExercises.length > 0 &&
+        !hasGlobalBlock &&
+        checkWorkoutLaunchSafety(
+          enrichedCandidates.filter((_, idx) => !blockedIndices.has(idx))
+        ).allowed;
+
+      setSafetyBlockModal({
+        title: 'Продолжение черновика ограничено Safety Guard',
+        vetoReasons: safetyEval.vetoReasons,
+        blockedExercises: safetyEval.blockedExercises.map((b) => ({
+          name: b.exercise.name,
+          reasons: b.decision.vetoReasons,
+        })),
+        safeExercisesCount: safeDraftExercises.length,
+        canContinueSafeOnly,
+        onProceedSafeOnly: canContinueSafeOnly
+          ? () => {
+              const filteredDraft: WorkoutSession = {
+                ...draft,
+                exercises: safeDraftExercises,
+              };
+              const recheck = checkWorkoutLaunchSafety(
+                enrichedCandidates.filter((_, idx) => !blockedIndices.has(idx))
+              );
+              if (!recheck.allowed) return;
+              setSafetyBlockModal(null);
+              setIsResumedDraft(true);
+              setActiveWorkoutSession(filteredDraft);
+            }
+          : undefined,
+      });
+      return;
+    }
+
     setIsResumedDraft(true);
     setActiveWorkoutSession(draft);
   };
@@ -770,6 +929,73 @@ function MainAppContent() {
               />
             )}
           </AnimatePresence>
+
+          {/* Safety Guard Blocking Modal */}
+          <Modal
+            isOpen={Boolean(safetyBlockModal)}
+            onClose={() => setSafetyBlockModal(null)}
+            title="Safety Guard: блокировка"
+            subtitle={safetyBlockModal?.title}
+            icon={<ShieldAlert className="w-5 h-5 text-[#E05353]" />}
+            zIndex="z-[120]"
+            footer={
+              safetyBlockModal ? (
+                <div className="space-y-2">
+                  {safetyBlockModal.canContinueSafeOnly && safetyBlockModal.onProceedSafeOnly && (
+                    <button
+                      type="button"
+                      onClick={safetyBlockModal.onProceedSafeOnly}
+                      className="w-full py-3 bg-[#58C995] hover:bg-[#68d7a4] text-[#080D0E] font-black text-xs uppercase tracking-wider rounded-2xl cursor-pointer active:scale-95 transition-all"
+                    >
+                      Начать без заблокированных ({safetyBlockModal.safeExercisesCount})
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSafetyBlockModal(null)}
+                    className="w-full py-2.5 bg-[#182327] hover:bg-[#202E34] text-[#E8E9E7] font-bold text-xs rounded-2xl cursor-pointer transition-all"
+                  >
+                    Закрыть
+                  </button>
+                </div>
+              ) : undefined
+            }
+          >
+            {safetyBlockModal && (
+              <div className="space-y-3" role="alert">
+                <div className="p-3 rounded-2xl bg-[#2B1414] border border-[#5C2626] text-xs text-[#FCA5A5] space-y-1.5">
+                  <div className="flex items-center gap-1.5 font-bold text-[#F87171]">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>Обнаружены небезопасные упражнения или параметры:</span>
+                  </div>
+                  <ul className="space-y-1 pl-1">
+                    {safetyBlockModal.vetoReasons.map((reason, idx) => (
+                      <li key={idx}>• {reason}</li>
+                    ))}
+                  </ul>
+                </div>
+
+                {safetyBlockModal.blockedExercises.length > 0 && (
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-bold text-[#92999A] uppercase tracking-wider block">
+                      Заблокированные упражнения ({safetyBlockModal.blockedExercises.length}):
+                    </span>
+                    {safetyBlockModal.blockedExercises.map((b, idx) => (
+                      <div
+                        key={idx}
+                        className="p-2.5 rounded-xl bg-[#121A1E] border border-[#2C2024] text-xs"
+                      >
+                        <div className="font-bold text-[#E8E9E7]">{b.name}</div>
+                        <div className="text-[11px] text-[#FCA5A5] mt-0.5">
+                          {b.reasons.join(' ')}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </Modal>
         </div>
       </div>
     </AnimationProvider>

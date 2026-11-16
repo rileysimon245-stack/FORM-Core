@@ -15,7 +15,12 @@ import {
   calculateExerciseVolumeKg,
   calculateWorkoutMetrics,
 } from '../coreMath';
-import { evaluateSafetyGuard } from '../safetyGuard';
+import {
+  evaluateSafetyGuard,
+  evaluateExerciseSafety,
+  evaluateWorkoutLaunchSafety,
+  HEALTH_RESTRICTION_PRESETS,
+} from '../safetyGuard';
 import {
   formatLocalIsoDate,
   parseIsoDateLocal,
@@ -67,6 +72,12 @@ import {
   resolveInitialExerciseSets,
   resolveSessionBodyWeightKg,
 } from '../../services/storage';
+import {
+  checkWorkoutLaunchSafety,
+  checkAddExerciseSafety,
+  checkWeightIncreaseSafety,
+} from '../../services/safetyContext';
+import { generateLocalTemplateProgram } from '../../services/programGenerator';
 import { STRENGTH_PROGRAMS, MOBILITY_PROGRAMS } from '../../data/directionsCatalog';
 import { FullExerciseItem } from '../../data/exerciseTypes';
 import { ActivityIntensity } from '../../types/workout';
@@ -2881,14 +2892,15 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
     return 'Похожие названия, позиционные ex_0 и разные целевые мышцы строго изолированы';
   });
 
-  // 49. Вес, заданный пользователем в редакторе программы, не перезаписывается историей
+  // 49. Вес, заданный пользователем в редакторе программы (в рамках Safety Guard), не перезаписывается историей
   test('Рабочие веса и история', 'Вес, явно заданный пользователем в редакторе программы, не перезаписывается историей', () => {
     withIsolatedMockStorage((store) => {
       store.set('form_schema_version_v1', '11');
+      StorageService.updateProfile({ age: 28, weightKg: 80 });
       StorageService.saveWorkoutSession({
         id: 'w_prev_bench',
         name: 'Прошлая тренировка',
-        date: '2026-11-10',
+        date: formatLocalIsoDate(new Date()),
         startTime: '18:00',
         durationMinutes: 40,
         totalVolumeKg: 600,
@@ -2913,14 +2925,14 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
         targetMuscle: 'chest_mid',
         setsCount: 3,
         defaultReps: 8,
-        explicitTargetWeight: 82.5,
+        explicitTargetWeight: 62.5,
         isBodyweight: false,
       });
 
       assert(resolved.length === 3, 'Должно быть 3 подхода');
       assert(
-        resolved.every((s) => s.weightKg === 82.5),
-        `Явно заданный в программе вес 82.5 кг не должен перезаписываться историей (60 кг): получено ${resolved.map((s) => s.weightKg).join(',')}`
+        resolved.every((s) => s.weightKg === 62.5),
+        `Явно заданный в программе безопасный вес 62.5 кг не должен перезаписываться историей (60 кг): получено ${resolved.map((s) => s.weightKg).join(',')}`
       );
     });
 
@@ -3869,6 +3881,748 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
     });
 
     return 'Сохранённая масса тела переживает перезапуск, миграции и экспорт/импорт бэкапа';
+  });
+
+  // ============================================================================
+  // QA-040: Интеграция Safety Guard в реальные тренировочные сценарии
+  // ============================================================================
+
+  // 64. Обычный старт тренировки и отсутствие ложных блокировок
+  test('Safety Guard (QA-040)', 'Обычный старт взрослого пользователя без ограничений разрешён без ложных блокировок', () => {
+    withIsolatedMockStorage(() => {
+      StorageService.updateProfile({ age: 27, weightKg: 78 });
+      StorageService.saveUserParameters({
+        goal: 'Развитие мышц',
+        level: 'Средний',
+        location: 'В зале',
+        daysPerWeek: 3,
+        durationMinutes: 60,
+        availableDays: ['Пн', 'Ср', 'Пт'],
+        preferredMuscles: ['chest', 'lats'],
+        excludedExercises: [],
+        healthRestrictions: [],
+        notes: '',
+      });
+
+      const launchCheck = checkWorkoutLaunchSafety([
+        { exerciseId: 'barbell_bench_press_flat', name: 'Жим штанги лёжа', targetMuscle: 'chest', requiredEquipment: 'barbell' },
+        { exerciseId: 'lat_pulldown_wide', name: 'Тяга верхнего блока', targetMuscle: 'lats', requiredEquipment: 'crossover' },
+      ]);
+
+      assert(launchCheck.allowed === true, 'Обычный старт тренировки должен быть разрешён');
+      assert(launchCheck.blockedExercises.length === 0, 'Не должно быть заблокированных упражнений');
+      assert(launchCheck.conservativeMode === false, 'При возрасте 27 лет консервативный режим выключен');
+
+      // Проверка отсутствия ложных срабатываний на похожих названиях
+      StorageService.saveUserParameters({
+        ...StorageService.getUserParameters(),
+        healthRestrictions: [
+          HEALTH_RESTRICTION_PRESETS.NO_DEEP_BENDS_OR_ARCHES,
+          HEALTH_RESTRICTION_PRESETS.AVOID_SHARP_JUMPS,
+        ],
+      });
+      const inclinePress = checkAddExerciseSafety({
+        exerciseId: 'dumbbell_bench_press_incline',
+        name: 'Жим гантелей на наклонной скамье',
+        targetMuscle: 'chest_upper',
+        requiredEquipment: 'dumbbells_adjustable',
+      });
+      assert(inclinePress.allowed === true, 'Жим на наклонной скамье не должен ложно блокироваться ограничением наклонов корпуса');
+
+      const burpeeNoJump = checkAddExerciseSafety({
+        exerciseId: 'burpee_no_jump',
+        name: 'Бёрпи без прыжка',
+        targetMuscle: 'abs',
+        requiredEquipment: 'bodyweight',
+        isBodyweight: true,
+      });
+      assert(burpeeNoJump.allowed === true, 'Бёрпи без прыжка не должен ложно блокироваться запретом прыжков');
+    });
+
+    return 'Обычный старт разрешён; ложных срабатываний на наклонной скамье и бёрпи без прыжка нет';
+  });
+
+  // 65. Старт и добавление с исключённым упражнением (включая ё↔е и регистр)
+  test('Safety Guard (QA-040)', 'Исключённые упражнения реально блокируются при старте, продолжении черновика и добавлении в тренировку', () => {
+    withIsolatedMockStorage(() => {
+      StorageService.updateProfile({ age: 30, weightKg: 80 });
+      StorageService.saveUserParameters({
+        goal: 'Сила',
+        level: 'Средний',
+        location: 'В зале',
+        daysPerWeek: 3,
+        durationMinutes: 60,
+        availableDays: ['Пн', 'Ср', 'Пт'],
+        preferredMuscles: ['chest', 'quads'],
+        excludedExercises: ['Жим штанги лёжа', 'Приседания со штангой'],
+        healthRestrictions: [],
+        notes: '',
+      });
+
+      const launchCheck = checkWorkoutLaunchSafety([
+        { exerciseId: 'barbell_bench_press_flat', name: 'Жим штанги лежа', targetMuscle: 'chest', requiredEquipment: 'barbell' },
+        { exerciseId: 'pushups_classic', name: 'Отжимания классические', targetMuscle: 'chest', requiredEquipment: 'bodyweight', isBodyweight: true },
+      ]);
+
+      assert(launchCheck.allowed === false, 'Тренировка с исключённым упражнением обязана блокироваться (с нормализацией ё/е)');
+      assert(launchCheck.blockedExercises.length === 1 && launchCheck.blockedExercises[0].decision.blockedByExclusion === true, 'Должна быть зафиксирована причина blockedByExclusion');
+      assert(launchCheck.safeExercises.length === 1 && launchCheck.safeExercises[0].name === 'Отжимания классические', 'Безопасные упражнения должны отделяться корректно');
+
+      const addBlocked = checkAddExerciseSafety({
+        exerciseId: 'barbell_back_squats',
+        name: 'Приседания со штангой',
+        targetMuscle: 'quads',
+        requiredEquipment: 'barbell',
+      });
+      assert(addBlocked.allowed === false && addBlocked.blockedByExclusion === true, 'Добавление исключённого упражнения во время тренировки должно блокироваться');
+
+      const addSafe = checkAddExerciseSafety({
+        exerciseId: 'glute_bridge_bodyweight',
+        name: 'Ягодичный мост',
+        targetMuscle: 'glutes',
+        requiredEquipment: 'bodyweight',
+        isBodyweight: true,
+      });
+      assert(addSafe.allowed === true, 'Добавление неисключённого безопасного упражнения должно быть разрешено');
+    });
+
+    return 'Исключённые упражнения заблокированы во всех сценариях старта и добавления';
+  });
+
+  // 66. Все 5 ограничений по здоровью, несовершеннолетний/некорректный возраст и боль
+  test('Safety Guard (QA-040)', 'Ограничения по здоровью, возраст (<18 и невалидный) и боль реально блокируют опасные действия', () => {
+    withIsolatedMockStorage(() => {
+      // 1) Все 5 ограничений здоровья
+      const spineBlock = evaluateExerciseSafety(
+        { exerciseId: 'romanian_deadlift_barbell', name: 'Румынская тяга со штангой', targetMuscle: 'hamstrings', requiredEquipment: 'barbell' },
+        { age: 25, healthRestrictions: [HEALTH_RESTRICTION_PRESETS.NO_AXIAL_SPINE_LOAD] }
+      );
+      assert(!spineBlock.allowed && spineBlock.blockedByHealthRestriction, 'Осевая нагрузка: румынская тяга со штангой должна блокироваться');
+
+      const kneeBlock = evaluateExerciseSafety(
+        { exerciseId: 'forward_lunges', name: 'Выпады вперёд', targetMuscle: 'quads', requiredEquipment: 'dumbbells_adjustable' },
+        { age: 25, healthRestrictions: [HEALTH_RESTRICTION_PRESETS.PROTECT_KNEES] }
+      );
+      assert(!kneeBlock.allowed && kneeBlock.blockedByHealthRestriction, 'Колени: выпады должны блокироваться');
+
+      const shoulderBlock = evaluateExerciseSafety(
+        { exerciseId: 'barbell_overhead_press_standing', name: 'Жим штанги стоя', targetMuscle: 'front_delts', requiredEquipment: 'barbell' },
+        { age: 25, healthRestrictions: [HEALTH_RESTRICTION_PRESETS.PROTECT_SHOULDERS] }
+      );
+      assert(!shoulderBlock.allowed && shoulderBlock.blockedByHealthRestriction, 'Плечи: жим штанги стоя должен блокироваться');
+
+      const bendBlock = evaluateExerciseSafety(
+        { exerciseId: 'hyperextension_classic', name: 'Гиперэкстензия', targetMuscle: 'lowerback', requiredEquipment: 'gym_machines' },
+        { age: 25, healthRestrictions: [HEALTH_RESTRICTION_PRESETS.NO_DEEP_BENDS_OR_ARCHES] }
+      );
+      assert(!bendBlock.allowed && bendBlock.blockedByHealthRestriction, 'Наклоны/прогибы: гиперэкстензия должна блокироваться');
+
+      const jumpBlock = evaluateExerciseSafety(
+        { exerciseId: 'jump_rope_classic', name: 'Прыжки на скакалке', targetMuscle: 'calves', requiredEquipment: 'jump_rope' },
+        { age: 25, healthRestrictions: [HEALTH_RESTRICTION_PRESETS.AVOID_SHARP_JUMPS] }
+      );
+      assert(!jumpBlock.allowed && jumpBlock.blockedByHealthRestriction, 'Прыжки: скакалка должна блокироваться');
+
+      // 2) Некорректный возраст полностью блокирует старт
+      StorageService.updateProfile({ age: -3, weightKg: 70 });
+      const invalidAgeLaunch = checkWorkoutLaunchSafety([]);
+      assert(invalidAgeLaunch.allowed === false, 'Отрицательный возраст обязан блокировать даже свободную тренировку');
+
+      // 3) Возраст < 18 включает консервативный режим и блокирует резкое повышение веса
+      const todayIso = formatLocalIsoDate(new Date());
+      StorageService.updateProfile({ age: 16, weightKg: 65 });
+      StorageService.saveWorkoutSession({
+        id: 'w_minor_prev',
+        name: 'Жим',
+        date: todayIso,
+        startTime: '12:00',
+        durationMinutes: 30,
+        totalVolumeKg: 400,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e1',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 50, reps: 8, completed: true }],
+          },
+        ],
+      });
+
+      const minorOkStep = checkWeightIncreaseSafety(
+        { exerciseId: 'barbell_bench_press_flat', name: 'Жим штанги лёжа', targetMuscle: 'chest' },
+        52.5,
+        50
+      );
+      assert(minorOkStep.conservativeMode === true && minorOkStep.allowed === true, 'В 16 лет шаг +5% (50->52.5) допустим');
+
+      const minorFastJump = checkWeightIncreaseSafety(
+        { exerciseId: 'barbell_bench_press_flat', name: 'Жим штанги лёжа', targetMuscle: 'chest' },
+        60,
+        50
+      );
+      assert(minorFastJump.conservativeMode === true && minorFastJump.allowed === false && !minorFastJump.canOverrideWithConfirmation, 'В 16 лет шаг +20% (50->60) обязан жёстко блокироваться');
+
+      // 4) Активная боль в мышце блокирует тренировку этой зоны и повышение веса
+      StorageService.updateProfile({ age: 25, weightKg: 80 });
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_pain',
+        date: todayIso,
+        jointPain: 0,
+        painByMuscle: { chest: 3 },
+        createdAt: Date.now(),
+      });
+      const painAdd = checkAddExerciseSafety({
+        exerciseId: 'barbell_bench_press_flat',
+        name: 'Жим штанги лёжа',
+        targetMuscle: 'chest',
+        requiredEquipment: 'barbell',
+      });
+      assert(painAdd.allowed === false && painAdd.blockedByPain === true, 'Боль 3/10 в груди должна блокировать добавление жима');
+    });
+
+    return 'Все 5 ограничений здоровья, возраст <18 / невалидный и боль корректно блокируются';
+  });
+
+  // 67. Обходные пути: генератор программ (fallback), черновик, повышение веса при боли / паузе >14д / ≥35%
+  test('Safety Guard (QA-040)', 'Генератор программ, обход через fallback и обход подтверждением скачка при боли не проходят', () => {
+    withIsolatedMockStorage(() => {
+      const now = new Date(2026, 10, 16, 12, 0, 0);
+      const todayIso = formatLocalIsoDate(now);
+      StorageService.updateProfile({ age: 28, weightKg: 82 });
+      StorageService.saveUserParameters({
+        goal: 'Сила',
+        level: 'Средний',
+        location: 'В зале',
+        daysPerWeek: 3,
+        durationMinutes: 60,
+        availableDays: ['Пн', 'Ср', 'Пт'],
+        preferredMuscles: ['chest', 'quads'],
+        excludedExercises: ['Отжимания классические', 'Приседания со штангой'],
+        healthRestrictions: [
+          HEALTH_RESTRICTION_PRESETS.PROTECT_KNEES,
+          HEALTH_RESTRICTION_PRESETS.PROTECT_SHOULDERS,
+          HEALTH_RESTRICTION_PRESETS.AVOID_SHARP_JUMPS,
+        ],
+        notes: '',
+      });
+
+      // Даже при пустом инвентаре (вынуждающем fallbackCandidates) генератор НЕ смеет вставить запрещённое упражнение
+      const generated = generateLocalTemplateProgram(
+        {
+          goal: 'Сила',
+          daysPerWeek: 3,
+          duration: 45,
+          experience: 'Средний',
+          preferredDays: ['Пн', 'Ср', 'Пт'],
+        },
+        ['bodyweight']
+      );
+      const allGenNames = generated.workouts.flatMap((w) => w.exercises.map((e) => e.name));
+      assert(!allGenNames.includes('Отжимания классические'), 'Генератор не смеет возвращать исключённое упражнение даже через fallback');
+      assert(!allGenNames.includes('Приседания со штангой'), 'Генератор не смеет возвращать запрещённые приседания');
+      const genLaunchCheck = checkWorkoutLaunchSafety(generated.workouts.flatMap((w) => w.exercises), now);
+      assert(genLaunchCheck.allowed === true, `Вся сгенерированная программа должна проходить Safety Guard, причины: ${genLaunchCheck.vetoReasons.join('; ')}`);
+
+      // Сценарий: завершённая тренировка была > 14 дней назад + отмечена лёгкая боль (1/10)
+      const oldDate = '2026-10-20';
+      StorageService.saveWorkoutSession({
+        id: 'w_old_break',
+        name: 'Жим',
+        date: oldDate,
+        startTime: '10:00',
+        durationMinutes: 40,
+        totalVolumeKg: 800,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_b',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 80, reps: 10, completed: true }],
+          },
+        ],
+      });
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_mild',
+        date: todayIso,
+        jointPain: 1,
+        createdAt: now.getTime(),
+      });
+
+      // При боли 1/10 и перерыве >14 дней даже скачок ≥35% НЕ должен давать ручной override!
+      const hugeJumpWithVeto = checkWeightIncreaseSafety(
+        { exerciseId: 'barbell_bench_press_flat', name: 'Жим штанги лёжа', targetMuscle: 'chest' },
+        120,
+        80,
+        now
+      );
+      assert(hugeJumpWithVeto.allowed === false, 'Повышение веса 80->120 при перерыве >14д и боли должно блокироваться');
+      assert(hugeJumpWithVeto.canOverrideWithConfirmation === false, 'Подтверждение скачка не должно позволять обходить боль и перерыв >14 дней');
+
+      // Если убрать боль и поставить свежую тренировку (вчера), чистый аномальный скачок ≥35% требует ручного подтверждения
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_mild',
+        date: todayIso,
+        jointPain: 0,
+        createdAt: now.getTime() + 1000,
+      });
+      StorageService.saveWorkoutSession({
+        id: 'w_recent',
+        name: 'Жим',
+        date: formatLocalIsoDate(new Date(2026, 10, 15, 12, 0, 0)),
+        startTime: '10:00',
+        durationMinutes: 40,
+        totalVolumeKg: 800,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_b2',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 80, reps: 10, completed: true }],
+          },
+        ],
+      });
+      const pureAnomaly = checkWeightIncreaseSafety(
+        { exerciseId: 'barbell_bench_press_flat', name: 'Жим штанги лёжа', targetMuscle: 'chest' },
+        120,
+        80,
+        now
+      );
+      assert(pureAnomaly.allowed === false && pureAnomaly.canOverrideWithConfirmation === true, 'Чистый аномальный скачок 80->120 (+50%) должен требовать подтверждения');
+
+      // Черновик, сохранённый до включения ограничений, блокируется при попытке возобновления
+      StorageService.saveActiveDraft({
+        id: 'draft_bypass',
+        name: 'Черновик',
+        date: todayIso,
+        startTime: '18:00',
+        durationMinutes: 10,
+        totalVolumeKg: 0,
+        completedSets: 0,
+        status: 'in_progress',
+        exercises: [
+          {
+            id: 'ex_0',
+            exerciseId: 'jump_squats_plyo',
+            name: 'Приседания с выпрыгиванием',
+            targetMuscle: 'quads',
+            isBodyweight: true,
+            restSeconds: 60,
+            sets: [{ setNumber: 1, weightKg: 0, reps: 15, completed: false }],
+          },
+        ],
+      });
+      const loadedDraft = StorageService.getActiveDraft()!;
+      const draftCheck = checkWorkoutLaunchSafety(loadedDraft.exercises, now);
+      assert(draftCheck.allowed === false, 'Возобновление черновика с выпрыгиваниями при запрете прыжков обязано блокироваться');
+    });
+
+    return 'Генератор (включая fallback), черновик и weight-veto полностью защищены от обхода';
+  });
+
+  // 68. CR-002: Вес без завершённой истории + перерыв > 14 дней по другим упражнениям
+  test('Safety Guard (QA-040 / CR-002)', 'Первое задание веса нового упражнения разрешено после перерыва >14д по другим упражнениям, но скачок в текущей сессии и невалидные веса блокируются', () => {
+    withIsolatedMockStorage(() => {
+      const now = new Date(2026, 10, 16, 12, 0, 0);
+      const oldOtherDate = '2026-10-15'; // 32 дня назад (> 14 дн.)
+      StorageService.updateProfile({ age: 29, weightKg: 80 });
+      StorageService.saveWorkoutSession({
+        id: 'w_other_old',
+        name: 'День ног',
+        date: oldOtherDate,
+        startTime: '18:00',
+        durationMinutes: 45,
+        totalVolumeKg: 1000,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_leg',
+            exerciseId: 'leg_extensions_machine',
+            name: 'Разгибание ног сидя в тренажёре',
+            targetMuscle: 'quads',
+            isBodyweight: false,
+            restSeconds: 75,
+            sets: [{ setNumber: 1, weightKg: 45, reps: 12, completed: true }],
+          },
+        ],
+      });
+
+      const newExercise = {
+        exerciseId: 'barbell_bench_press_flat',
+        name: 'Жим штанги лёжа',
+        targetMuscle: 'chest',
+        requiredEquipment: 'barbell',
+      };
+
+      // 1) Первое задание рабочего веса для нового упражнения (нет завершённой истории и current=0) — должно быть РАЗРЕШЕНО, несмотря на перерыв 32 дн. по ногам
+      const firstWeight = checkWeightIncreaseSafety(newExercise, 30, 0, now);
+      assert(
+        firstWeight.allowed === true && firstWeight.baselineBestWeightKg === 0,
+        `Первый рабочий вес нового упражнения после перерыва по другим упражнениям обязан разрешаться, причины: ${firstWeight.vetoReasons.join('; ')}`
+      );
+
+      // 2) Но при боли 1/10 даже первый рабочий вес нового упражнения блокируется без права override
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_new_pain',
+        date: formatLocalIsoDate(now),
+        jointPain: 1,
+        createdAt: now.getTime(),
+      });
+      const firstWeightPain = checkWeightIncreaseSafety(newExercise, 30, 0, now);
+      assert(
+        firstWeightPain.allowed === false && !firstWeightPain.canOverrideWithConfirmation,
+        'При боли >= 1 даже первый рабочий вес нового упражнения должен блокироваться без override'
+      );
+
+      // Убираем боль
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_new_pain',
+        date: formatLocalIsoDate(now),
+        jointPain: 0,
+        createdAt: now.getTime() + 100,
+      });
+
+      // 3) Невалидные значения (-10, NaN) блокируются даже при отсутствии истории
+      assert(
+        checkWeightIncreaseSafety(newExercise, -10, 0, now).allowed === false,
+        'Отрицательный вес обязан блокироваться'
+      );
+      assert(
+        checkWeightIncreaseSafety(newExercise, Number.NaN, 0, now).allowed === false,
+        'NaN-вес обязан блокироваться'
+      );
+
+      // 4) Повышение УЖЕ установленного веса в текущей/незавершённой сессии (20 -> 200 и 20 -> 25) обязано проверяться!
+      const inSessionHugeJump = checkWeightIncreaseSafety(newExercise, 200, 20, now);
+      assert(
+        inSessionHugeJump.allowed === false &&
+          inSessionHugeJump.requiresUserConfirmation === true &&
+          inSessionHugeJump.canOverrideWithConfirmation === true,
+        'Скачок 20 -> 200 кг в текущей сессии без завершённой истории обязан требовать подтверждения'
+      );
+
+      const inSessionBadStep = checkWeightIncreaseSafety(newExercise, 25, 20, now);
+      assert(
+        inSessionBadStep.allowed === false && inSessionBadStep.canOverrideWithConfirmation === false,
+        'Шаг 20 -> 25 кг (+25%) в текущей сессии без истории должен блокироваться правилом шага'
+      );
+
+      // 5) То же через активный черновик (когда в подходе 1 уже стоит 20 кг, а подход 2 с 0 поднимается до 200 кг)
+      StorageService.saveActiveDraft({
+        id: 'draft_current_20',
+        name: 'Грудь',
+        date: formatLocalIsoDate(now),
+        startTime: '18:00',
+        durationMinutes: 10,
+        totalVolumeKg: 0,
+        completedSets: 0,
+        status: 'in_progress',
+        exercises: [
+          {
+            id: 'ex_1',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [
+              { setNumber: 1, weightKg: 20, reps: 10, completed: false },
+              { setNumber: 2, weightKg: 0, reps: 10, completed: false },
+            ],
+          },
+        ],
+      });
+      const draftSecondSetJump = checkWeightIncreaseSafety(newExercise, 200, 0, now);
+      assert(
+        draftSecondSetJump.allowed === false && draftSecondSetJump.requiresUserConfirmation === true,
+        'Увеличение подхода 2 с 0 до 200 кг при уже заданных 20 кг в черновике обязано перехватываться'
+      );
+
+      // А выравнивание подхода 2 до 20 кг (текущего рабочего веса) разрешено
+      const draftSecondSetMatch = checkWeightIncreaseSafety(newExercise, 20, 0, now);
+      assert(
+        draftSecondSetMatch.allowed === true,
+        'Установка 20 кг во 2-м подходе при 20 кг в 1-м подходе должна быть разрешена'
+      );
+
+      // 6) Тем временем по старому упражнению ног (32 дня перерыва) рост 45 -> 50 по-прежнему заблокирован!
+      const oldLegIncrease = checkWeightIncreaseSafety(
+        {
+          exerciseId: 'leg_extensions_machine',
+          name: 'Разгибание ног сидя в тренажёре',
+          targetMuscle: 'quads',
+        },
+        50,
+        45,
+        now
+      );
+      assert(
+        oldLegIncrease.allowed === false && !oldLegIncrease.canOverrideWithConfirmation,
+        'Перерыв >14д по самому упражнению (ноги) должен по-прежнему блокировать увеличение веса'
+      );
+    });
+
+    return 'CR-002 исправлен: первый вес после паузы в других упражнениях разрешён, а скачки и невалидные веса при baselineBest===0 перехватываются';
+  });
+
+  // 69. CR-003: Защита targetWeight при сохранении, запуске и в resolveInitialExerciseSets
+  test('Safety Guard (QA-040 / CR-003)', 'Обход ограничений через targetWeight заблокирован на сохранении, запуске и в resolveInitialExerciseSets', () => {
+    withIsolatedMockStorage(() => {
+      const now = new Date();
+      const todayIso = formatLocalIsoDate(now);
+      StorageService.updateProfile({ age: 26, weightKg: 78 });
+      StorageService.saveWorkoutSession({
+        id: 'w_recent_cr003',
+        name: 'Грудь',
+        date: todayIso,
+        startTime: '17:00',
+        durationMinutes: 40,
+        totalVolumeKg: 600,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e_bp',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 60, reps: 10, completed: true }],
+          },
+        ],
+      });
+
+      // 1) Чрезмерный targetWeight (60 -> 110) блокируется единой проверкой запуска/сохранения программы
+      const unsafeSaveEval = checkWorkoutLaunchSafety(
+        [
+          {
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            requiredEquipment: 'barbell',
+            isBodyweight: false,
+            targetWeight: 110,
+          },
+        ],
+        now
+      );
+      assert(
+        unsafeSaveEval.allowed === false &&
+          unsafeSaveEval.blockedExercises.length === 1 &&
+          unsafeSaveEval.blockedExercises[0].decision.blockedByWeight === true,
+        'Чрезмерный targetWeight 110 кг (после 60 кг) обязан блокироваться проверкой программы/запуска'
+      );
+
+      // 2) Отрицательный targetWeight тоже блокируется
+      const negSaveEval = checkWorkoutLaunchSafety(
+        [
+          {
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            requiredEquipment: 'barbell',
+            isBodyweight: false,
+            targetWeight: -15,
+          },
+        ],
+        now
+      );
+      assert(negSaveEval.allowed === false, 'Отрицательный targetWeight обязан блокироваться');
+
+      // 3) Безопасный targetWeight 62.5 (+4.2%) разрешён
+      const safeSaveEval = checkWorkoutLaunchSafety(
+        [
+          {
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            requiredEquipment: 'barbell',
+            isBodyweight: false,
+            targetWeight: 62.5,
+          },
+        ],
+        now
+      );
+      assert(
+        safeSaveEval.allowed === true,
+        `Безопасный targetWeight 62.5 кг обязан разрешаться: ${safeSaveEval.vetoReasons.join('; ')}`
+      );
+
+      // 4) Прямой вызов resolveInitialExerciseSets НЕ позволяет пропихнуть 110 кг в обход Safety Guard
+      const directBypassSets = resolveInitialExerciseSets({
+        exerciseName: 'Жим штанги лёжа',
+        exerciseId: 'barbell_bench_press_flat',
+        targetMuscle: 'chest',
+        requiredEquipment: 'barbell',
+        setsCount: 3,
+        defaultReps: 8,
+        explicitTargetWeight: 110,
+        isBodyweight: false,
+      });
+      assert(
+        directBypassSets.every((s) => s.weightKg === 60),
+        `resolveInitialExerciseSets обязан отклонить 110 кг и откатиться к безопасному весу 60 кг, получено: ${directBypassSets.map((s) => s.weightKg).join(',')}`
+      );
+
+      // 5) Устаревшая сохранённая программа: ранее 62.5 было безопасно, но сегодня появилась боль 1/10 -> запуск и resolveInitialExerciseSets блокируют 62.5
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_stale_prog',
+        date: todayIso,
+        jointPain: 1,
+        createdAt: now.getTime(),
+      });
+      const staleLaunchEval = checkWorkoutLaunchSafety(
+        [
+          {
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            requiredEquipment: 'barbell',
+            isBodyweight: false,
+            targetWeight: 62.5,
+          },
+        ],
+        now
+      );
+      assert(
+        staleLaunchEval.allowed === false,
+        'Запуск ранее сохранённой программы с targetWeight 62.5 при новой боли 1/10 обязан блокироваться'
+      );
+      const staleResolvedSets = resolveInitialExerciseSets({
+        exerciseName: 'Жим штанги лёжа',
+        exerciseId: 'barbell_bench_press_flat',
+        targetMuscle: 'chest',
+        requiredEquipment: 'barbell',
+        setsCount: 3,
+        defaultReps: 8,
+        explicitTargetWeight: 62.5,
+        isBodyweight: false,
+      });
+      assert(
+        staleResolvedSets.every((s) => s.weightKg === 60),
+        'resolveInitialExerciseSets обязан отклонить устаревший targetWeight 62.5 при активной боли'
+      );
+    });
+
+    return 'targetWeight проверяется при сохранении, запуске, устаревании данных и внутри resolveInitialExerciseSets';
+  });
+
+  // 70. Попытка подтвердить скачок веса при активном жёстком запрете (боль / падение повторов / ограничение / исключение)
+  test('Safety Guard (QA-040 / Hard Veto)', 'Подтверждение скачка веса невозможно при боли, падении повторов, перерыве >14д, исключении или ограничении здоровья', () => {
+    withIsolatedMockStorage(() => {
+      const now = new Date(2026, 10, 16, 12, 0, 0);
+      const todayIso = formatLocalIsoDate(now);
+      const yesterdayIso = formatLocalIsoDate(new Date(2026, 10, 15, 12, 0, 0));
+      StorageService.updateProfile({ age: 30, weightKg: 82 });
+
+      // Две свежие сессии с падением повторений (10 -> 6 при 80 кг)
+      StorageService.saveWorkoutSession({
+        id: 'w_rep_1',
+        name: 'Жим 1',
+        date: formatLocalIsoDate(new Date(2026, 10, 13, 12, 0, 0)),
+        startTime: '12:00',
+        durationMinutes: 30,
+        totalVolumeKg: 800,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e1',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 80, reps: 10, completed: true }],
+          },
+        ],
+      });
+      StorageService.saveWorkoutSession({
+        id: 'w_rep_2',
+        name: 'Жим 2',
+        date: yesterdayIso,
+        startTime: '12:00',
+        durationMinutes: 30,
+        totalVolumeKg: 480,
+        completedSets: 1,
+        status: 'completed',
+        exercises: [
+          {
+            id: 'e2',
+            exerciseId: 'barbell_bench_press_flat',
+            name: 'Жим штанги лёжа',
+            targetMuscle: 'chest',
+            isBodyweight: false,
+            restSeconds: 90,
+            sets: [{ setNumber: 1, weightKg: 80, reps: 6, completed: true }],
+          },
+        ],
+      });
+
+      const ex = {
+        exerciseId: 'barbell_bench_press_flat',
+        name: 'Жим штанги лёжа',
+        targetMuscle: 'chest',
+        requiredEquipment: 'barbell',
+      };
+
+      // Падение повторений -> +50% (80 -> 120) НЕ может быть обойдено подтверждением
+      const repDropJump = checkWeightIncreaseSafety(ex, 120, 80, now);
+      assert(
+        repDropJump.allowed === false && repDropJump.canOverrideWithConfirmation === false,
+        'При падении повторений аномальный скачок 80->120 не должен разрешать подтверждение'
+      );
+
+      // Боль в груди 2/10 -> даже +50% и даже снижение/сохранение веса с блокированным упражнением запрещены
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_hard_pain',
+        date: todayIso,
+        jointPain: 0,
+        painByMuscle: { chest: 2 },
+        createdAt: now.getTime(),
+      });
+      const painJump = checkWeightIncreaseSafety(ex, 120, 80, now);
+      assert(
+        painJump.allowed === false && painJump.canOverrideWithConfirmation === false,
+        'При локальной боли 2/10 подтверждение скачка обязано быть отключено'
+      );
+
+      // Исключение упражнения -> подтверждение невозможно
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_hard_pain',
+        date: todayIso,
+        jointPain: 0,
+        painByMuscle: {},
+        createdAt: now.getTime() + 100,
+      });
+      StorageService.saveUserParameters({
+        ...StorageService.getUserParameters(),
+        excludedExercises: ['Жим штанги лёжа'],
+      });
+      const excludedJump = checkWeightIncreaseSafety(ex, 120, 80, now);
+      assert(
+        excludedJump.allowed === false && excludedJump.canOverrideWithConfirmation === false,
+        'Для исключённого упражнения подтверждение скачка обязано быть отключено'
+      );
+    });
+
+    return 'Жёсткие запреты (падение повторов, боль, исключение) никогда не обходятся подтверждением скачка';
   });
 
   const passed = results.filter((r) => r.passed).length;

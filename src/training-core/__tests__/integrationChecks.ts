@@ -2,8 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
 import React from 'react';
-import { createRoot } from 'react-dom/client';
-import { flushSync } from 'react-dom';
 import {
   resetMigrationSessionFlagForTests,
   safeSetItem,
@@ -14,6 +12,14 @@ import {
 } from '../../services/migrations';
 import { StorageService } from '../../services/storage';
 import type { TestCaseResult } from './suite';
+
+async function getReactDomHelpers() {
+  const [{ createRoot }, { flushSync }] = await Promise.all([
+    import('react-dom/client'),
+    import('react-dom'),
+  ]);
+  return { createRoot, flushSync };
+}
 
 function collectNonTestSourceFiles(dir: string, acc: string[] = []): string[] {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -972,6 +978,15 @@ interface DomTestContext {
   cleanup: () => void;
 }
 
+const sharedPendingRafTimers = new Set<ReturnType<typeof setTimeout>>();
+
+function clearSharedPendingRafTimers() {
+  for (const id of sharedPendingRafTimers) {
+    clearTimeout(id);
+  }
+  sharedPendingRafTimers.clear();
+}
+
 function setupReactDomTestEnv(): DomTestContext {
   const savedProps = new Map<string, PropertyDescriptor | undefined>();
   const setGlobalProp = (key: string, value: any) => {
@@ -1092,14 +1107,25 @@ function setupReactDomTestEnv(): DomTestContext {
   setGlobalProp('ResizeObserver', MockResizeObserver);
   setGlobalProp('IntersectionObserver', MockIntersectionObserver);
   setGlobalProp('Image', MockImage);
-  setGlobalProp('requestAnimationFrame', (cb: FrameRequestCallback) =>
-    setTimeout(() => cb(Date.now()), 0)
-  );
-  setGlobalProp('cancelAnimationFrame', (id: any) => clearTimeout(id));
+  setGlobalProp('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    const id = setTimeout(() => {
+      sharedPendingRafTimers.delete(id);
+      if (typeof (globalThis as any).document === 'undefined') return;
+      cb(Date.now());
+    }, 0);
+    sharedPendingRafTimers.add(id);
+    return id;
+  });
+  setGlobalProp('cancelAnimationFrame', (id: any) => {
+    sharedPendingRafTimers.delete(id);
+    clearTimeout(id);
+  });
   (dom.window as any).matchMedia = MockMatchMedia;
   (dom.window as any).ResizeObserver = MockResizeObserver;
   (dom.window as any).IntersectionObserver = MockIntersectionObserver;
   (dom.window as any).Image = MockImage;
+  (dom.window as any).requestAnimationFrame = (globalThis as any).requestAnimationFrame;
+  (dom.window as any).cancelAnimationFrame = (globalThis as any).cancelAnimationFrame;
 
   return {
     dom,
@@ -1112,6 +1138,7 @@ function setupReactDomTestEnv(): DomTestContext {
       failSetKey = k;
     },
     cleanup: () => {
+      clearSharedPendingRafTimers();
       resetMigrationSessionFlagForTests();
       dom.window.close();
       for (const [key, desc] of savedProps.entries()) {
@@ -1140,7 +1167,10 @@ export async function runAppHooksRegressionCheck(): Promise<TestCaseResult> {
     };
 
     resetMigrationSessionFlagForTests();
-    const { default: App } = await import('../../App');
+    const [{ createRoot, flushSync }, { default: App }] = await Promise.all([
+      getReactDomHelpers(),
+      import('../../App'),
+    ]);
 
     const container = ctx.dom.window.document.getElementById('root')!;
     const root = createRoot(container);
@@ -1222,7 +1252,6 @@ export async function runStartupAndRecoveryScreenUiTests(): Promise<TestCaseResu
   const originalConsoleError = console.error;
   try {
     console.error = () => {};
-    const { default: App } = await import('../../App');
 
     const findButton = (container: HTMLElement, text: string): HTMLButtonElement | undefined =>
       Array.from(container.querySelectorAll('button')).find((b) =>
@@ -1232,6 +1261,10 @@ export async function runStartupAndRecoveryScreenUiTests(): Promise<TestCaseResu
     // Сценарий A: pending при старте -> автовосстановление успешно -> запускается MainAppContent
     {
       const ctx = setupReactDomTestEnv();
+      const [{ createRoot, flushSync }, { default: App }] = await Promise.all([
+        getReactDomHelpers(),
+        import('../../App'),
+      ]);
       try {
         ctx.store.set('form_schema_version_v1', '11');
         StorageService.updateProfile({ name: 'Атлет Авто', age: 29 });
@@ -1286,6 +1319,10 @@ export async function runStartupAndRecoveryScreenUiTests(): Promise<TestCaseResu
     // Сценарий B: pending при старте падает -> экран блокировки с «Повторить восстановление», затем успешный повтор -> MainAppContent
     {
       const ctx = setupReactDomTestEnv();
+      const [{ createRoot, flushSync }, { default: App }] = await Promise.all([
+        getReactDomHelpers(),
+        import('../../App'),
+      ]);
       try {
         ctx.store.set('form_schema_version_v1', '11');
         StorageService.updateProfile({ name: 'Атлет Повтор', age: 31 });
@@ -1338,6 +1375,10 @@ export async function runStartupAndRecoveryScreenUiTests(): Promise<TestCaseResu
     // Сценарий C: unknown -> нет кнопки Повторить, сырой экспорт с битыми ключами, 2-шаговый сброс ТОЛЬКО служебных ключей
     {
       const ctx = setupReactDomTestEnv();
+      const [{ createRoot, flushSync }, { default: App }] = await Promise.all([
+        getReactDomHelpers(),
+        import('../../App'),
+      ]);
       try {
         ctx.store.set('form_schema_version_v1', '11');
         const userRaw = JSON.stringify({ name: 'Неприкосновенный Атлет', age: 34 });
@@ -1465,6 +1506,7 @@ export async function runStartupAndRecoveryScreenUiTests(): Promise<TestCaseResu
         }
 
         flushSync(() => root.unmount());
+        await new Promise((r) => setTimeout(r, 35));
       } finally {
         ctx.cleanup();
       }
@@ -1484,6 +1526,568 @@ export async function runStartupAndRecoveryScreenUiTests(): Promise<TestCaseResu
       details: err?.message || String(err),
     };
   } finally {
+    console.error = originalConsoleError;
+  }
+}
+
+export async function runSafetyGuardUiIntegrationTests(): Promise<TestCaseResult> {
+  const name =
+    'UI Safety Guard (CR-001/CR-002/CR-003): каталог (раскрытая карточка), редактор targetWeight, устаревшая программа и запрет подтверждения при вето';
+  const group = 'Safety Guard UI (QA-040)';
+
+  const originalConsoleError = console.error;
+  let prevSkipAnimations: boolean | undefined;
+  try {
+    console.error = () => {};
+    const envInit = setupReactDomTestEnv();
+    let ExerciseLibraryView: any;
+    let ProgramEditorModal: any;
+    let ActiveWorkoutModal: any;
+    let AppComponent: any;
+    let createRootFn: any;
+    let flushSyncFn: any;
+    let MotionGlobalConfigRef: any;
+    try {
+      const [{ createRoot, flushSync }, fm] = await Promise.all([
+        getReactDomHelpers(),
+        import('framer-motion'),
+      ]);
+      createRootFn = createRoot;
+      flushSyncFn = flushSync;
+      MotionGlobalConfigRef = fm.MotionGlobalConfig;
+      prevSkipAnimations = MotionGlobalConfigRef.skipAnimations;
+      MotionGlobalConfigRef.skipAnimations = true;
+
+      [
+        { ExerciseLibraryView },
+        { ProgramEditorModal },
+        { ActiveWorkoutModal },
+        { default: AppComponent },
+      ] = await Promise.all([
+        import('../../components/ExerciseLibraryView'),
+        import('../../components/ProgramEditorModal'),
+        import('../../components/ActiveWorkoutModal'),
+        import('../../App'),
+      ]);
+    } finally {
+      await new Promise((r) => setTimeout(r, 20));
+      envInit.cleanup();
+    }
+    const { formatLocalIsoDate } = await import('../dateUtils');
+    const { HEALTH_RESTRICTION_PRESETS } = await import('../safetyGuard');
+
+    const findButton = (container: HTMLElement, text: string): HTMLButtonElement | undefined =>
+      Array.from(container.querySelectorAll('button')).find((b) =>
+        (b.textContent || '').includes(text)
+      );
+
+    // 1. CR-001: Выбор заблокированного упражнения через раскрытую карточку ("Использовать это упражнение") и альтернативные кнопки невозможен
+    {
+      const ctx = setupReactDomTestEnv();
+      const container = ctx.dom.window.document.getElementById('root')!;
+      const root = createRootFn(container);
+      let scenarioErr: unknown = null;
+      try {
+        ctx.store.set('form_schema_version_v1', '11');
+        StorageService.updateProfile({ age: 28, weightKg: 80 });
+        StorageService.saveUserParameters({
+          goal: 'Сила',
+          level: 'Средний',
+          location: 'В зале',
+          daysPerWeek: 3,
+          durationMinutes: 60,
+          availableDays: ['Пн', 'Ср', 'Пт'],
+          preferredMuscles: ['chest', 'quads'],
+          excludedExercises: ['Приседания со штангой'],
+          healthRestrictions: [HEALTH_RESTRICTION_PRESETS.NO_AXIAL_SPINE_LOAD],
+          notes: '',
+        });
+
+        let selectedNames: string[] = [];
+
+        flushSyncFn(() => {
+          root.render(
+            React.createElement(ExerciseLibraryView, {
+              selectionMode: true,
+              onSelectExercise: (ex: any) => {
+                selectedNames.push(ex.name);
+              },
+            })
+          );
+        });
+
+        // Фильтруем заблокированное упражнение через поиск
+        const searchInput = container.querySelector('input[type="text"]') as HTMLInputElement;
+        const setNativeVal = Object.getOwnPropertyDescriptor(
+          ctx.dom.window.HTMLInputElement.prototype,
+          'value'
+        )!.set!;
+
+        setNativeVal.call(searchInput, 'Приседания со штангой');
+        flushSyncFn(() => {
+          searchInput.dispatchEvent(new ctx.dom.window.Event('input', { bubbles: true }));
+        });
+
+        // Находим карточку «Приседания со штангой» и раскрываем её
+        const titleEl = Array.from(container.querySelectorAll('h3')).find((h) =>
+          (h.textContent || '').includes('Приседания со штангой')
+        );
+        if (!titleEl) {
+          throw new Error('Карточка «Приседания со штангой» не найдена в ExerciseLibraryView');
+        }
+
+        // Проверяем верхнюю кнопку «Ограничено» (disabled)
+        const topBlockedBtn = findButton(container, 'Ограничено');
+        if (!topBlockedBtn || !topBlockedBtn.disabled) {
+          throw new Error('Верхняя кнопка выбора заблокированного упражнения обязана быть disabled');
+        }
+
+        // Раскрываем карточку кликом
+        flushSyncFn(() => {
+          titleEl.click();
+        });
+
+        const expandedAlerts = Array.from(container.querySelectorAll('[role="alert"]'));
+        if (expandedAlerts.length === 0) {
+          throw new Error('В раскрытой карточке заблокированного упражнения должен отображаться reason (role=alert)');
+        }
+
+        const useBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+          (b.textContent || '').includes('Ограничено Safety Guard') ||
+          (b.textContent || '').includes('Использовать это упражнение')
+        );
+        if (!useBtn || !useBtn.disabled) {
+          throw new Error('Кнопка «Использовать это упражнение» внутри раскрытой карточки обязана быть disabled при блокировке');
+        }
+
+        // Пробуем кликнуть (включая симуляцию обхода атрибута disabled в DOM)
+        useBtn.disabled = false;
+        flushSyncFn(() => {
+          useBtn.click();
+        });
+        if (selectedNames.length !== 0) {
+          throw new Error(`Заблокированное упражнение выбрано в обход Safety Guard: ${selectedNames.join(', ')}`);
+        }
+
+        // Проверяем, что безопасное упражнение («Отжимания классические») выбирается без ложной блокировки
+        setNativeVal.call(searchInput, 'Отжимания классические');
+        flushSyncFn(() => {
+          searchInput.dispatchEvent(new ctx.dom.window.Event('input', { bubbles: true }));
+        });
+
+        const safeTitle = Array.from(container.querySelectorAll('h3')).find((h) =>
+          (h.textContent || '').trim() === 'Отжимания классические'
+        );
+        if (!safeTitle) {
+          throw new Error('Безопасное упражнение «Отжимания классические» не найдено');
+        }
+        flushSyncFn(() => {
+          safeTitle.click();
+        });
+        const safeUseBtn = findButton(container, 'Использовать это упражнение');
+        if (!safeUseBtn || safeUseBtn.disabled) {
+          throw new Error('Кнопка «Использовать это упражнение» для безопасного упражнения должна быть активна');
+        }
+        flushSyncFn(() => {
+          safeUseBtn.click();
+        });
+        const afterSafeSelection = [...selectedNames];
+        if (afterSafeSelection.length !== 1 || afterSafeSelection[0] !== 'Отжимания классические') {
+          throw new Error('Безопасное упражнение должно выбираться нормально без ложных блокировок');
+        }
+      } catch (err) {
+        scenarioErr = err;
+      } finally {
+        try {
+          flushSyncFn(() => root.unmount());
+        } catch {
+          // ignore unmount failures
+        }
+        await new Promise((r) => setTimeout(r, 40));
+        ctx.cleanup();
+      }
+      if (scenarioErr) throw scenarioErr;
+    }
+
+    // 2. CR-003 (UI): Попытка сохранения программы с недопустимым targetWeight в ProgramEditorModal
+    {
+      const ctx = setupReactDomTestEnv();
+      const container = ctx.dom.window.document.getElementById('root')!;
+      const root = createRootFn(container);
+      let scenarioErr: unknown = null;
+      try {
+        ctx.store.set('form_schema_version_v1', '11');
+        const todayIso = formatLocalIsoDate(new Date());
+        StorageService.updateProfile({ age: 29, weightKg: 80 });
+        StorageService.saveWorkoutSession({
+          id: 'w_pe_prev',
+          name: 'Жим',
+          date: todayIso,
+          startTime: '12:00',
+          durationMinutes: 30,
+          totalVolumeKg: 600,
+          completedSets: 1,
+          status: 'completed',
+          exercises: [
+            {
+              id: 'e1',
+              exerciseId: 'barbell_bench_press_flat',
+              name: 'Жим штанги лёжа',
+              targetMuscle: 'chest',
+              isBodyweight: false,
+              restSeconds: 90,
+              sets: [{ setNumber: 1, weightKg: 60, reps: 10, completed: true }],
+            },
+          ],
+        });
+
+        let savedPrograms: any[] = [];
+        const initialProgram = {
+          id: 'prog_test_cr003',
+          name: 'Тест программа',
+          description: '',
+          goal: 'Сила',
+          daysPerWeek: 3,
+          isCustom: true,
+          workouts: [
+            {
+              id: 'day_1',
+              dayName: 'День груди',
+              exercises: [
+                {
+                  exerciseId: 'barbell_bench_press_flat',
+                  name: 'Жим штанги лёжа',
+                  targetMuscle: 'chest' as const,
+                  isBodyweight: false,
+                  sets: 3,
+                  reps: 8,
+                  targetWeight: 120,
+                  restSeconds: 90,
+                },
+              ],
+            },
+          ],
+        };
+
+        flushSyncFn(() => {
+          root.render(
+            React.createElement(ProgramEditorModal, {
+              initialProgram: initialProgram as any,
+              onSave: (p: any) => savedPrograms.push(p),
+              onClose: () => {},
+            })
+          );
+        });
+
+        const formEl = container.querySelector('form')!;
+        flushSyncFn(() => {
+          formEl.dispatchEvent(new ctx.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+        });
+
+        if (savedPrograms.length !== 0) {
+          throw new Error('ProgramEditorModal не должен сохранять программу с недопустимым targetWeight 120 кг');
+        }
+        if (!container.querySelector('[role="alert"]')) {
+          throw new Error('При попытке сохранить программу с недопустимым targetWeight должно выводиться предупреждение Safety Guard');
+        }
+
+        // Меняем вес на допустимый 62.5 кг -> сохранение проходит!
+        const weightInputs = Array.from(container.querySelectorAll('input[type="number"]')) as HTMLInputElement[];
+        const targetWeightInput = weightInputs.find((inp) => inp.step === '0.5');
+        if (!targetWeightInput) {
+          throw new Error('Поле ввода targetWeight не найдено в ProgramEditorModal');
+        }
+        const setNativeVal = Object.getOwnPropertyDescriptor(
+          ctx.dom.window.HTMLInputElement.prototype,
+          'value'
+        )!.set!;
+        setNativeVal.call(targetWeightInput, '62.5');
+        flushSyncFn(() => {
+          targetWeightInput.dispatchEvent(new ctx.dom.window.Event('input', { bubbles: true }));
+        });
+
+        flushSyncFn(() => {
+          formEl.dispatchEvent(new ctx.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+        });
+
+        const savedCount = [...savedPrograms].length;
+        if (savedCount !== 1) {
+          throw new Error('После исправления targetWeight на безопасные 62.5 кг программа обязана сохраняться');
+        }
+      } catch (err) {
+        scenarioErr = err;
+      } finally {
+        try {
+          flushSyncFn(() => root.unmount());
+        } catch {
+          // ignore unmount failures
+        }
+        await new Promise((r) => setTimeout(r, 40));
+        ctx.cleanup();
+      }
+      if (scenarioErr) throw scenarioErr;
+    }
+
+    // 3. UI (ActiveWorkoutModal): Попытка подтвердить скачок веса при активном жёстком запрете (боль появилась перед подтверждением)
+    {
+      const ctx = setupReactDomTestEnv();
+      const container = ctx.dom.window.document.getElementById('root')!;
+      const root = createRootFn(container);
+      let scenarioErr: unknown = null;
+      try {
+        ctx.store.set('form_schema_version_v1', '11');
+        const now = new Date();
+        const todayIso = formatLocalIsoDate(now);
+        StorageService.updateProfile({ age: 29, weightKg: 80 });
+        StorageService.saveWorkoutSession({
+          id: 'w_awm_prev',
+          name: 'Жим',
+          date: todayIso,
+          startTime: '11:00',
+          durationMinutes: 30,
+          totalVolumeKg: 800,
+          completedSets: 1,
+          status: 'completed',
+          exercises: [
+            {
+              id: 'e1',
+              exerciseId: 'barbell_bench_press_flat',
+              name: 'Жим штанги лёжа',
+              targetMuscle: 'chest',
+              isBodyweight: false,
+              restSeconds: 90,
+              sets: [{ setNumber: 1, weightKg: 80, reps: 10, completed: true }],
+            },
+          ],
+        });
+
+        const session = {
+          id: 's_awm_test',
+          name: 'Тест',
+          date: todayIso,
+          startTime: '12:00',
+          durationMinutes: 0,
+          totalVolumeKg: 0,
+          completedSets: 0,
+          status: 'in_progress' as const,
+          exercises: [
+            {
+              id: 'ex_awm_1',
+              exerciseId: 'barbell_bench_press_flat',
+              name: 'Жим штанги лёжа',
+              targetMuscle: 'chest' as const,
+              isBodyweight: false,
+              requiredEquipment: 'barbell' as const,
+              restSeconds: 90,
+              sets: [{ setNumber: 1, weightKg: 80, reps: 10, completed: false }],
+            },
+          ],
+        };
+
+        flushSyncFn(() => {
+          root.render(
+            React.createElement(ActiveWorkoutModal, {
+              session,
+              onSave: () => ({ ok: true, error: null }),
+              onCancel: () => {},
+            })
+          );
+        });
+
+        // Открываем модал редактирования веса и задаём 120 кг (чистый скачок +50%)
+        const weightTileBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+          (b.title || '').includes('Нажмите для настройки веса')
+        );
+        if (!weightTileBtn) {
+          throw new Error('Кнопка открытия редактирования веса не найдена в ActiveWorkoutModal');
+        }
+        flushSyncFn(() => {
+          weightTileBtn.click();
+        });
+
+        const numInput = container.querySelector('input[type="number"]') as HTMLInputElement;
+        const setNativeVal = Object.getOwnPropertyDescriptor(
+          ctx.dom.window.HTMLInputElement.prototype,
+          'value'
+        )!.set!;
+        setNativeVal.call(numInput, '120');
+        flushSyncFn(() => {
+          numInput.dispatchEvent(new ctx.dom.window.Event('input', { bubbles: true }));
+        });
+
+        const saveWeightBtn = findButton(container, 'Сохранить');
+        if (!saveWeightBtn) {
+          throw new Error('Кнопка «Сохранить» веса не найдена');
+        }
+        flushSyncFn(() => {
+          saveWeightBtn.click();
+        });
+
+        // Открылся диалог «Подтвердите скачок веса» (портал в document.body) -> в этот момент появляется жёсткий запрет (боль 1/10)!
+        const confirmJumpBtn = findButton(ctx.dom.window.document.body, 'Подтвердить вес');
+        if (!confirmJumpBtn) {
+          throw new Error('Ожидался модал подтверждения аномального скачка 80 -> 120 кг');
+        }
+        StorageService.saveWellbeingCheckin({
+          id: 'wb_active_veto',
+          date: todayIso,
+          jointPain: 1,
+          createdAt: Date.now(),
+        });
+
+        flushSyncFn(() => {
+          confirmJumpBtn.click();
+        });
+
+        // Вес 120 кг не должен примениться в черновике!
+        const draftAfter = StorageService.getActiveDraft();
+        const appliedWeight = draftAfter?.exercises[0]?.sets[0]?.weightKg;
+        if (appliedWeight !== 80) {
+          throw new Error(`Подтверждение при активном вето не смеет менять вес с 80 на ${appliedWeight}`);
+        }
+        if (!container.querySelector('[role="alert"]')) {
+          throw new Error('После отклонения подтверждения при жёстком запрете должно показаться уведомление Safety Guard');
+        }
+      } catch (err) {
+        scenarioErr = err;
+      } finally {
+        try {
+          flushSyncFn(() => root.unmount());
+        } catch {
+          // ignore unmount failures
+        }
+        await new Promise((r) => setTimeout(r, 40));
+        ctx.cleanup();
+      }
+      if (scenarioErr) throw scenarioErr;
+    }
+
+    // 4. CR-003 (UI <App />): Запуск ранее сохранённой программы с устаревшим targetWeight при новых ограничениях (боль 1/10) блокируется Safety Guard
+    {
+      const ctx = setupReactDomTestEnv();
+      resetMigrationSessionFlagForTests();
+      const container = ctx.dom.window.document.getElementById('root')!;
+      const root = createRootFn(container);
+      let scenarioErr: unknown = null;
+      try {
+        ctx.store.set('form_schema_version_v1', '11');
+        const todayIso = formatLocalIsoDate(new Date());
+        StorageService.updateProfile({ age: 29, weightKg: 80 });
+        StorageService.saveWorkoutSession({
+          id: 'w_app_prev',
+          name: 'Жим',
+          date: todayIso,
+          startTime: '10:00',
+          durationMinutes: 30,
+          totalVolumeKg: 600,
+          completedSets: 1,
+          status: 'completed',
+          exercises: [
+            {
+              id: 'e1',
+              exerciseId: 'barbell_bench_press_flat',
+              name: 'Жим штанги лёжа',
+              targetMuscle: 'chest',
+              isBodyweight: false,
+              restSeconds: 90,
+              sets: [{ setNumber: 1, weightKg: 60, reps: 10, completed: true }],
+            },
+          ],
+        });
+        StorageService.saveProgram({
+          id: 'prog_saved_cr003',
+          name: 'Сохранённый сплит',
+          description: 'Старая программа',
+          goal: 'Сила',
+          daysPerWeek: 3,
+          status: 'active',
+          isCustom: true,
+          createdAt: todayIso,
+          workouts: [
+            {
+              id: 'day_saved_1',
+              dayName: 'День груди',
+              targetMuscleGroups: ['chest'],
+              estimatedDuration: 45,
+              exercises: [
+                {
+                  exerciseId: 'barbell_bench_press_flat',
+                  name: 'Жим штанги лёжа',
+                  targetMuscle: 'chest',
+                  isBodyweight: false,
+                  sets: 3,
+                  reps: 8,
+                  targetWeight: 62.5,
+                  restSeconds: 90,
+                },
+              ],
+            },
+          ],
+        });
+        // Новое ограничение самочувствия после сохранения программы
+        StorageService.saveWellbeingCheckin({
+          id: 'wb_app_stale',
+          date: todayIso,
+          jointPain: 1,
+          createdAt: Date.now(),
+        });
+
+        flushSyncFn(() => {
+          root.render(React.createElement(AppComponent));
+        });
+
+        // Нажимаем «НАЧАТЬ ТРЕНИРОВКУ» на главном экране для запуска ранее сохранённой программы
+        const startWorkoutBtn = findButton(container, 'НАЧАТЬ ТРЕНИРОВКУ');
+        if (!startWorkoutBtn) {
+          throw new Error('Кнопка «НАЧАТЬ ТРЕНИРОВКУ» сохранённой программы не найдена в App');
+        }
+        flushSyncFn(() => {
+          startWorkoutBtn.click();
+        });
+
+        const bodyText = ctx.dom.window.document.body.textContent || '';
+        if (
+          !bodyText.includes('Запуск «День груди» заблокирован') ||
+          !bodyText.includes('Safety Guard: блокировка')
+        ) {
+          throw new Error('Запуск ранее сохранённой программы при новых ограничениях должен блокироваться Safety Guard');
+        }
+        if (StorageService.getActiveDraft()) {
+          throw new Error('При блокировке запуска сохранённой программы активная сессия не должна создаваться');
+        }
+      } catch (err) {
+        scenarioErr = err;
+      } finally {
+        try {
+          flushSyncFn(() => root.unmount());
+        } catch {
+          // ignore unmount failures
+        }
+        await new Promise((r) => setTimeout(r, 40));
+        ctx.cleanup();
+      }
+      if (scenarioErr) throw scenarioErr;
+    }
+
+    return {
+      group,
+      name,
+      passed: true,
+      details:
+        'UI проверен: раскрытая карточка каталога, блокировка targetWeight в ProgramEditorModal, отказ запуска устаревшей программы в App и отказ подтверждения при жёстком вето в ActiveWorkoutModal',
+    };
+  } catch (err: any) {
+    return {
+      group,
+      name,
+      passed: false,
+      details: err?.message || String(err),
+    };
+  } finally {
+    if (prevSkipAnimations !== undefined) {
+      const { MotionGlobalConfig } = await import('framer-motion');
+      MotionGlobalConfig.skipAnimations = prevSkipAnimations;
+    }
     console.error = originalConsoleError;
   }
 }

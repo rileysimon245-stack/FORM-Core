@@ -7,6 +7,7 @@ import {
   runGatewayBypassDetectionTest,
   runAppHooksRegressionCheck,
   runStartupAndRecoveryScreenUiTests,
+  runSafetyGuardUiIntegrationTests,
 } from '../__tests__/integrationChecks';
 
 async function main() {
@@ -15,6 +16,7 @@ async function main() {
   const gatewayBypassCheck = runGatewayBypassDetectionTest();
   const hooksCheck = await runAppHooksRegressionCheck();
   const recoveryUiCheck = await runStartupAndRecoveryScreenUiTests();
+  const safetyGuardUiCheck = await runSafetyGuardUiIntegrationTests();
 
   const allResults = [
     ...coreSummary.results,
@@ -22,6 +24,7 @@ async function main() {
     gatewayBypassCheck,
     hooksCheck,
     recoveryUiCheck,
+    safetyGuardUiCheck,
   ];
   const passed = allResults.filter((r) => r.passed).length;
   const failed = allResults.length - passed;
