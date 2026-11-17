@@ -101,7 +101,12 @@ export const ProgramGeneratorModal: React.FC<ProgramGeneratorModalProps> = ({
         setStatusMessage(result.message);
       }
     } catch (err) {
-      setStatusMessage('Ошибка генерации. Попробуйте еще раз.');
+      setPreviewProgram(null);
+      setStatusMessage(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Ошибка генерации. Попробуйте еще раз.'
+      );
     } finally {
       setIsLoading(false);
     }

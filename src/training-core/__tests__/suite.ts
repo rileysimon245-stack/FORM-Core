@@ -19,6 +19,8 @@ import {
   evaluateSafetyGuard,
   evaluateExerciseSafety,
   evaluateWorkoutLaunchSafety,
+  resolveWellbeingPainStatePure,
+  buildSafetyContextFromData,
   HEALTH_RESTRICTION_PRESETS,
 } from '../safetyGuard';
 import {
@@ -77,7 +79,11 @@ import {
   checkAddExerciseSafety,
   checkWeightIncreaseSafety,
 } from '../../services/safetyContext';
-import { generateLocalTemplateProgram } from '../../services/programGenerator';
+import {
+  generateLocalTemplateProgram,
+  isEquipmentAvailable,
+  validateProgramExerciseCandidate,
+} from '../../services/programGenerator';
 import { STRENGTH_PROGRAMS, MOBILITY_PROGRAMS } from '../../data/directionsCatalog';
 import { FullExerciseItem } from '../../data/exerciseTypes';
 import { ActivityIntensity } from '../../types/workout';
@@ -4623,6 +4629,651 @@ export function runTrainingCoreTestSuite(): TestSuiteSummary {
     });
 
     return 'Жёсткие запреты (падение повторов, боль, исключение) никогда не обходятся подтверждением скачка';
+  });
+
+  // 71. Локальный генератор: корректный подбор с учётом оборудования, каталога и Safety Guard
+  test('Program Generator', 'Локальный путь подбирает только подтверждённые упражнения каталога под оборудование и Safety Guard', () => {
+    withIsolatedMockStorage(() => {
+      StorageService.updateProfile({ age: 30, weightKg: 78 });
+      StorageService.saveUserParameters({
+        goal: 'Развитие мышц',
+        level: 'Средний',
+        location: 'Дома',
+        daysPerWeek: 3,
+        durationMinutes: 60,
+        availableDays: ['Пн', 'Ср', 'Пт'],
+        preferredMuscles: ['chest', 'lats', 'quads'],
+        excludedExercises: [],
+        healthRestrictions: [],
+        notes: '',
+      });
+
+      const program = generateLocalTemplateProgram(
+        {
+          goal: 'Развитие мышц',
+          daysPerWeek: 3,
+          duration: 60,
+          experience: 'Средний',
+          preferredDays: ['Пн', 'Ср', 'Пт'],
+        },
+        ['dumbbells_adjustable']
+      );
+
+      assert(program.workouts.length === 3, 'Ожидалось 3 тренировочных дня');
+      const allExercises = program.workouts.flatMap((d) => d.exercises);
+      assert(allExercises.length >= 6, 'Программа должна содержать подобранные упражнения');
+
+      const catalogIds = new Set(getUnifiedCatalog([]).map((e) => e.id));
+      for (const ex of allExercises) {
+        assert(Boolean(ex.exerciseId && catalogIds.has(ex.exerciseId)), `Упражнение ${ex.name} (${ex.exerciseId}) отсутствует в каталоге`);
+        assert(
+          ex.requiredEquipment === 'dumbbells_adjustable',
+          `Ожидалось оборудование dumbbells_adjustable, получено ${ex.requiredEquipment} (${ex.name})`
+        );
+        assert(ex.sets >= 1 && ex.reps >= 1 && ex.targetWeight === 0, 'Некорректные числовые поля шаблона');
+        const safety = checkAddExerciseSafety(ex);
+        assert(safety.allowed, `Упражнение ${ex.name} должно проходить Safety Guard`);
+      }
+    });
+    return 'Локальный подбор: каталог, оборудование и Safety Guard соблюдены';
+  });
+
+  // 72. Локальный fallback (safeFallbackCandidates): не обходит проверку оборудования
+  test('Program Generator', 'Резервный подбор safeFallbackCandidates не подставляет отсутствующее оборудование', () => {
+    withIsolatedMockStorage(() => {
+      StorageService.updateProfile({ age: 29, weightKg: 74 });
+      StorageService.saveUserParameters({
+        goal: 'Общая физическая подготовка',
+        level: 'Начинающий',
+        location: 'Дома',
+        daysPerWeek: 3,
+        durationMinutes: 45,
+        availableDays: ['Пн', 'Ср', 'Пт'],
+        preferredMuscles: [],
+        excludedExercises: [],
+        healthRestrictions: [],
+        notes: '',
+      });
+
+      // Только bodyweight: для lats/biceps нет primary bodyweight, rear_delts уходит в safeFallbackCandidates ('Лодочка')
+      const bwProgram = generateLocalTemplateProgram(
+        {
+          goal: 'Общая физическая подготовка',
+          daysPerWeek: 3,
+          duration: 45,
+          experience: 'Начинающий',
+          preferredDays: ['Пн', 'Ср', 'Пт'],
+        },
+        ['bodyweight']
+      );
+      const bwExercises = bwProgram.workouts.flatMap((d) => d.exercises);
+      assert(bwExercises.length > 0, 'Для bodyweight должны подбираться упражнения');
+      for (const ex of bwExercises) {
+        assert(
+          ex.requiredEquipment === 'bodyweight',
+          `Fallback пропустил запрещённый инвентарь: ${ex.name} требует ${ex.requiredEquipment}`
+        );
+      }
+
+      // Только barbell: для calves нет barbell, safeFallbackCandidates не смеет подтянуть тренажёры
+      const bbProgram = generateLocalTemplateProgram(
+        {
+          goal: 'Сила',
+          daysPerWeek: 3,
+          duration: 60,
+          experience: 'Средний',
+          preferredDays: ['Пн', 'Ср', 'Пт'],
+        },
+        ['barbell']
+      );
+      const bbExercises = bbProgram.workouts.flatMap((d) => d.exercises);
+      assert(bbExercises.length > 0, 'Для barbell должны подбираться упражнения со штангой');
+      for (const ex of bbExercises) {
+        assert(
+          ex.requiredEquipment === 'barbell',
+          `Fallback пропустил нештанговое упражнение: ${ex.name} (${ex.requiredEquipment})`
+        );
+      }
+    });
+    return 'safeFallbackCandidates строго соблюдает оборудование пользователя';
+  });
+
+  // 73. Пустой список оборудования не включает bodyweight по умолчанию
+  test('Program Generator', 'Пустой список оборудования не считает bodyweight доступным и отклоняет генерацию', () => {
+    withIsolatedMockStorage(() => {
+      assert(
+        isEquipmentAvailable('bodyweight', new Set()) === false,
+        'При пустом наборе оборудования bodyweight должен возвращать false'
+      );
+
+      let threwExplicitEmpty = false;
+      try {
+        generateLocalTemplateProgram(
+          {
+            goal: 'Сила',
+            daysPerWeek: 3,
+            duration: 60,
+            experience: 'Средний',
+            preferredDays: ['Пн', 'Ср', 'Пт'],
+          },
+          []
+        );
+      } catch (err: any) {
+        threwExplicitEmpty = String(err?.message || '').includes('инвентар');
+      }
+      assert(threwExplicitEmpty, 'Явно пустой список оборудования [] должен возвращать корректную ошибку');
+
+      // Хранилище с инвентарём по умолчанию (все selected: false) тоже не включает bodyweight автоматически
+      let threwStorageEmpty = false;
+      try {
+        generateLocalTemplateProgram({
+          goal: 'Сила',
+          daysPerWeek: 3,
+          duration: 60,
+          experience: 'Средний',
+          preferredDays: ['Пн', 'Ср', 'Пт'],
+        });
+      } catch (err: any) {
+        threwStorageEmpty = String(err?.message || '').includes('инвентар');
+      }
+      assert(threwStorageEmpty, 'Неуказанный инвентарь в Storage не должен подменять bodyweight по умолчанию');
+    });
+    return 'Отсутствие оборудования корректно отклоняется без подстановки bodyweight';
+  });
+
+  // 74. Неизвестное оборудование и непроверенные названия/подстроки отклоняются
+  test('Program Generator', 'Неизвестное оборудование и частичные/вымышленные названия не проходят единый валидатор', () => {
+    withIsolatedMockStorage(() => {
+      assert(
+        isEquipmentAvailable('unknown_gravity_belt', new Set(['unknown_gravity_belt', 'bodyweight'])) === false,
+        'Неизвестное оборудование не должно проходить проверку даже при совпадении строки'
+      );
+      assert(
+        isEquipmentAvailable(undefined, new Set(['bodyweight'])) === false,
+        'Отсутствующее requiredEquipment должно отклоняться'
+      );
+
+      let threwUnknown = false;
+      try {
+        generateLocalTemplateProgram(
+          {
+            goal: 'Сила',
+            daysPerWeek: 3,
+            duration: 45,
+            experience: 'Средний',
+            preferredDays: ['Пн', 'Ср', 'Пт'],
+          },
+          ['unknown_magic_machine']
+        );
+      } catch {
+        threwUnknown = true;
+      }
+      assert(threwUnknown, 'Генератор не должен создавать программу для неизвестного оборудования');
+
+      const validationParams = {
+        goal: 'Сила',
+        daysPerWeek: 3,
+        duration: 60,
+        experience: 'Средний',
+        preferredDays: ['Пн', 'Ср', 'Пт'],
+      };
+      const partialGuess = validateProgramExerciseCandidate(
+        { name: 'Жим', targetMuscle: 'chest' },
+        {
+          params: validationParams,
+          customExercises: [],
+          availableEquipmentSet: new Set(['barbell', 'dumbbells_adjustable', 'bodyweight']),
+        }
+      );
+      assert(!partialGuess.valid && partialGuess.reason === 'not_in_catalog', 'Частичное название «Жим» не должно угадываться');
+
+      const fakeGuess = validateProgramExerciseCandidate(
+        { name: 'Фантастический жим на орбите', targetMuscle: 'chest', sets: 4, reps: 10 },
+        {
+          params: validationParams,
+          customExercises: [],
+          availableEquipmentSet: new Set(['barbell', 'bodyweight']),
+        }
+      );
+      assert(!fakeGuess.valid && fakeGuess.reason === 'not_in_catalog', 'Вымышленное упражнение должно отклоняться');
+    });
+    return 'Неизвестное оборудование и неподтверждённые названия отклонены единым валидатором';
+  });
+
+  // 75. Отсутствие безопасных альтернатив и отсутствие ложных блокировок на валидных упражнениях
+  test('Program Generator', 'Нет подходящих альтернатив при вето Safety Guard и нет ложных блокировок валидных упражнений', () => {
+    withIsolatedMockStorage(() => {
+      StorageService.updateProfile({ age: 27, weightKg: 75 });
+      StorageService.saveUserParameters({
+        goal: 'Выносливость',
+        level: 'Средний',
+        location: 'Дома',
+        daysPerWeek: 3,
+        durationMinutes: 45,
+        availableDays: ['Пн', 'Ср', 'Пт'],
+        preferredMuscles: [],
+        excludedExercises: [],
+        healthRestrictions: [HEALTH_RESTRICTION_PRESETS.AVOID_SHARP_JUMPS],
+        notes: '',
+      });
+
+      // У jump_rope в каталоге только прыжки на скакалке, а они запрещены AVOID_SHARP_JUMPS -> альтернатив нет
+      let threwNoAlternatives = false;
+      try {
+        generateLocalTemplateProgram(
+          {
+            goal: 'Выносливость',
+            daysPerWeek: 3,
+            duration: 45,
+            experience: 'Средний',
+            preferredDays: ['Пн', 'Ср', 'Пт'],
+          },
+          ['jump_rope']
+        );
+      } catch (err: any) {
+        threwNoAlternatives = String(err?.message || '').includes('не найдено подходящих упражнений');
+      }
+      assert(threwNoAlternatives, 'При отсутствии безопасных альтернатив программа не должна формироваться из случайных упражнений');
+
+      // Обратная проверка: валидное упражнение без ограничений НЕ блокируется ложно
+      StorageService.saveUserParameters({
+        ...StorageService.getUserParameters(),
+        healthRestrictions: [],
+      });
+      const validCheck = validateProgramExerciseCandidate(
+        { name: 'Отжимания классические', sets: 3, reps: 12 },
+        {
+          params: {
+            goal: 'Выносливость',
+            daysPerWeek: 3,
+            duration: 45,
+            experience: 'Средний',
+            preferredDays: ['Пн', 'Ср', 'Пт'],
+          },
+          customExercises: [],
+          availableEquipmentSet: new Set(['bodyweight']),
+        }
+      );
+      assert(
+        validCheck.valid && validCheck.exercise?.exerciseId === 'pushups_classic',
+        'Корректное упражнение с подходящим инвентарём не должно ложно блокироваться'
+      );
+    });
+    return 'Отсутствие альтернатив обработано корректно, ложных блокировок нет';
+  });
+
+  // 76. Safety Guard (Wellbeing Relevance): Первый запуск, сохранение боли > 2 дн., снижение 4 -> 2 -> 1 -> 0 и удаление
+  test('Safety Guard (Wellbeing)', 'Первый запуск без чекинов, сохранение боли > 2 дн. (stale), снижение 4->2->1->0 и удаление', () => {
+    withIsolatedMockStorage(() => {
+      const day0 = new Date(2026, 10, 1, 12, 0, 0);
+      const day2 = new Date(2026, 10, 3, 12, 0, 0);
+      const day5 = new Date(2026, 10, 6, 12, 0, 0);
+      const day7 = new Date(2026, 10, 8, 12, 0, 0);
+
+      StorageService.updateProfile({ age: 29, weightKg: 80 });
+      const bench = {
+        exerciseId: 'barbell_bench_press_flat',
+        name: 'Жим штанги лёжа',
+        targetMuscle: 'chest',
+        requiredEquipment: 'barbell',
+      };
+
+      // 1) Первый запуск (checkins = []): никаких ограничений и никаких запросов обновления
+      const emptyCtx = buildSafetyContextFromData(
+        { profile: { age: 29 }, userParameters: StorageService.getUserParameters(), checkins: [] },
+        day0
+      );
+      assert(
+        emptyCtx.wellbeingFreshnessStatus === 'none' &&
+          emptyCtx.requiresWellbeingUpdate === false &&
+          (emptyCtx.stalePainAreas || []).length === 0,
+        'При пустой истории чекинов статус должен быть none без запроса обновления'
+      );
+      assert(
+        checkAddExerciseSafety(bench, day0).allowed === true &&
+          checkWeightIncreaseSafety(bench, 82.5, 80, day0).allowed === true,
+        'Первый запуск без истории обязан работать без блокировок'
+      );
+
+      // 2) День 0: боль в груди 4/10
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_p0',
+        date: formatLocalIsoDate(day0),
+        painByMuscle: { chest: 4 },
+        createdAt: day0.getTime(),
+      });
+      const day2Launch = checkWorkoutLaunchSafety([bench], day2);
+      assert(
+        day2Launch.allowed === false &&
+          day2Launch.wellbeingFreshnessStatus === 'fresh' &&
+          day2Launch.requiresWellbeingUpdate === false,
+        'На 2-й день боль должна быть fresh и блокировать упражнение без запроса обновления'
+      );
+
+      // 3) День 5 (> 2 дн. без новых чекинов): боль НЕ исчезает, статус переходит в stale с запросом подтверждения
+      const day5Launch = checkWorkoutLaunchSafety([bench], day5);
+      const day5Weight = checkWeightIncreaseSafety(bench, 82.5, 80, day5);
+      assert(
+        day5Launch.allowed === false &&
+          day5Launch.wellbeingFreshnessStatus === 'stale' &&
+          day5Launch.requiresWellbeingUpdate === true &&
+          (day5Launch.stalePainAreas || []).some(
+            (a) => a.areaType === 'muscle' && a.zoneKey === 'chest' && a.level === 4 && a.daysAgo === 5
+          ),
+        'Через > 2 дня боль 4/10 должна остаться активной (stale) и требовать подтверждения'
+      );
+      assert(
+        day5Weight.allowed === false && day5Weight.evaluation.requiresWellbeingUpdate === true,
+        'При устаревшей боли повышение веса обязано оставаться заблокированным'
+      );
+
+      // 4) Снижение 4 -> 2 (День 5): статус fresh, жим всё ещё заблокирован (порог блока >= 2)
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_p5',
+        date: formatLocalIsoDate(day5),
+        painByMuscle: { chest: 2 },
+        createdAt: day5.getTime(),
+      });
+      const day5Reduced2 = checkWorkoutLaunchSafety([bench], day5);
+      assert(
+        day5Reduced2.allowed === false && day5Reduced2.wellbeingFreshnessStatus === 'fresh',
+        'После снижения боли до 2/10 статус должен стать fresh, а блокировка упражнения сохраниться'
+      );
+
+      // 5) Снижение 2 -> 1 (День 6): упражнение разрешено, но повышение веса заблокировано
+      const day6 = new Date(2026, 10, 7, 12, 0, 0);
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_p6',
+        date: formatLocalIsoDate(day6),
+        painByMuscle: { chest: 1 },
+        createdAt: day6.getTime(),
+      });
+      const day6Launch = checkWorkoutLaunchSafety([bench], day6);
+      const day6Weight = checkWeightIncreaseSafety(bench, 82.5, 80, day6);
+      assert(
+        day6Launch.allowed === true &&
+          day6Launch.wellbeingFreshnessStatus === 'fresh' &&
+          day6Weight.allowed === false &&
+          day6Weight.canOverrideWithConfirmation === false,
+        'При боли 1/10 тренировка допускается с предупреждением, но повышение веса запрещено'
+      );
+
+      // 6) Полное снятие 1 -> 0 (День 7): ограничения сняты, статус none
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_p7',
+        date: formatLocalIsoDate(day7),
+        painByMuscle: { chest: 0 },
+        createdAt: day7.getTime(),
+      });
+      const day7Launch = checkWorkoutLaunchSafety([bench], day7);
+      const day7Weight = checkWeightIncreaseSafety(bench, 82.5, 80, day7);
+      assert(
+        day7Launch.allowed === true &&
+          day7Launch.wellbeingFreshnessStatus === 'none' &&
+          day7Launch.requiresWellbeingUpdate === false &&
+          day7Weight.allowed === true,
+        'После явного подтверждения 0/10 ограничения должны быть полностью сняты'
+      );
+
+      // 7) Проверка deleteWellbeingCheckin: удаление записи сразу возвращает актуальное состояние ('none' на day7)
+      const day8 = new Date(2026, 10, 9, 12, 0, 0);
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_del',
+        date: formatLocalIsoDate(day8),
+        painByMuscle: { chest: 3 },
+        createdAt: day8.getTime(),
+      });
+      assert(checkWorkoutLaunchSafety([bench], day8).allowed === false, 'Запись wb_del должна блокировать');
+      StorageService.deleteWellbeingCheckin('wb_del');
+      const afterDeleteCtx = resolveWellbeingPainStatePure(StorageService.getWellbeingCheckins(), day8);
+      assert(
+        afterDeleteCtx.painByMuscle?.chest === undefined && afterDeleteCtx.wellbeingFreshnessStatus === 'none',
+        'Удаление записи чекина должно немедленно пересчитывать состояние'
+      );
+    });
+    return 'Актуальность боли (none/fresh/stale), снижение 4->2->1->0 и удаление работают корректно';
+  });
+
+  // 77. Safety Guard (Wellbeing Relevance): Независимость зон и безопасное однодневное слияние
+  test('Safety Guard (Wellbeing)', 'Нулевое значение одной зоны или несвязанные поля не снимают другие активные ограничения', () => {
+    withIsolatedMockStorage(() => {
+      const day0 = new Date(2026, 10, 1, 12, 0, 0);
+      const day4 = new Date(2026, 10, 5, 12, 0, 0);
+      const day0Iso = formatLocalIsoDate(day0);
+      const day4Iso = formatLocalIsoDate(day4);
+
+      StorageService.updateProfile({ age: 30, weightKg: 80 });
+      const bench = {
+        exerciseId: 'barbell_bench_press_flat',
+        name: 'Жим штанги лёжа',
+        targetMuscle: 'chest',
+      };
+      const squat = {
+        exerciseId: 'barbell_back_squats',
+        name: 'Приседания со штангой',
+        targetMuscle: 'quads',
+      };
+
+      // День 0: общая боль 3 и локальная боль chest: 3, quads: 3
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_multi_0',
+        date: day0Iso,
+        jointPain: 3,
+        painByMuscle: { chest: 3, quads: 3 },
+        createdAt: day0.getTime(),
+      });
+
+      // День 4: новый чекин ставит только jointPain: 0 + отличные сон/усталость/крепатуру (painByMuscle не передан)
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_multi_4a',
+        date: day4Iso,
+        sleepHours: 9,
+        fatigue: 0,
+        soreness: 0,
+        jointPain: 0,
+        createdAt: day4.getTime(),
+      });
+      const afterJointZero = checkWorkoutLaunchSafety([bench, squat], day4);
+      assert(
+        afterJointZero.allowed === false &&
+          afterJointZero.blockedExercises.length === 2 &&
+          afterJointZero.requiresWellbeingUpdate === true,
+        'jointPain: 0 и fatigue/soreness: 0 НЕ смеют сбрасывать активные chest и quads'
+      );
+
+      // День 4 (второй частичный чекин с другим id в ту же дату!): пустой painByMuscle: {} не стирает chest/quads
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_multi_4b',
+        date: day4Iso,
+        painByMuscle: {},
+        createdAt: day4.getTime() + 100,
+      });
+      assert(
+        checkWorkoutLaunchSafety([bench, squat], day4).blockedExercises.length === 2,
+        'Пустой painByMuscle: {} в новом чекине не должен сбрасывать предыдущую боль'
+      );
+
+      // День 4 (третий частичный чекин с другим id в ту же дату): снимаем ТОЛЬКО chest: 0
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_multi_4c',
+        date: day4Iso,
+        painByMuscle: { chest: 0 },
+        createdAt: day4.getTime() + 200,
+      });
+      const afterChestZero = checkWorkoutLaunchSafety([bench, squat], day4);
+      assert(
+        afterChestZero.allowed === false &&
+          afterChestZero.blockedExercises.length === 1 &&
+          afterChestZero.blockedExercises[0].exercise.name === 'Приседания со штангой' &&
+          afterChestZero.safeExercises.some((e) => e.name === 'Жим штанги лёжа') &&
+          afterChestZero.requiresWellbeingUpdate === true &&
+          (afterChestZero.stalePainAreas || []).length === 1 &&
+          afterChestZero.stalePainAreas![0].zoneKey === 'quads',
+        'Снятие chest: 0 должно освободить грудь, но оставить quads: 3 в статусе stale'
+      );
+
+      // Проверка синонима в одном дне с разными id ('грудь' -> 'chest': 0 при сохранённых ногах)
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_same_day_alias_1',
+        date: '2026-11-06',
+        jointPain: 2,
+        painByMuscle: { грудь: 3, quads: 4 } as any,
+        createdAt: day4.getTime() + 500,
+      });
+      StorageService.saveWellbeingCheckin({
+        id: 'wb_same_day_alias_2',
+        date: '2026-11-06',
+        painByMuscle: { chest: 0 },
+        createdAt: day4.getTime() + 600,
+      });
+      const afterAliasClear = resolveWellbeingPainStatePure(
+        StorageService.getWellbeingCheckins(),
+        new Date(2026, 10, 6, 12, 0, 0)
+      );
+      assert(
+        afterAliasClear.painByMuscle?.chest === undefined &&
+          afterAliasClear.painByMuscle?.quads === 4 &&
+          afterAliasClear.generalPainLevel === 2,
+        'Частичное однодневное слияние должно снимать синонимичную зону и сохранять jointPain и quads'
+      );
+    });
+    return 'Изоляция зон, нулевых значений и однодневного слияния подтверждена';
+  });
+
+  // 78. Safety Guard (Audit): Неизвестные ключи raw:, сортировка (date, createdAt, origIdx), будущие даты, legacy localStorage
+  test('Safety Guard (Audit)', 'Неизвестные зоны raw: fail-safe, хронологическая сортировка, будущие даты и legacy-совместимость', () => {
+    const now = new Date(2026, 10, 10, 12, 0, 0);
+    const bench = {
+      exerciseId: 'barbell_bench_press_flat',
+      name: 'Жим штанги лёжа',
+      targetMuscle: 'chest',
+    };
+
+    // 1) Неизвестный ключ painByMuscle старше 2 дн. обязан сохранять fail-safe блокировку
+    const unknownPainState = resolveWellbeingPainStatePure(
+      [
+        {
+          id: 'wb_unknown',
+          date: '2026-11-03', // 7 дней назад
+          painByMuscle: { ['Неизвестная_связка']: 3 } as any,
+          createdAt: 1000,
+        },
+      ],
+      now
+    );
+    const unknownDecision = evaluateExerciseSafety(bench, {
+      age: 30,
+      generalPainLevel: unknownPainState.generalPainLevel,
+      painByMuscle: unknownPainState.painByMuscle,
+      wellbeingFreshnessStatus: unknownPainState.wellbeingFreshnessStatus,
+      requiresWellbeingUpdate: unknownPainState.requiresWellbeingUpdate,
+      stalePainAreas: unknownPainState.stalePainAreas,
+    });
+    assert(
+      unknownPainState.wellbeingFreshnessStatus === 'stale' &&
+        unknownPainState.stalePainAreas.length === 1 &&
+        unknownPainState.stalePainAreas[0].isUnknownZone === true &&
+        unknownDecision.allowed === false &&
+        unknownDecision.blockedByPain === true,
+      'Неизвестный ключ raw: должен оставаться fail-safe и блокировать упражнения до явного подтверждения'
+    );
+
+    // 2) Явное подтверждение неизвестного ключа (даже в другом регистре) снимает только его
+    const unknownCleared = resolveWellbeingPainStatePure(
+      [
+        {
+          id: 'wb_u1',
+          date: '2026-11-03',
+          painByMuscle: { ['Неизвестная_связка']: 3, chest: 2 } as any,
+          createdAt: 1000,
+        },
+        {
+          id: 'wb_u2',
+          date: '2026-11-10',
+          painByMuscle: { ['неизвестная_связка']: 0 } as any,
+          createdAt: 2000,
+        },
+      ],
+      now
+    );
+    assert(
+      unknownCleared.painByMuscle?.['chest'] === 2 &&
+        unknownCleared.painByMuscle?.['Неизвестная_связка'] === undefined &&
+        unknownCleared.painByMuscle?.['неизвестная_связка'] === undefined,
+      'Подтверждение 0 для неизвестной зоны должно снимать только её, сохраняя боль в груди'
+    );
+
+    // 3) Сортировка строго по (date, createdAt, origIdx): старая дата с большим createdAt НЕ может воскресить снятую боль
+    const auditSortState = resolveWellbeingPainStatePure(
+      [
+        {
+          id: 'wb_old_high_ts',
+          date: '2026-11-01', // День 1
+          painByMuscle: { chest: 4 },
+          createdAt: 9999999999999, // Поздний ошибочный createdAt на старую дату
+        },
+        {
+          id: 'wb_new_clear',
+          date: '2026-11-08', // День 8
+          painByMuscle: { chest: 0 },
+          createdAt: 1000,
+        },
+      ],
+      now
+    );
+    assert(
+      auditSortState.painByMuscle === undefined && auditSortState.wellbeingFreshnessStatus === 'none',
+      'Старая дата даже с большим createdAt не должна восстанавливать боль, снятую в более позднюю дату'
+    );
+
+    // Детерминизм при равных date и createdAt + игнор будущих дат + невалидных значений
+    const tieAndFutureState = resolveWellbeingPainStatePure(
+      [
+        { id: 't1', date: '2026-11-09', jointPain: 3, createdAt: 5000 },
+        { id: 't2', date: '2026-11-09', jointPain: 0, createdAt: 5000 },
+        { id: 'future', date: '2026-12-01', jointPain: 5, createdAt: 9000 },
+      ],
+      now
+    );
+    assert(
+      tieAndFutureState.generalPainLevel === 0 && tieAndFutureState.wellbeingFreshnessStatus === 'none',
+      'Равные date/createdAt должны обрабатываться детерминированно, а будущие даты — игнорироваться'
+    );
+
+    // Legacy запись без createdAt и с ключом rearDelts
+    const legacyState = resolveWellbeingPainStatePure(
+      [
+        {
+          id: 'wb_legacy',
+          date: '2026-11-02',
+          painByMuscle: { rearDelts: 3 } as any,
+          createdAt: undefined as any,
+        },
+      ],
+      now
+    );
+    assert(
+      legacyState.painByMuscle?.rear_delts === 3 &&
+        legacyState.wellbeingFreshnessStatus === 'stale' &&
+        legacyState.stalePainAreas[0]?.zoneKey === 'rear_delts',
+      'Legacy-запись без createdAt и с ключом rearDelts должна корректно нормализоваться как stale'
+    );
+
+    // Невалидное новое значение jointPain: -1 не должно стирать активную боль в суставах
+    const invalidPreservesPain = resolveWellbeingPainStatePure(
+      [
+        { id: 'v1', date: '2026-11-05', jointPain: 4, createdAt: 1000 },
+        { id: 'v2', date: '2026-11-10', jointPain: -1, createdAt: 2000 },
+      ],
+      now
+    );
+    assert(
+      invalidPreservesPain.generalPainLevel === 4 &&
+        invalidPreservesPain.hasInvalidWellbeingInput === true,
+      'Невалидное значение боли в новом чекине не смеет стирать активную боль'
+    );
+
+    return 'Все граничные условия аудита (raw:, сортировка, будущее, невалидные, legacy) подтверждены';
   });
 
   const passed = results.filter((r) => r.passed).length;

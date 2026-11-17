@@ -8,6 +8,9 @@ import {
   runAppHooksRegressionCheck,
   runStartupAndRecoveryScreenUiTests,
   runSafetyGuardUiIntegrationTests,
+  runProgramGeneratorIntegrationTests,
+  runActiveWorkoutAutosaveTests,
+  runWorkoutsTabUxTests,
 } from '../__tests__/integrationChecks';
 
 async function main() {
@@ -17,6 +20,9 @@ async function main() {
   const hooksCheck = await runAppHooksRegressionCheck();
   const recoveryUiCheck = await runStartupAndRecoveryScreenUiTests();
   const safetyGuardUiCheck = await runSafetyGuardUiIntegrationTests();
+  const generatorIntegrationChecks = await runProgramGeneratorIntegrationTests();
+  const activeWorkoutAutosaveChecks = await runActiveWorkoutAutosaveTests();
+  const workoutsTabUxChecks = await runWorkoutsTabUxTests();
 
   const allResults = [
     ...coreSummary.results,
@@ -25,6 +31,9 @@ async function main() {
     hooksCheck,
     recoveryUiCheck,
     safetyGuardUiCheck,
+    ...generatorIntegrationChecks,
+    ...activeWorkoutAutosaveChecks,
+    ...workoutsTabUxChecks,
   ];
   const passed = allResults.filter((r) => r.passed).length;
   const failed = allResults.length - passed;

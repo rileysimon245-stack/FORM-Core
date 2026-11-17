@@ -20,6 +20,18 @@ import { normalizeMuscleKeyPure } from './muscles';
 import { resolveExerciseInUnifiedCatalog } from './catalog';
 import { getCalendarDaysAgo } from './dateUtils';
 
+export type WellbeingFreshnessStatus = 'none' | 'fresh' | 'stale';
+
+export interface StalePainArea {
+  areaType: 'general' | 'muscle';
+  zoneKey: string;
+  rawKey: string;
+  level: number;
+  recordedDate: string;
+  daysAgo: number;
+  isUnknownZone?: boolean;
+}
+
 export interface SafetyCheckInput {
   age?: number | null;
   targetMuscle?: MuscleGroup | string | null;
@@ -29,6 +41,7 @@ export interface SafetyCheckInput {
   hadRepDropRecently?: boolean;
   proposedWeightKg?: number;
   previousBestWeightKg?: number;
+  hasInvalidWellbeingInput?: boolean;
 }
 
 export interface SafetyEvaluation {
@@ -38,6 +51,9 @@ export interface SafetyEvaluation {
   requiresUserConfirmation: boolean;
   vetoReasons: string[];
   advisories: string[];
+  wellbeingFreshnessStatus?: WellbeingFreshnessStatus;
+  requiresWellbeingUpdate?: boolean;
+  stalePainAreas?: StalePainArea[];
 }
 
 export function evaluateSafetyGuard(input: SafetyCheckInput): SafetyEvaluation {
@@ -113,6 +129,10 @@ export function evaluateSafetyGuard(input: SafetyCheckInput): SafetyEvaluation {
         }
       }
     }
+  }
+
+  if (input.hasInvalidWellbeingInput) {
+    hasInvalidPainInput = true;
   }
 
   if (hasInvalidPainInput) {
@@ -231,6 +251,10 @@ export interface SafetyUserContext {
   generalPainLevel?: number;
   daysSinceLastSession?: number | null;
   hadRepDropRecently?: boolean;
+  wellbeingFreshnessStatus?: WellbeingFreshnessStatus;
+  requiresWellbeingUpdate?: boolean;
+  stalePainAreas?: StalePainArea[];
+  hasInvalidWellbeingInput?: boolean;
 }
 
 export interface ExerciseSafetyCandidate {
@@ -257,6 +281,9 @@ export interface ExerciseSafetyDecision {
   advisories: string[];
   conservativeMode: boolean;
   allowFailureSets: false;
+  wellbeingFreshnessStatus?: WellbeingFreshnessStatus;
+  requiresWellbeingUpdate?: boolean;
+  stalePainAreas?: StalePainArea[];
 }
 
 export interface WorkoutLaunchSafetyEvaluation {
@@ -271,6 +298,9 @@ export interface WorkoutLaunchSafetyEvaluation {
   safeExercises: ExerciseSafetyCandidate[];
   vetoReasons: string[];
   advisories: string[];
+  wellbeingFreshnessStatus?: WellbeingFreshnessStatus;
+  requiresWellbeingUpdate?: boolean;
+  stalePainAreas?: StalePainArea[];
 }
 
 export function normalizeSafetyToken(raw: string | null | undefined): string {
@@ -568,6 +598,7 @@ export function evaluateExerciseSafety(
     generalPainLevel: context.generalPainLevel,
     daysSinceLastSession: context.daysSinceLastSession,
     hadRepDropRecently: context.hadRepDropRecently,
+    hasInvalidWellbeingInput: context.hasInvalidWellbeingInput,
   });
 
   advisories.push(...baseEval.advisories);
@@ -600,6 +631,13 @@ export function evaluateExerciseSafety(
 
   // Проверка выраженной боли для целевой или вторичной мышечной группы / суставов
   let blockedByPain = false;
+  if (context.hasInvalidWellbeingInput) {
+    blockedByPain = true;
+    vetoReasons.push(
+      'Обнаружено некорректное значение уровня боли в истории самочувствия — выполнение упражнения заблокировано до подтверждения.'
+    );
+  }
+
   const generalPain = context.generalPainLevel;
   if (typeof generalPain === 'number' && Number.isFinite(generalPain) && generalPain >= 3) {
     blockedByPain = true;
@@ -637,6 +675,19 @@ export function evaluateExerciseSafety(
     }
   }
 
+  const staleAreas = context.stalePainAreas || [];
+  const hasStaleUpdate = Boolean(context.requiresWellbeingUpdate && staleAreas.length > 0);
+  if (hasStaleUpdate) {
+    const staleMsg =
+      'Отметка о боли не обновлялась более 2 дн. — подтвердите текущее состояние отмеченных областей.';
+    if (!advisories.includes(staleMsg)) {
+      advisories.push(staleMsg);
+    }
+    if (blockedByPain && !vetoReasons.includes(staleMsg)) {
+      vetoReasons.push(staleMsg);
+    }
+  }
+
   // Лёгкая боль (1/10) — предупреждение (а повышение веса всё равно блокируется в evaluateSafetyGuard)
   if (!blockedByPain && baseEval.vetoReasons.length > 0 && !blockedByAge) {
     for (const reason of baseEval.vetoReasons) {
@@ -657,6 +708,9 @@ export function evaluateExerciseSafety(
     advisories,
     conservativeMode: baseEval.conservativeMode,
     allowFailureSets: false,
+    wellbeingFreshnessStatus: context.wellbeingFreshnessStatus || 'none',
+    requiresWellbeingUpdate: hasStaleUpdate,
+    stalePainAreas: staleAreas,
   };
 }
 
@@ -670,6 +724,7 @@ export function evaluateWorkoutLaunchSafety<T extends ExerciseSafetyCandidate>(
     generalPainLevel: context.generalPainLevel,
     daysSinceLastSession: context.daysSinceLastSession,
     hadRepDropRecently: context.hadRepDropRecently,
+    hasInvalidWellbeingInput: context.hasInvalidWellbeingInput,
   });
 
   const vetoSet = new Set<string>();
@@ -687,6 +742,12 @@ export function evaluateWorkoutLaunchSafety<T extends ExerciseSafetyCandidate>(
     );
   }
 
+  if (context.hasInvalidWellbeingInput) {
+    vetoSet.add(
+      'Обнаружено некорректное значение уровня боли в истории самочувствия — запуск тренировки заблокирован до подтверждения.'
+    );
+  }
+
   if (
     typeof context.generalPainLevel === 'number' &&
     Number.isFinite(context.generalPainLevel) &&
@@ -694,6 +755,14 @@ export function evaluateWorkoutLaunchSafety<T extends ExerciseSafetyCandidate>(
   ) {
     vetoSet.add(
       `Отмечена выраженная боль в суставах/связках (${context.generalPainLevel}/10) — тренировка заблокирована Safety Guard.`
+    );
+  }
+
+  const staleAreas = context.stalePainAreas || [];
+  const hasStaleUpdate = Boolean(context.requiresWellbeingUpdate && staleAreas.length > 0);
+  if (hasStaleUpdate) {
+    advisorySet.add(
+      'Отметка о боли не обновлялась более 2 дн. — подтвердите текущее состояние отмеченных областей.'
     );
   }
 
@@ -708,6 +777,12 @@ export function evaluateWorkoutLaunchSafety<T extends ExerciseSafetyCandidate>(
     }
   });
 
+  if (vetoSet.size > 0 && hasStaleUpdate) {
+    vetoSet.add(
+      'Отметка о боли не обновлялась более 2 дн. — подтвердите текущее состояние отмеченных областей.'
+    );
+  }
+
   return {
     allowed: vetoSet.size === 0 && blockedExercises.length === 0,
     conservativeMode: baseEval.conservativeMode,
@@ -716,6 +791,9 @@ export function evaluateWorkoutLaunchSafety<T extends ExerciseSafetyCandidate>(
     safeExercises,
     vetoReasons: Array.from(vetoSet),
     advisories: Array.from(advisorySet),
+    wellbeingFreshnessStatus: context.wellbeingFreshnessStatus || 'none',
+    requiresWellbeingUpdate: hasStaleUpdate,
+    stalePainAreas: staleAreas,
   };
 }
 
@@ -746,25 +824,250 @@ export interface ExerciseWeightCheckResult {
   conservativeMode: boolean;
 }
 
-function getLatestRecentCheckinPure(
+interface ResolvedPainZoneState {
+  level: number;
+  recordedDate: string;
+  createdAt: number;
+  daysAgo: number;
+  rawKey: string;
+  zoneKey: string;
+  isUnknownZone: boolean;
+  invalid: boolean;
+}
+
+export interface ResolvedWellbeingPainState {
+  generalPainLevel?: number;
+  painByMuscle?: Partial<Record<MuscleGroup | string, number>>;
+  wellbeingFreshnessStatus: WellbeingFreshnessStatus;
+  requiresWellbeingUpdate: boolean;
+  stalePainAreas: StalePainArea[];
+  hasInvalidWellbeingInput: boolean;
+}
+
+export function resolveWellbeingPainStatePure(
   checkins: WellbeingCheckin[],
   now: Date = new Date()
-): WellbeingCheckin | null {
-  if (!Array.isArray(checkins) || checkins.length === 0) return null;
+): ResolvedWellbeingPainState {
+  if (!Array.isArray(checkins) || checkins.length === 0) {
+    return {
+      generalPainLevel: undefined,
+      painByMuscle: undefined,
+      wellbeingFreshnessStatus: 'none',
+      requiresWellbeingUpdate: false,
+      stalePainAreas: [],
+      hasInvalidWellbeingInput: false,
+    };
+  }
 
-  const recent = checkins
-    .filter((c) => {
-      if (!c || !c.date) return false;
-      const daysAgo = getCalendarDaysAgo(c.date, now);
-      return daysAgo !== null && daysAgo >= 0 && daysAgo <= 2;
+  const minPain = TRAINING_ENGINE_CONFIG.safety.minPainToVetoIncrease;
+  const freshnessDays = TRAINING_ENGINE_CONFIG.safety.painCheckinFreshnessDays;
+
+  const sorted = checkins
+    .map((checkin, origIdx) => {
+      if (!checkin || typeof checkin.date !== 'string') return null;
+      const daysAgo = getCalendarDaysAgo(checkin.date, now);
+      if (daysAgo === null || daysAgo < 0) return null;
+      return { checkin, origIdx, daysAgo };
     })
+    .filter(
+      (item): item is { checkin: WellbeingCheckin; origIdx: number; daysAgo: number } =>
+        item !== null
+    )
     .sort((a, b) => {
-      const dateCmp = (b.date || '').localeCompare(a.date || '');
-      if (dateCmp !== 0) return dateCmp;
-      return (b.createdAt || 0) - (a.createdAt || 0);
+      // 1. Строго по дате от старых к новым (больший daysAgo раньше)
+      if (a.daysAgo !== b.daysAgo) {
+        return b.daysAgo - a.daysAgo;
+      }
+      const dateCmp = a.checkin.date.localeCompare(b.checkin.date);
+      if (dateCmp !== 0) {
+        return dateCmp;
+      }
+      // 2. Строго по createdAt внутри одной даты
+      const aCreated =
+        typeof a.checkin.createdAt === 'number' && Number.isFinite(a.checkin.createdAt)
+          ? a.checkin.createdAt
+          : 0;
+      const bCreated =
+        typeof b.checkin.createdAt === 'number' && Number.isFinite(b.checkin.createdAt)
+          ? b.checkin.createdAt
+          : 0;
+      if (aCreated !== bCreated) {
+        return aCreated - bCreated;
+      }
+      // 3. Детерминированный стабильный порядок при полном равенстве
+      return a.origIdx - b.origIdx;
     });
 
-  return recent[0] || null;
+  if (sorted.length === 0) {
+    return {
+      generalPainLevel: undefined,
+      painByMuscle: undefined,
+      wellbeingFreshnessStatus: 'none',
+      requiresWellbeingUpdate: false,
+      stalePainAreas: [],
+      hasInvalidWellbeingInput: false,
+    };
+  }
+
+  let generalState: ResolvedPainZoneState | undefined;
+  const muscleStates = new Map<string, ResolvedPainZoneState>();
+
+  for (const { checkin, daysAgo } of sorted) {
+    const safeCreatedAt =
+      typeof checkin.createdAt === 'number' && Number.isFinite(checkin.createdAt)
+        ? checkin.createdAt
+        : 0;
+
+    // Обновление общей боли (jointPain) — только при явном присутствии поля
+    if (checkin.jointPain !== undefined && checkin.jointPain !== null) {
+      const validGeneral =
+        typeof checkin.jointPain === 'number' &&
+        Number.isFinite(checkin.jointPain) &&
+        checkin.jointPain >= 0;
+      if (!validGeneral) {
+        // Fail-safe: не стираем ранее отмеченную боль и фиксируем невалидное значение
+        generalState = generalState
+          ? { ...generalState, invalid: true }
+          : {
+              level: 0,
+              recordedDate: checkin.date,
+              createdAt: safeCreatedAt,
+              daysAgo,
+              rawKey: 'jointPain',
+              zoneKey: 'general',
+              isUnknownZone: false,
+              invalid: true,
+            };
+      } else {
+        generalState = {
+          level: checkin.jointPain,
+          recordedDate: checkin.date,
+          createdAt: safeCreatedAt,
+          daysAgo,
+          rawKey: 'jointPain',
+          zoneKey: 'general',
+          isUnknownZone: false,
+          invalid: false,
+        };
+      }
+    }
+
+    // Позонное обновление боли в мышцах — пустой объект или отсутствие зоны ничего не стирает
+    if (
+      checkin.painByMuscle &&
+      typeof checkin.painByMuscle === 'object' &&
+      !Array.isArray(checkin.painByMuscle)
+    ) {
+      for (const [rawZone, rawLevel] of Object.entries(checkin.painByMuscle)) {
+        if (rawLevel === undefined || rawLevel === null) continue;
+        const trimmed = rawZone.trim();
+        const isValidLevel =
+          typeof rawLevel === 'number' && Number.isFinite(rawLevel) && rawLevel >= 0;
+
+        if (!trimmed && isValidLevel && rawLevel < minPain) {
+          continue;
+        }
+
+        const normKey = trimmed ? normalizeMuscleKeyPure(trimmed) : null;
+        const isUnknownZone = normKey === null;
+        const normToken = normalizeSafetyToken(trimmed);
+        const reducerKey = normKey ?? `raw:${normToken}`;
+        const safeRawKey = trimmed || rawZone || 'unknown_zone';
+        const zoneKey = normKey ?? `raw:${normToken}`;
+
+        if (!isValidLevel) {
+          const prev = muscleStates.get(reducerKey);
+          muscleStates.set(
+            reducerKey,
+            prev
+              ? { ...prev, invalid: true }
+              : {
+                  level: 0,
+                  recordedDate: checkin.date,
+                  createdAt: safeCreatedAt,
+                  daysAgo,
+                  rawKey: safeRawKey,
+                  zoneKey,
+                  isUnknownZone,
+                  invalid: true,
+                }
+          );
+          continue;
+        }
+
+        muscleStates.set(reducerKey, {
+          level: rawLevel,
+          recordedDate: checkin.date,
+          createdAt: safeCreatedAt,
+          daysAgo,
+          rawKey: safeRawKey,
+          zoneKey,
+          isUnknownZone,
+          invalid: false,
+        });
+      }
+    }
+  }
+
+  const activePainByMuscle: Partial<Record<MuscleGroup | string, number>> = {};
+  const stalePainAreas: StalePainArea[] = [];
+  let hasActivePain = false;
+  let hasInvalidWellbeingInput = Boolean(generalState?.invalid);
+
+  if (generalState && generalState.level >= minPain) {
+    hasActivePain = true;
+    if (generalState.daysAgo > freshnessDays) {
+      stalePainAreas.push({
+        areaType: 'general',
+        zoneKey: 'general',
+        rawKey: 'jointPain',
+        level: generalState.level,
+        recordedDate: generalState.recordedDate,
+        daysAgo: generalState.daysAgo,
+        isUnknownZone: false,
+      });
+    }
+  }
+
+  for (const state of muscleStates.values()) {
+    if (state.invalid) {
+      hasInvalidWellbeingInput = true;
+    }
+    if (state.level >= minPain) {
+      hasActivePain = true;
+      // Для неизвестных зон оставляем исходный/raw ключ, чтобы normalizeMuscleKeyPure(key) === null сохранял fail-safe блокировку
+      const outputKey = state.isUnknownZone ? state.rawKey : state.zoneKey;
+      activePainByMuscle[outputKey] = state.level;
+      if (state.daysAgo > freshnessDays) {
+        stalePainAreas.push({
+          areaType: 'muscle',
+          zoneKey: state.zoneKey,
+          rawKey: state.rawKey,
+          level: state.level,
+          recordedDate: state.recordedDate,
+          daysAgo: state.daysAgo,
+          isUnknownZone: state.isUnknownZone,
+        });
+      }
+    }
+  }
+
+  const hasMusclePain = Object.keys(activePainByMuscle).length > 0;
+  const requiresWellbeingUpdate = stalePainAreas.length > 0;
+  const wellbeingFreshnessStatus: WellbeingFreshnessStatus = requiresWellbeingUpdate
+    ? 'stale'
+    : hasActivePain
+      ? 'fresh'
+      : 'none';
+
+  return {
+    generalPainLevel: generalState !== undefined ? generalState.level : undefined,
+    painByMuscle: hasMusclePain ? activePainByMuscle : undefined,
+    wellbeingFreshnessStatus,
+    requiresWellbeingUpdate,
+    stalePainAreas,
+    hasInvalidWellbeingInput,
+  };
 }
 
 function isPositionalIdPure(rawId?: string | null): boolean {
@@ -781,7 +1084,7 @@ export function buildSafetyContextFromData(
   const checkins = data.checkins || [];
   const sessions = data.sessions || [];
 
-  const latestCheckin = getLatestRecentCheckinPure(checkins, now);
+  const resolvedPain = resolveWellbeingPainStatePure(checkins, now);
 
   const completedDates = sessions
     .filter((s) => s && s.status === 'completed' && Boolean(s.date))
@@ -799,8 +1102,12 @@ export function buildSafetyContextFromData(
     healthRestrictions: Array.isArray(userParams?.healthRestrictions)
       ? userParams.healthRestrictions
       : [],
-    generalPainLevel: latestCheckin?.jointPain,
-    painByMuscle: latestCheckin?.painByMuscle,
+    generalPainLevel: resolvedPain.generalPainLevel,
+    painByMuscle: resolvedPain.painByMuscle,
+    wellbeingFreshnessStatus: resolvedPain.wellbeingFreshnessStatus,
+    requiresWellbeingUpdate: resolvedPain.requiresWellbeingUpdate,
+    stalePainAreas: resolvedPain.stalePainAreas,
+    hasInvalidWellbeingInput: resolvedPain.hasInvalidWellbeingInput,
     daysSinceLastSession:
       daysSinceLastSession !== null && daysSinceLastSession >= 0
         ? daysSinceLastSession
@@ -1054,22 +1361,32 @@ export function evaluateWeightIncreaseSafetyFromData(
     baselineBest > 0 ? (daysSinceLastExerciseSession ?? context.daysSinceLastSession) : null;
   const effectiveRepDrop = baselineBest > 0 ? hadRepDropRecently : false;
 
+  const attachFreshness = (ev: SafetyEvaluation): SafetyEvaluation => ({
+    ...ev,
+    wellbeingFreshnessStatus: context.wellbeingFreshnessStatus || 'none',
+    requiresWellbeingUpdate: Boolean(context.requiresWellbeingUpdate),
+    stalePainAreas: context.stalePainAreas || [],
+  });
+
   // 1. Проверяем невалидное предлагаемое значение веса
   if (
     typeof proposedWeightKg !== 'number' ||
     !Number.isFinite(proposedWeightKg) ||
     proposedWeightKg < 0
   ) {
-    const evalBad = evaluateSafetyGuard({
-      age: context.age,
-      targetMuscle: enrichedExercise.targetMuscle,
-      painByMuscle: context.painByMuscle,
-      generalPainLevel: context.generalPainLevel,
-      daysSinceLastSession: effectiveBreakDays,
-      hadRepDropRecently: effectiveRepDrop,
-      proposedWeightKg,
-      previousBestWeightKg: comparisonBase > 0 ? comparisonBase : 1,
-    });
+    const evalBad = attachFreshness(
+      evaluateSafetyGuard({
+        age: context.age,
+        targetMuscle: enrichedExercise.targetMuscle,
+        painByMuscle: context.painByMuscle,
+        generalPainLevel: context.generalPainLevel,
+        daysSinceLastSession: effectiveBreakDays,
+        hadRepDropRecently: effectiveRepDrop,
+        proposedWeightKg,
+        previousBestWeightKg: comparisonBase > 0 ? comparisonBase : 1,
+        hasInvalidWellbeingInput: context.hasInvalidWellbeingInput,
+      })
+    );
     return {
       evaluation: evalBad,
       allowed: false,
@@ -1090,14 +1407,17 @@ export function evaluateWeightIncreaseSafetyFromData(
   });
 
   if (!exerciseDecision.allowed) {
-    const passiveEval = evaluateSafetyGuard({
-      age: context.age,
-      targetMuscle: enrichedExercise.targetMuscle,
-      painByMuscle: context.painByMuscle,
-      generalPainLevel: context.generalPainLevel,
-      daysSinceLastSession: effectiveBreakDays,
-      hadRepDropRecently: effectiveRepDrop,
-    });
+    const passiveEval = attachFreshness(
+      evaluateSafetyGuard({
+        age: context.age,
+        targetMuscle: enrichedExercise.targetMuscle,
+        painByMuscle: context.painByMuscle,
+        generalPainLevel: context.generalPainLevel,
+        daysSinceLastSession: effectiveBreakDays,
+        hadRepDropRecently: effectiveRepDrop,
+        hasInvalidWellbeingInput: context.hasInvalidWellbeingInput,
+      })
+    );
     const mergedVetos = Array.from(
       new Set([...exerciseDecision.vetoReasons, ...passiveEval.vetoReasons])
     );
@@ -1126,19 +1446,22 @@ export function evaluateWeightIncreaseSafetyFromData(
 
   // 3. Снижение или сохранение уже установленного рабочего веса (<= comparisonBase и <= current) не является повышением
   if (!isSettingInitialWeight && !isIncreasingTargetSet && !isIncreasingAboveBaseline) {
-    const passiveEval = evaluateSafetyGuard({
-      age: context.age,
-      targetMuscle: enrichedExercise.targetMuscle,
-      painByMuscle: context.painByMuscle,
-      generalPainLevel: context.generalPainLevel,
-    });
+    const passiveEval = attachFreshness(
+      evaluateSafetyGuard({
+        age: context.age,
+        targetMuscle: enrichedExercise.targetMuscle,
+        painByMuscle: context.painByMuscle,
+        generalPainLevel: context.generalPainLevel,
+        hasInvalidWellbeingInput: context.hasInvalidWellbeingInput,
+      })
+    );
     return {
       evaluation: passiveEval,
-      allowed: true,
+      allowed: !context.hasInvalidWellbeingInput,
       requiresUserConfirmation: false,
       canOverrideWithConfirmation: false,
       baselineBestWeightKg: baselineBest,
-      vetoReasons: [],
+      vetoReasons: context.hasInvalidWellbeingInput ? passiveEval.vetoReasons : [],
       advisories: passiveEval.advisories,
       conservativeMode: passiveEval.conservativeMode,
     };
@@ -1147,14 +1470,17 @@ export function evaluateWeightIncreaseSafetyFromData(
   // 4. Задание самого первого рабочего веса для нового упражнения (comparisonBase === 0)
   // Не должно блокироваться перерывом > 14 дней по другим упражнениям, но обязано учитывать боль и возраст.
   if (isSettingInitialWeight) {
-    const firstWeightEval = evaluateSafetyGuard({
-      age: context.age,
-      targetMuscle: enrichedExercise.targetMuscle,
-      painByMuscle: context.painByMuscle,
-      generalPainLevel: context.generalPainLevel,
-      daysSinceLastSession: null,
-      hadRepDropRecently: false,
-    });
+    const firstWeightEval = attachFreshness(
+      evaluateSafetyGuard({
+        age: context.age,
+        targetMuscle: enrichedExercise.targetMuscle,
+        painByMuscle: context.painByMuscle,
+        generalPainLevel: context.generalPainLevel,
+        daysSinceLastSession: null,
+        hadRepDropRecently: false,
+        hasInvalidWellbeingInput: context.hasInvalidWellbeingInput,
+      })
+    );
     return {
       evaluation: firstWeightEval,
       allowed: firstWeightEval.allowWeightIncrease,
@@ -1168,27 +1494,33 @@ export function evaluateWeightIncreaseSafetyFromData(
   }
 
   // 5. Непосредственная проверка условий помимо скачка (боль, перерыв по этому упражнению, падение повторов, возраст)
-  const nonJumpConditionEval = evaluateSafetyGuard({
-    age: context.age,
-    targetMuscle: enrichedExercise.targetMuscle,
-    painByMuscle: context.painByMuscle,
-    generalPainLevel: context.generalPainLevel,
-    daysSinceLastSession: effectiveBreakDays,
-    hadRepDropRecently: effectiveRepDrop,
-  });
+  const nonJumpConditionEval = attachFreshness(
+    evaluateSafetyGuard({
+      age: context.age,
+      targetMuscle: enrichedExercise.targetMuscle,
+      painByMuscle: context.painByMuscle,
+      generalPainLevel: context.generalPainLevel,
+      daysSinceLastSession: effectiveBreakDays,
+      hadRepDropRecently: effectiveRepDrop,
+      hasInvalidWellbeingInput: context.hasInvalidWellbeingInput,
+    })
+  );
 
   // 6. Если есть база сравнения (completed > 0 или уже установленный вес в текущей/незавершённой сессии) и идёт рост выше базы
   const evaluation = isIncreasingAboveBaseline
-    ? evaluateSafetyGuard({
-        age: context.age,
-        targetMuscle: enrichedExercise.targetMuscle,
-        painByMuscle: context.painByMuscle,
-        generalPainLevel: context.generalPainLevel,
-        daysSinceLastSession: effectiveBreakDays,
-        hadRepDropRecently: effectiveRepDrop,
-        proposedWeightKg,
-        previousBestWeightKg: comparisonBase,
-      })
+    ? attachFreshness(
+        evaluateSafetyGuard({
+          age: context.age,
+          targetMuscle: enrichedExercise.targetMuscle,
+          painByMuscle: context.painByMuscle,
+          generalPainLevel: context.generalPainLevel,
+          daysSinceLastSession: effectiveBreakDays,
+          hadRepDropRecently: effectiveRepDrop,
+          proposedWeightKg,
+          previousBestWeightKg: comparisonBase,
+          hasInvalidWellbeingInput: context.hasInvalidWellbeingInput,
+        })
+      )
     : nonJumpConditionEval;
 
   // Подтверждение возможно ТОЛЬКО если единственная причина вето — аномальный скачок веса (>= 35%), без боли/перерыва/падения повторов/ошибки возраста/ограничений
@@ -1292,5 +1624,8 @@ export function evaluateWorkoutLaunchSafetyWithData<T extends ExerciseSafetyCand
     safeExercises,
     vetoReasons: Array.from(vetoSet),
     advisories: Array.from(advisorySet),
+    wellbeingFreshnessStatus: baseEval.wellbeingFreshnessStatus,
+    requiresWellbeingUpdate: baseEval.requiresWellbeingUpdate,
+    stalePainAreas: baseEval.stalePainAreas,
   };
 }

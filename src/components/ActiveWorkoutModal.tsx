@@ -44,6 +44,10 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
+export const AUTOSAVE_DEBOUNCE_MS = 300;
+
+export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+
 interface ActiveWorkoutModalProps {
   session: WorkoutSession;
   onSave: (updatedSession: WorkoutSession) => void | SafeWriteResult;
@@ -51,16 +55,26 @@ interface ActiveWorkoutModalProps {
   isRestoredDraft?: boolean;
 }
 
+const cloneExercisesSnapshot = (list: WorkoutExercise[]): WorkoutExercise[] =>
+  (list || []).map((ex) => ({
+    ...ex,
+    secondaryMuscles: ex.secondaryMuscles ? [...ex.secondaryMuscles] : undefined,
+    sets: (ex.sets || []).map((st) => ({ ...st })),
+  }));
+
 export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
   session,
   onSave,
   onCancel,
   isRestoredDraft = false,
 }) => {
-  const [exercises, setExercises] = useState<WorkoutExercise[]>(session.exercises || []);
+  const [exercises, setExercises] = useState<WorkoutExercise[]>(() =>
+    cloneExercisesSnapshot(session.exercises || [])
+  );
   const [sessionNotes, setSessionNotes] = useState<string>(session.notes || '');
   const [secondsElapsed, setSecondsElapsed] = useState<number>(session.durationMinutes * 60 || 0);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(true);
+  const [autosaveStatus, setAutosaveStatus] = useState<AutosaveStatus>('idle');
 
   // Vertical Zoom scale: 0.9 .. 1.15
   const [zoomScale, setZoomScale] = useState<number>(1.0);
@@ -134,6 +148,142 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     }
   };
 
+  // Refs for race-free debounced autosave, flush-on-close, and monotonic revision ordering
+  const sessionRef = useRef<WorkoutSession>(session);
+  sessionRef.current = session;
+  const loadedSessionIdRef = useRef<string>(session.id);
+  const exercisesRef = useRef<WorkoutExercise[]>(exercises);
+  const sessionNotesRef = useRef<string>(sessionNotes);
+  const secondsElapsedRef = useRef<number>(secondsElapsed);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRevisionRef = useRef<number>(0);
+  const lastSavedRevisionRef = useRef<number>(-1);
+  const lastSavedMinutesRef = useRef<number | null>(null);
+  const writeSequenceRef = useRef<number>(0);
+  const dirtyRef = useRef<boolean>(false);
+  const isMountedRef = useRef<boolean>(true);
+  const isFinishingRef = useRef<boolean>(false);
+  const isFinishedRef = useRef<boolean>(false);
+
+  const clearDebounceTimer = () => {
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+  };
+
+  const buildDraftSnapshot = (): WorkoutSession => {
+    const curSession = sessionRef.current;
+    const durationMinutes = Math.max(1, Math.round(secondsElapsedRef.current / 60));
+    return {
+      ...curSession,
+      exercises: cloneExercisesSnapshot(exercisesRef.current),
+      durationMinutes,
+      notes: sessionNotesRef.current,
+      status: 'in_progress',
+    };
+  };
+
+  const flushDraftSave = (options?: {
+    expectedRevision?: number;
+    skipStateUpdates?: boolean;
+    force?: boolean;
+  }): SafeWriteResult | null => {
+    clearDebounceTimer();
+    if (isFinishedRef.current || isFinishingRef.current) {
+      return null;
+    }
+
+    const currentPendingRevision = pendingRevisionRef.current;
+    if (
+      options?.expectedRevision !== undefined &&
+      options.expectedRevision < currentPendingRevision &&
+      !options?.force
+    ) {
+      return null;
+    }
+
+    if (
+      !dirtyRef.current &&
+      !options?.force &&
+      lastSavedRevisionRef.current >= currentPendingRevision
+    ) {
+      return null;
+    }
+
+    const targetRevision = currentPendingRevision;
+    const writeToken = ++writeSequenceRef.current;
+    const draft = buildDraftSnapshot();
+    const draftRes = StorageService.saveActiveDraft(draft);
+
+    // Prevent stale write completions or writes after finish/close from overwriting newer state
+    if (
+      isFinishedRef.current ||
+      isFinishingRef.current ||
+      writeToken !== writeSequenceRef.current
+    ) {
+      return draftRes;
+    }
+
+    if (pendingRevisionRef.current > targetRevision) {
+      dirtyRef.current = true;
+      if (!options?.skipStateUpdates && isMountedRef.current) {
+        setAutosaveStatus('saving');
+      }
+      return draftRes;
+    }
+
+    if (draftRes.ok) {
+      lastSavedRevisionRef.current = targetRevision;
+      lastSavedMinutesRef.current = draft.durationMinutes;
+      dirtyRef.current = false;
+      if (!options?.skipStateUpdates && isMountedRef.current) {
+        setAutosaveStatus('saved');
+        setSaveError(null);
+      }
+    } else {
+      dirtyRef.current = true;
+      if (!options?.skipStateUpdates && isMountedRef.current) {
+        setAutosaveStatus('error');
+        setSaveError(
+          draftRes.error || 'Не удалось автосохранить черновик тренировки (ошибка памяти).'
+        );
+      }
+    }
+
+    return draftRes;
+  };
+
+  const scheduleDebouncedAutosave = () => {
+    if (isFinishedRef.current || isFinishingRef.current) return;
+    const nextRevision = ++pendingRevisionRef.current;
+    dirtyRef.current = true;
+    if (isMountedRef.current) {
+      setAutosaveStatus('saving');
+    }
+    clearDebounceTimer();
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      flushDraftSave({ expectedRevision: nextRevision });
+    }, AUTOSAVE_DEBOUNCE_MS);
+  };
+
+  const updateExercises = (updater: (prev: WorkoutExercise[]) => WorkoutExercise[]) => {
+    const next = updater(exercisesRef.current);
+    if (next === exercisesRef.current) return;
+    exercisesRef.current = next;
+    setExercises(next);
+    scheduleDebouncedAutosave();
+  };
+
+  const updateSessionNotes = (updater: string | ((prev: string) => string)) => {
+    const next = typeof updater === 'function' ? updater(sessionNotesRef.current) : updater;
+    if (next === sessionNotesRef.current) return;
+    sessionNotesRef.current = next;
+    setSessionNotes(next);
+    scheduleDebouncedAutosave();
+  };
+
   // Toast auto-hide for restored draft
   useEffect(() => {
     if (isRestoredDraft) {
@@ -143,29 +293,89 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     }
   }, [isRestoredDraft]);
 
-  // Auto-save draft on changes
+  // Initial draft persistence + flush on pagehide/beforeunload/unmount
   useEffect(() => {
-    const draft: WorkoutSession = {
-      ...session,
-      exercises,
-      durationMinutes: Math.max(1, Math.round(secondsElapsed / 60)),
-      notes: sessionNotes,
-      status: 'in_progress',
-    };
-    const draftRes = StorageService.saveActiveDraft(draft);
-    if (!draftRes.ok) {
-      setSaveError(
-        draftRes.error || 'Не удалось автосохранить черновик тренировки (ошибка памяти).'
-      );
+    isMountedRef.current = true;
+    isFinishedRef.current = false;
+    isFinishingRef.current = false;
+
+    if (pendingRevisionRef.current === 0) {
+      dirtyRef.current = true;
+      flushDraftSave({ force: true });
     }
-  }, [exercises, sessionNotes, secondsElapsed, session]);
+
+    const handlePageExit = () => {
+      if (dirtyRef.current && !isFinishedRef.current && !isFinishingRef.current) {
+        flushDraftSave({ skipStateUpdates: true, force: true });
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', handlePageExit);
+      window.addEventListener('beforeunload', handlePageExit);
+    }
+
+    return () => {
+      isMountedRef.current = false;
+      clearDebounceTimer();
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('pagehide', handlePageExit);
+        window.removeEventListener('beforeunload', handlePageExit);
+      }
+      if (dirtyRef.current && !isFinishedRef.current && !isFinishingRef.current) {
+        flushDraftSave({ skipStateUpdates: true, force: true });
+      }
+    };
+  }, []);
+
+  // Re-initialize cleanly if session.id prop changes without unmounting
+  useEffect(() => {
+    if (session.id === loadedSessionIdRef.current) return;
+    clearDebounceTimer();
+    loadedSessionIdRef.current = session.id;
+    const nextExercises = cloneExercisesSnapshot(session.exercises || []);
+    const nextNotes = session.notes || '';
+    const nextSeconds = session.durationMinutes * 60 || 0;
+    exercisesRef.current = nextExercises;
+    sessionNotesRef.current = nextNotes;
+    secondsElapsedRef.current = nextSeconds;
+    setExercises(nextExercises);
+    setSessionNotes(nextNotes);
+    setSecondsElapsed(nextSeconds);
+    isFinishedRef.current = false;
+    isFinishingRef.current = false;
+    pendingRevisionRef.current = 0;
+    lastSavedRevisionRef.current = -1;
+    lastSavedMinutesRef.current = null;
+    dirtyRef.current = true;
+    flushDraftSave({ force: true });
+  }, [session.id]);
+
+  // Sync elapsed seconds ref & quietly persist only on minute boundary crossings
+  useEffect(() => {
+    secondsElapsedRef.current = secondsElapsed;
+    const nextMinutes = Math.max(1, Math.round(secondsElapsed / 60));
+    if (
+      lastSavedMinutesRef.current !== null &&
+      nextMinutes !== lastSavedMinutesRef.current &&
+      !dirtyRef.current &&
+      !isFinishedRef.current &&
+      !isFinishingRef.current
+    ) {
+      scheduleDebouncedAutosave();
+    }
+  }, [secondsElapsed]);
 
   // Workout duration stopwatch
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null;
     if (isTimerRunning) {
       interval = setInterval(() => {
-        setSecondsElapsed((prev) => prev + 1);
+        setSecondsElapsed((prev) => {
+          const next = prev + 1;
+          secondsElapsedRef.current = next;
+          return next;
+        });
       }, 1000);
     }
     return () => {
@@ -201,26 +411,42 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
   // Toggle set completion (clicking on circle)
   // CRITICAL: Does NOT change active exercise or jump scroll position!
   const handleToggleSetComplete = (exIdx: number, setIndex: number) => {
-    const next = [...exercises];
-    const targetEx = next[exIdx];
-    if (!targetEx) return;
-    const targetSet = targetEx.sets[setIndex];
-    if (!targetSet) return;
+    const currentEx = exercisesRef.current[exIdx];
+    const currentSet = currentEx?.sets[setIndex];
+    if (!currentEx || !currentSet) return;
 
-    const nextStatus = !targetSet.completed;
-    targetSet.completed = nextStatus;
-    (targetSet as any).done = nextStatus;
-    (targetSet as any).isDone = nextStatus;
-    setExercises(next);
+    const nextStatus = !currentSet.completed;
+    updateExercises((prev) => {
+      const targetEx = prev[exIdx];
+      const targetSet = targetEx?.sets[setIndex];
+      if (!targetEx || !targetSet) return prev;
+      return prev.map((ex, i) =>
+        i !== exIdx
+          ? ex
+          : {
+              ...ex,
+              sets: ex.sets.map((st, sIdx) =>
+                sIdx !== setIndex
+                  ? st
+                  : ({
+                      ...st,
+                      completed: nextStatus,
+                      done: nextStatus,
+                      isDone: nextStatus,
+                    } as ExerciseSet)
+              ),
+            }
+      );
+    });
 
     vibrateDevice(nextStatus ? [80] : [40]);
 
     // Start rest timer if marked completed
     if (nextStatus) {
-      const restDuration = targetEx.restSeconds || activeRestPreset;
+      const restDuration = currentEx.restSeconds || activeRestPreset;
       timerFiredRef.current = false;
       setRestSecondsRemaining(restDuration);
-      setActiveRestExerciseName(targetEx.name);
+      setActiveRestExerciseName(currentEx.name);
       setIsRestPaused(false);
     }
   };
@@ -234,18 +460,27 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
   };
 
   const applyVerifiedWeightChange = (exIdx: number, setIdx: number, newW: number) => {
-    const next = [...exercises];
-    const targetEx = next[exIdx];
-    if (!targetEx || !targetEx.sets[setIdx]) return;
-    targetEx.sets[setIdx].weightKg = newW;
-    setExercises(next);
+    updateExercises((prev) => {
+      const targetEx = prev[exIdx];
+      if (!targetEx || !targetEx.sets[setIdx]) return prev;
+      return prev.map((ex, i) =>
+        i !== exIdx
+          ? ex
+          : {
+              ...ex,
+              sets: ex.sets.map((st, sIdx) =>
+                sIdx !== setIdx ? st : { ...st, weightKg: newW }
+              ),
+            }
+      );
+    });
     setSafetyVetoNotice(null);
     vibrateDevice(30);
   };
 
   // Validate proposed weight change through Safety Guard before applying
   const validateAndApplyWeight = (exIdx: number, setIdx: number, newW: number): boolean => {
-    const targetEx = exercises[exIdx];
+    const targetEx = exercisesRef.current[exIdx];
     const targetSet = targetEx?.sets[setIdx];
     if (!targetEx || !targetSet) return false;
 
@@ -292,7 +527,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
 
   // Adjust weight for specific exercise set
   const handleAdjustWeight = (exIdx: number, setIdx: number, delta: number) => {
-    const targetEx = exercises[exIdx];
+    const targetEx = exercisesRef.current[exIdx];
     if (!targetEx) return;
     const targetSet = targetEx.sets[setIdx];
     if (!targetSet) return;
@@ -309,34 +544,57 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
 
   // Adjust reps for specific exercise set
   const handleAdjustReps = (exIdx: number, setIdx: number, delta: number) => {
-    const next = [...exercises];
-    const targetEx = next[exIdx];
-    if (!targetEx) return;
-    const targetSet = targetEx.sets[setIdx];
-    if (!targetSet) return;
+    const existingEx = exercisesRef.current[exIdx];
+    const existingSet = existingEx?.sets[setIdx];
+    if (!existingEx || !existingSet) return;
 
-    const curR = targetSet.reps || 12;
+    const curR = existingSet.reps || 12;
     const newR = Math.max(1, curR + delta);
-    targetSet.reps = newR;
-    setExercises(next);
+    if (newR === curR && existingSet.reps === newR) return;
+
+    updateExercises((prev) => {
+      const targetEx = prev[exIdx];
+      const targetSet = targetEx?.sets[setIdx];
+      if (!targetEx || !targetSet) return prev;
+      return prev.map((ex, i) =>
+        i !== exIdx
+          ? ex
+          : {
+              ...ex,
+              sets: ex.sets.map((st, sIdx) => (sIdx !== setIdx ? st : { ...st, reps: newR })),
+            }
+      );
+    });
     vibrateDevice(30);
   };
 
   // Add a new set to an exercise
   const handleAddSet = (exIdx: number) => {
-    const next = [...exercises];
-    const targetEx = next[exIdx];
-    if (!targetEx) return;
+    const existingEx = exercisesRef.current[exIdx];
+    if (!existingEx) return;
 
-    const lastSet = targetEx.sets[targetEx.sets.length - 1];
-    const newSetNumber = targetEx.sets.length + 1;
-    targetEx.sets.push({
-      setNumber: newSetNumber,
-      weightKg: lastSet ? (lastSet.weightKg ?? 0) : 0,
-      reps: lastSet ? lastSet.reps : 12,
-      completed: false,
+    updateExercises((prev) => {
+      const targetEx = prev[exIdx];
+      if (!targetEx) return prev;
+      const lastSet = targetEx.sets[targetEx.sets.length - 1];
+      const newSetNumber = targetEx.sets.length + 1;
+      return prev.map((ex, i) =>
+        i !== exIdx
+          ? ex
+          : {
+              ...ex,
+              sets: [
+                ...ex.sets,
+                {
+                  setNumber: newSetNumber,
+                  weightKg: lastSet ? (lastSet.weightKg ?? 0) : 0,
+                  reps: lastSet ? lastSet.reps : 12,
+                  completed: false,
+                },
+              ],
+            }
+      );
     });
-    setExercises(next);
     vibrateDevice(40);
   };
 
@@ -403,30 +661,33 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     };
 
     setSafetyVetoNotice(null);
-    setExercises((prev) => [...prev, newEx]);
+    updateExercises((prev) => [...prev, newEx]);
     setShowAddExercisePicker(false);
     vibrateDevice(50);
   };
 
-  const getSessionMetrics = () =>
-    calculateWorkoutMetrics(exercises, StorageService.getProfile().weightKg);
+  const getSessionMetricsFor = (exList: WorkoutExercise[]) =>
+    calculateWorkoutMetrics(exList, StorageService.getProfile().weightKg);
 
   // Calculate volume
-  const calculateTotalVolume = () => getSessionMetrics().totalVolumeKg;
+  const calculateTotalVolume = () => getSessionMetricsFor(exercises).totalVolumeKg;
 
   // Calculate completed sets
-  const calculateCompletedSets = () => getSessionMetrics().completedSets;
+  const calculateCompletedSets = () => getSessionMetricsFor(exercises).completedSets;
 
   // Calculate total reps
-  const calculateTotalReps = () => getSessionMetrics().totalReps;
+  const calculateTotalReps = () => getSessionMetricsFor(exercises).totalReps;
 
   const totalPossibleSets = exercises.reduce((acc, ex) => acc + (ex.skipped ? 0 : ex.sets.length), 0);
   const completedSetsCount = calculateCompletedSets();
 
   // PR detection
-  const detectPersonalRecords = (): PersonalRecordInfo[] => {
+  const detectPersonalRecordsFor = (
+    exList: WorkoutExercise[],
+    workoutDate: string
+  ): PersonalRecordInfo[] => {
     const prs: PersonalRecordInfo[] = [];
-    exercises.forEach((ex) => {
+    exList.forEach((ex) => {
       if (!ex.isBodyweight && !ex.skipped) {
         const histPR = StorageService.getPersonalRecord(ex.name);
         let sessionMax = 0;
@@ -443,7 +704,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
             exerciseName: ex.name,
             weightKg: sessionMax,
             reps: sessionMaxReps,
-            date: session.date,
+            date: workoutDate,
             isNew: true,
           });
         }
@@ -452,33 +713,55 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
     return prs;
   };
 
+  const detectPersonalRecords = (): PersonalRecordInfo[] =>
+    detectPersonalRecordsFor(exercises, session.date);
+
   const handleConfirmFinish = () => {
     setSaveError(null);
+    clearDebounceTimer();
+    isFinishingRef.current = true;
+    // Advance revision so any concurrent/older save operation cannot overwrite completion state
+    pendingRevisionRef.current += 1;
+
+    const latestExercises = cloneExercisesSnapshot(exercisesRef.current);
+    const latestNotes = sessionNotesRef.current;
+    const latestSeconds = secondsElapsedRef.current;
+    const currentSession = sessionRef.current;
+
     const currentBodyWeight = Number(StorageService.getProfile().weightKg);
     const bodyWeightKgAtWorkout =
       Number.isFinite(currentBodyWeight) && currentBodyWeight > 0 ? currentBodyWeight : null;
+    const metrics = getSessionMetricsFor(latestExercises);
 
     const finalSession: WorkoutSession = {
-      ...session,
-      exercises,
-      durationMinutes: Math.max(1, Math.round(secondsElapsed / 60)),
-      totalVolumeKg: calculateTotalVolume(),
-      completedSets: completedSetsCount,
-      totalReps: calculateTotalReps(),
+      ...currentSession,
+      exercises: latestExercises,
+      durationMinutes: Math.max(1, Math.round(latestSeconds / 60)),
+      totalVolumeKg: metrics.totalVolumeKg,
+      completedSets: metrics.completedSets,
+      totalReps: metrics.totalReps,
       bodyWeightKgAtWorkout,
-      notes: sessionNotes,
+      notes: latestNotes,
       status: 'completed',
       completedAt: Date.now(),
-      personalRecords: detectPersonalRecords(),
+      personalRecords: detectPersonalRecordsFor(latestExercises, currentSession.date),
     };
 
     const result = onSave(finalSession);
     if (result && !result.ok) {
+      isFinishingRef.current = false;
+      isFinishedRef.current = false;
+      setAutosaveStatus('error');
       setSaveError(
         result.error ||
           'Не удалось сохранить тренировку в память устройства. Проверьте свободное место или Настройки → Данные.'
       );
+      return;
     }
+
+    isFinishedRef.current = true;
+    isFinishingRef.current = false;
+    dirtyRef.current = false;
   };
 
   // Format stopwatch string
@@ -533,7 +816,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       recognition.onresult = (event: any) => {
         const text = event.results[0][0].transcript;
         if (text) {
-          setSessionNotes((prev) => (prev ? `${prev} · ${text}` : text));
+          updateSessionNotes((prev) => (prev ? `${prev} · ${text}` : text));
         }
         setIsListeningVoice(false);
       };
@@ -564,55 +847,91 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       {/* 1. TOP STICKY BAR (Derived from screenshot)              */}
       {/* ======================================================== */}
       <header
-        className="relative z-30 shrink-0 px-4 pt-3 pb-2.5 bg-[#0A0D0F]/95 backdrop-blur-md border-b border-[#1A2229] flex items-center justify-between gap-2"
+        className="relative z-30 shrink-0 px-4 pt-3 pb-2 bg-[#0A0D0F]/95 backdrop-blur-md border-b border-[#1A2229] flex flex-col gap-1.5"
         style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 12px)' }}
       >
-        {/* Left: Round close button with crisp white background (from screenshot) */}
-        <button
-          type="button"
-          onClick={() => setShowExitConfirm(true)}
-          className="w-11 h-11 rounded-full bg-white text-black font-bold shadow-md hover:bg-zinc-100 active:scale-95 transition-all flex items-center justify-center cursor-pointer shrink-0"
-          title="Прервать тренировку"
-          aria-label="Прервать тренировку"
-        >
-          <X className="w-5 h-5 stroke-[2.4]" />
-        </button>
-
-        {/* Center: "visualize" white pill button (from screenshot) */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2">
+          {/* Left: Round close button with crisp white background (from screenshot) */}
           <button
             type="button"
-            onClick={() => {
-              const currentEx = exercises[0] || null;
-              if (currentEx) setVisualizeExercise(currentEx);
-            }}
-            className="rounded-full bg-white hover:bg-zinc-100 text-black px-7 py-2.5 font-black text-xs uppercase tracking-wider shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-            title="Открыть анатомический фокус"
+            onClick={() => setShowExitConfirm(true)}
+            className="w-11 h-11 rounded-full bg-white text-black font-bold shadow-md hover:bg-zinc-100 active:scale-95 transition-all flex items-center justify-center cursor-pointer shrink-0"
+            title="Прервать тренировку"
+            aria-label="Прервать тренировку"
           >
-            <span>visualize</span>
+            <X className="w-5 h-5 stroke-[2.4]" />
           </button>
+
+          {/* Center: "visualize" white pill button (from screenshot) */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const currentEx = exercises[0] || null;
+                if (currentEx) setVisualizeExercise(currentEx);
+              }}
+              className="rounded-full bg-white hover:bg-zinc-100 text-black px-7 py-2.5 font-black text-xs uppercase tracking-wider shadow-md active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+              title="Открыть анатомический фокус"
+            >
+              <span>visualize</span>
+            </button>
+          </div>
+
+          {/* Right: Stopwatch duration & Finish Button */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsTimerRunning(!isTimerRunning)}
+              className="px-3 py-2 rounded-full bg-[#13171B] border border-[#222B35] text-xs font-mono font-bold text-[#58C995] flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
+              title="Пауза / Продолжить таймер"
+            >
+              <Timer className="w-3.5 h-3.5" />
+              <span>{formatTime(secondsElapsed)}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowFinishSummary(true)}
+              className="px-3.5 py-2 rounded-full bg-[#58C995] text-[#080D0E] font-black text-xs uppercase tracking-wider hover:bg-[#68d7a4] active:scale-95 transition-all cursor-pointer shadow-md"
+              title="Завершить тренировку"
+            >
+              Готово
+            </button>
+          </div>
         </div>
 
-        {/* Right: Stopwatch duration & Finish Button */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={() => setIsTimerRunning(!isTimerRunning)}
-            className="px-3 py-2 rounded-full bg-[#13171B] border border-[#222B35] text-xs font-mono font-bold text-[#58C995] flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95"
-            title="Пауза / Продолжить таймер"
-          >
-            <Timer className="w-3.5 h-3.5" />
-            <span>{formatTime(secondsElapsed)}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowFinishSummary(true)}
-            className="px-3.5 py-2 rounded-full bg-[#58C995] text-[#080D0E] font-black text-xs uppercase tracking-wider hover:bg-[#68d7a4] active:scale-95 transition-all cursor-pointer shadow-md"
-            title="Завершить тренировку"
-          >
-            Готово
-          </button>
+        {/* Autosave Status Indicator */}
+        <div
+          className="flex items-center justify-center min-h-[16px]"
+          aria-live="polite"
+          data-testid="autosave-status"
+        >
+          {autosaveStatus === 'saving' && (
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#A6B2B5]">
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-[#F59E0B] animate-pulse"
+                aria-hidden="true"
+              />
+              <span>Сохранение…</span>
+            </span>
+          )}
+          {autosaveStatus === 'saved' && (
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#58C995]">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#58C995]" aria-hidden="true" />
+              <span>Сохранено</span>
+            </span>
+          )}
+          {autosaveStatus === 'error' && (
+            <button
+              type="button"
+              onClick={() => flushDraftSave({ force: true })}
+              className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#FCA5A5] hover:text-white cursor-pointer"
+              title="Нажмите, чтобы повторить сохранение"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-[#F87171]" aria-hidden="true" />
+              <span>Ошибка сохранения</span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -699,7 +1018,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
       {/* 2. FLOATING RIGHT ZOOM DOCK (+ / −)                      */}
       {/* ======================================================== */}
       <aside
-        className="fixed right-3.5 top-[76px] z-30 w-11 rounded-2xl bg-white text-black shadow-lg flex flex-col items-center overflow-hidden border border-zinc-200"
+        className="fixed right-3.5 top-[92px] z-30 w-11 rounded-2xl bg-white text-black shadow-lg flex flex-col items-center overflow-hidden border border-zinc-200"
         aria-label="Масштаб"
       >
         <button
@@ -1511,7 +1830,8 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
         onClose={() => setExerciseToDeleteIndex(null)}
         onConfirm={() => {
           if (exerciseToDeleteIndex !== null) {
-            setExercises((prev) => prev.filter((_, idx) => idx !== exerciseToDeleteIndex));
+            const targetIdx = exerciseToDeleteIndex;
+            updateExercises((prev) => prev.filter((_, idx) => idx !== targetIdx));
             vibrateDevice(40);
             setExerciseToDeleteIndex(null);
           }
@@ -1532,6 +1852,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
         isOpen={showExitConfirm}
         onClose={() => setShowExitConfirm(false)}
         onConfirm={() => {
+          flushDraftSave({ force: true });
           setShowExitConfirm(false);
           onCancel();
         }}
@@ -1547,7 +1868,7 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
         isOpen={showNotePrompt}
         onClose={() => setShowNotePrompt(false)}
         onSubmit={(val) => {
-          setSessionNotes(val);
+          updateSessionNotes(val);
           setShowNotePrompt(false);
         }}
         title="Заметка к тренировке"

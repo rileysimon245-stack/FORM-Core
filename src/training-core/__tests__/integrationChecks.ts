@@ -2069,12 +2069,198 @@ export async function runSafetyGuardUiIntegrationTests(): Promise<TestCaseResult
       if (scenarioErr) throw scenarioErr;
     }
 
+    // 5. Wellbeing Relevance (UI <App />): Подтверждение устаревшей (>2 дн.) боли по зонам без автозапуска при других ограничениях
+    {
+      const ctx = setupReactDomTestEnv();
+      resetMigrationSessionFlagForTests();
+      const container = ctx.dom.window.document.getElementById('root')!;
+      const root = createRootFn(container);
+      let scenarioErr: unknown = null;
+      try {
+        ctx.store.set('form_schema_version_v1', '11');
+        const now = new Date();
+        const todayIso = formatLocalIsoDate(now);
+        const fiveDaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 5, 12, 0, 0);
+        const staleIso = formatLocalIsoDate(fiveDaysAgo);
+
+        StorageService.updateProfile({ age: 30, weightKg: 80 });
+        StorageService.saveProgram({
+          id: 'prog_stale_pain_ui',
+          name: 'Сплит проверки боли',
+          description: 'Тест устаревшей боли',
+          goal: 'Сила',
+          daysPerWeek: 3,
+          status: 'active',
+          isCustom: true,
+          createdAt: staleIso,
+          workouts: [
+            {
+              id: 'day_stale_1',
+              dayName: 'Силовая тренировка',
+              targetMuscleGroups: ['chest', 'quads'],
+              estimatedDuration: 45,
+              exercises: [
+                {
+                  exerciseId: 'barbell_bench_press_flat',
+                  name: 'Жим штанги лёжа',
+                  targetMuscle: 'chest',
+                  isBodyweight: false,
+                  sets: 3,
+                  reps: 8,
+                  targetWeight: 0,
+                  restSeconds: 90,
+                },
+                {
+                  exerciseId: 'barbell_back_squats',
+                  name: 'Приседания со штангой',
+                  targetMuscle: 'quads',
+                  isBodyweight: false,
+                  sets: 3,
+                  reps: 8,
+                  targetWeight: 0,
+                  restSeconds: 90,
+                },
+              ],
+            },
+          ],
+        });
+
+        // Устаревшая (5 дн.) боль сразу по двум зонам: chest: 3 и quads: 3
+        StorageService.saveWellbeingCheckin({
+          id: 'wb_stale_ui_1',
+          date: staleIso,
+          painByMuscle: { chest: 3, quads: 3 },
+          createdAt: fiveDaysAgo.getTime(),
+        });
+
+        flushSyncFn(() => {
+          root.render(React.createElement(AppComponent));
+        });
+
+        const startBtn = findButton(container, 'НАЧАТЬ ТРЕНИРОВКУ');
+        if (!startBtn) {
+          throw new Error('Кнопка «НАЧАТЬ ТРЕНИРОВКУ» не найдена для сценария устаревшей боли');
+        }
+        flushSyncFn(() => {
+          startBtn.click();
+        });
+
+        const body = ctx.dom.window.document.body;
+        if (!(body.textContent || '').includes('Устаревшая отметка о боли')) {
+          throw new Error('В модале блокировки должен отображаться запрос подтверждения устаревшей боли');
+        }
+
+        // 1) Нажимаем «Боль сохраняется» по первой зоне (chest) -> дата обновляется на сегодня, но блокировка НЕ ослабляется
+        const keepPainBtns = Array.from(body.querySelectorAll('button')).filter((b) =>
+          (b.textContent || '').includes('Боль сохраняется')
+        );
+        if (keepPainBtns.length !== 2) {
+          throw new Error(`Ожидались 2 кнопки «Боль сохраняется», найдено ${keepPainBtns.length}`);
+        }
+        flushSyncFn(() => {
+          keepPainBtns[0].click();
+        });
+
+        const { getCurrentSafetyContext } = await import('../../services/safetyContext');
+        const ctxAfterKeep = getCurrentSafetyContext(now);
+        if (
+          ctxAfterKeep.painByMuscle?.chest !== 3 ||
+          ctxAfterKeep.painByMuscle?.quads !== 3 ||
+          (ctxAfterKeep.stalePainAreas || []).length !== 1 ||
+          ctxAfterKeep.stalePainAreas![0].zoneKey !== 'quads'
+        ) {
+          throw new Error('Подтверждение «Боль сохраняется» по chest должно освежить chest и оставить quads stale');
+        }
+        if (container.querySelector('[aria-label="Масштаб"]') || StorageService.getActiveDraft()) {
+          throw new Error('После «Боль сохраняется» тренировка не смеет запускаться');
+        }
+
+        // 2) Нажимаем «Боль прошла (0)» по оставшейся устаревшей зоне (quads) -> chest: 3 всё ещё свежая, автозапуска быть НЕ ДОЛЖНО!
+        const clearBtnsAfterKeep = Array.from(body.querySelectorAll('button')).filter((b) =>
+          (b.textContent || '').includes('Боль прошла (0)')
+        );
+        if (clearBtnsAfterKeep.length !== 1) {
+          throw new Error(`Ожидалась 1 кнопка «Боль прошла (0)» для quads, найдено ${clearBtnsAfterKeep.length}`);
+        }
+        flushSyncFn(() => {
+          clearBtnsAfterKeep[0].click();
+        });
+
+        const ctxAfterPartialClear = getCurrentSafetyContext(now);
+        if (
+          ctxAfterPartialClear.painByMuscle?.quads !== undefined ||
+          ctxAfterPartialClear.painByMuscle?.chest !== 3 ||
+          ctxAfterPartialClear.wellbeingFreshnessStatus !== 'fresh'
+        ) {
+          throw new Error('Снятие quads: 0 должно сохранить свежую боль chest: 3');
+        }
+        if (!(body.textContent || '').includes('Safety Guard: блокировка') || StorageService.getActiveDraft()) {
+          throw new Error('При сохранённой боли в груди частичное снятие quads не смеет запускать тренировку автоматически');
+        }
+
+        // 3) Сценарий чистого снятия последнего ограничения: закрываем модал, оставляем единственную устаревшую зону chest: 3 и подтверждаем «Боль прошла (0)»
+        StorageService.saveWellbeingCheckin({
+          id: 'wb_stale_ui_1',
+          date: staleIso,
+          painByMuscle: { chest: 3 },
+          createdAt: fiveDaysAgo.getTime(),
+        });
+        // Оставляем только этот старый чекин с тем же chest: 3, удалив сегодняшний
+        const todayRecords = StorageService.getWellbeingCheckins().filter((c) => c.date === todayIso);
+        for (const r of todayRecords) {
+          StorageService.deleteWellbeingCheckin(r.id);
+        }
+
+        const closeModalBtn = findButton(body, 'Закрыть');
+        if (closeModalBtn) {
+          flushSyncFn(() => {
+            closeModalBtn.click();
+          });
+        }
+        await new Promise((r) => setTimeout(r, 260));
+        const restartBtn = findButton(container, 'НАЧАТЬ ТРЕНИРОВКУ');
+        if (!restartBtn) {
+          throw new Error('Кнопка «НАЧАТЬ ТРЕНИРОВКУ» не найдена для повторного открытия');
+        }
+        flushSyncFn(() => {
+          restartBtn.click();
+        });
+        const finalClearBtn = findButton(body, 'Боль прошла (0)');
+        if (!finalClearBtn) {
+          throw new Error('Кнопка «Боль прошла (0)» не найдена при единственной устаревшей зоне');
+        }
+        flushSyncFn(() => {
+          finalClearBtn.click();
+        });
+        await new Promise((r) => setTimeout(r, 260));
+
+        // После снятия единственного ограничения повторная проверка Safety Guard прошла и тренировка открылась
+        if ((body.textContent || '').includes('Safety Guard: блокировка')) {
+          throw new Error('После снятия всех ограничений модал блокировки должен закрыться');
+        }
+        if (!(body.textContent || '').includes('Силовая тренировка') || !body.querySelector('[aria-label="Масштаб"]')) {
+          throw new Error('После снятия последнего ограничения тренировка должна открыться');
+        }
+      } catch (err) {
+        scenarioErr = err;
+      } finally {
+        try {
+          flushSyncFn(() => root.unmount());
+        } catch {
+          // ignore unmount failures
+        }
+        await new Promise((r) => setTimeout(r, 40));
+        ctx.cleanup();
+      }
+      if (scenarioErr) throw scenarioErr;
+    }
+
     return {
       group,
       name,
       passed: true,
       details:
-        'UI проверен: раскрытая карточка каталога, блокировка targetWeight в ProgramEditorModal, отказ запуска устаревшей программы в App и отказ подтверждения при жёстком вето в ActiveWorkoutModal',
+        'UI проверен: раскрытая карточка каталога, блокировка targetWeight в ProgramEditorModal, отказ запуска устаревшей программы в App, подтверждение устаревшей боли без автозапуска и отказ подтверждения при жёстком вето в ActiveWorkoutModal',
     };
   } catch (err: any) {
     return {
@@ -2091,3 +2277,1385 @@ export async function runSafetyGuardUiIntegrationTests(): Promise<TestCaseResult
     console.error = originalConsoleError;
   }
 }
+
+export async function runProgramGeneratorIntegrationTests(): Promise<TestCaseResult[]> {
+  const { generateWorkoutProgram, generateLocalTemplateProgram } = await import(
+    '../../services/programGenerator'
+  );
+  const { getUnifiedCatalog } = await import('../catalog');
+  const { HEALTH_RESTRICTION_PRESETS } = await import('../safetyGuard');
+  const { checkWorkoutLaunchSafety } = await import('../../services/safetyContext');
+
+  const withMockEnv = async (
+    fetchImpl: (input: any, init?: any) => Promise<any>,
+    fn: () => Promise<void>
+  ) => {
+    const prevStorageDesc = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const prevFetchDesc = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
+    const store = new Map<string, string>();
+    const mockStorage: Storage = {
+      get length() {
+        return store.size;
+      },
+      clear() {
+        store.clear();
+      },
+      getItem(k: string) {
+        return store.has(k) ? store.get(k)! : null;
+      },
+      key(idx: number) {
+        return Array.from(store.keys())[idx] ?? null;
+      },
+      removeItem(k: string) {
+        store.delete(k);
+      },
+      setItem(k: string, v: string) {
+        store.set(k, String(v));
+      },
+    };
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      writable: true,
+      value: mockStorage,
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: fetchImpl,
+    });
+    resetMigrationSessionFlagForTests();
+
+    try {
+      await fn();
+    } finally {
+      resetMigrationSessionFlagForTests();
+      if (prevStorageDesc) {
+        Object.defineProperty(globalThis, 'localStorage', prevStorageDesc);
+      } else {
+        delete (globalThis as any).localStorage;
+      }
+      if (prevFetchDesc) {
+        Object.defineProperty(globalThis, 'fetch', prevFetchDesc);
+      } else {
+        delete (globalThis as any).fetch;
+      }
+    }
+  };
+
+  const setSelectedEquipment = (ids: string[]) => {
+    const current = StorageService.getEquipmentList();
+    StorageService.saveEquipmentList(
+      current.map((item) => ({
+        ...item,
+        selected: ids.includes(item.id),
+      }))
+    );
+  };
+
+  const runCase = async (name: string, fn: () => Promise<string>): Promise<TestCaseResult> => {
+    try {
+      const details = await fn();
+      return { group: 'Program Generator (AI/Integration)', name, passed: true, details };
+    } catch (err: any) {
+      return {
+        group: 'Program Generator (AI/Integration)',
+        name,
+        passed: false,
+        details: err?.message || String(err),
+      };
+    }
+  };
+
+  const results: TestCaseResult[] = [];
+
+  // 1. AI-путь: добавление валидных упражнений из каталога с нормализацией
+  results.push(
+    await runCase(
+      'AI-путь принимает валидные упражнения из каталога и нормализует их поля',
+      async () => {
+        await withMockEnv(
+          async () => ({
+            ok: true,
+            json: async () => ({
+              success: true,
+              program: {
+                name: 'AI Сила',
+                workouts: [
+                  {
+                    dayName: 'День 1',
+                    targetMuscleGroups: ['chest', 'back'],
+                    exercises: [
+                      {
+                        name: 'Жим штанги лежа',
+                        targetMuscle: 'chest',
+                        sets: 4,
+                        reps: 8,
+                        isBodyweight: true, // заведомо неверный флаг от AI — должен перезаписаться из каталога
+                        restSeconds: 90,
+                      },
+                      {
+                        name: 'Тяга штанги в наклоне',
+                        targetMuscle: 'back',
+                        sets: 4,
+                        reps: 10,
+                        restSeconds: 90,
+                      },
+                    ],
+                  },
+                ],
+              },
+            }),
+          }),
+          async () => {
+            StorageService.updateProfile({ age: 30, weightKg: 80 });
+            setSelectedEquipment(['barbell']);
+            const res = await generateWorkoutProgram({
+              goal: 'Сила',
+              daysPerWeek: 2,
+              duration: 60,
+              experience: 'Средний',
+              preferredDays: ['Пн', 'Чт'],
+            });
+            if (res.source !== 'ai') throw new Error(`Ожидался source=ai, получен ${res.source}`);
+            const day1 = res.program.workouts[0];
+            if (!day1 || day1.exercises.length !== 2) {
+              throw new Error(`Ожидалось 2 упражнения, получено ${day1?.exercises.length}`);
+            }
+            if (day1.exercises[0].exerciseId !== 'barbell_bench_press_flat') {
+              throw new Error(`Неверный exerciseId: ${day1.exercises[0].exerciseId}`);
+            }
+            if (day1.exercises[0].isBodyweight !== false) {
+              throw new Error('isBodyweight должен браться из каталога, а не из сырого ответа AI');
+            }
+            if (day1.exercises[0].targetWeight !== 0) {
+              throw new Error('targetWeight в шаблоне должен быть 0');
+            }
+            if (day1.targetMuscleGroups[1] !== 'lats') {
+              throw new Error(`Ожидалась нормализация 'back' -> 'lats', получено ${day1.targetMuscleGroups[1]}`);
+            }
+          }
+        );
+        return 'Валидные упражнения AI подтверждены по каталогу';
+      }
+    )
+  );
+
+  // 2. AI-путь: отклонение вымышленных упражнений и частичных совпадений вне каталога
+  results.push(
+    await runCase(
+      'AI-путь отклоняет вымышленные упражнения и частичные совпадения вне каталога',
+      async () => {
+        await withMockEnv(
+          async () => ({
+            ok: true,
+            json: async () => ({
+              success: true,
+              program: {
+                name: 'AI Mixed',
+                workouts: [
+                  {
+                    dayName: 'День 1',
+                    targetMuscleGroups: ['quads', 'chest'],
+                    exercises: [
+                      { name: 'Приседания с гантелями', targetMuscle: 'quads', sets: 3, reps: 12 },
+                      { name: 'Космический жим гантелей Х99', targetMuscle: 'chest', sets: 4, reps: 10 },
+                      { name: 'Приседания', targetMuscle: 'quads', sets: 3, reps: 10 },
+                    ],
+                  },
+                ],
+              },
+            }),
+          }),
+          async () => {
+            StorageService.updateProfile({ age: 28, weightKg: 75 });
+            setSelectedEquipment(['dumbbells_adjustable']);
+            const res = await generateWorkoutProgram({
+              goal: 'Развитие мышц',
+              daysPerWeek: 2,
+              duration: 60,
+              experience: 'Средний',
+              preferredDays: ['Пн', 'Чт'],
+            });
+            const exList = res.program.workouts.flatMap((w) => w.exercises);
+            if (exList.length !== 1 || exList[0].name !== 'Приседания с гантелями') {
+              throw new Error(
+                `Должно остаться только 1 подтверждённое упражнение, получено: ${exList.map((e) => e.name).join(', ')}`
+              );
+            }
+            if (exList.some((e) => (e.exerciseId || '').startsWith('ex_gen_'))) {
+              throw new Error('Запрещено генерировать фиктивные ID ex_gen_*');
+            }
+          }
+        );
+        return 'Вымышленные и частичные названия AI отфильтрованы';
+      }
+    )
+  );
+
+  // 3. AI-путь: отклонение упражнений с отсутствующим оборудованием и допустимая замена
+  results.push(
+    await runCase(
+      'AI-путь отклоняет упражнения без доступного оборудования и заменяет только допустимыми из каталога',
+      async () => {
+        await withMockEnv(
+          async () => ({
+            ok: true,
+            json: async () => ({
+              success: true,
+              program: {
+                name: 'AI Equipment Test',
+                workouts: [
+                  {
+                    dayName: 'День 1',
+                    targetMuscleGroups: ['chest', 'quads'],
+                    exercises: [
+                      { name: 'Жим штанги лёжа', targetMuscle: 'chest', sets: 4, reps: 8 },
+                      { name: 'Приседания со штангой', targetMuscle: 'quads', sets: 4, reps: 8 },
+                    ],
+                  },
+                ],
+              },
+            }),
+          }),
+          async () => {
+            StorageService.updateProfile({ age: 30, weightKg: 80 });
+            setSelectedEquipment(['dumbbells_adjustable']);
+            const res = await generateWorkoutProgram({
+              goal: 'Сила',
+              daysPerWeek: 2,
+              duration: 60,
+              experience: 'Средний',
+              preferredDays: ['Пн', 'Чт'],
+            });
+            const exList = res.program.workouts.flatMap((w) => w.exercises);
+            if (exList.length === 0) {
+              throw new Error('Для dumbbells_adjustable должны подбираться допустимые замены из каталога');
+            }
+            for (const ex of exList) {
+              if (ex.name === 'Жим штанги лёжа' || ex.name === 'Приседания со штангой') {
+                throw new Error(`Упражнение со штангой ${ex.name} не должно было пройти при наличии только гантелей`);
+              }
+              if (ex.requiredEquipment !== 'dumbbells_adjustable') {
+                throw new Error(`Замена ${ex.name} требует ${ex.requiredEquipment}, а не dumbbells_adjustable`);
+              }
+            }
+          }
+        );
+        return 'Упражнения с отсутствующим оборудованием отклонены и безопасно заменены';
+      }
+    )
+  );
+
+  // 4. AI-путь: блокировка по Safety Guard и отказ при отсутствии альтернатив / оборудования
+  results.push(
+    await runCase(
+      'AI-путь уважает Safety Guard и корректно сообщает об ошибке при отсутствии альтернатив или оборудования',
+      async () => {
+        // А) Safety Guard блокирует приседания и боль/исключения -> AI не добавляет запрещённые упражнения
+        await withMockEnv(
+          async () => ({
+            ok: true,
+            json: async () => ({
+              success: true,
+              program: {
+                name: 'AI Safety',
+                workouts: [
+                  {
+                    dayName: 'День 1',
+                    targetMuscleGroups: ['quads', 'chest'],
+                    exercises: [
+                      { name: 'Приседания со штангой', targetMuscle: 'quads', sets: 3, reps: 8 },
+                      { name: 'Жим штанги лёжа', targetMuscle: 'chest', sets: 3, reps: 8 },
+                      { name: 'Румынская тяга со штангой', targetMuscle: 'hamstrings', sets: 3, reps: 10 },
+                    ],
+                  },
+                ],
+              },
+            }),
+          }),
+          async () => {
+            StorageService.updateProfile({ age: 30, weightKg: 80 });
+            setSelectedEquipment(['barbell']);
+            StorageService.saveUserParameters({
+              ...StorageService.getUserParameters(),
+              excludedExercises: ['Жим штанги лёжа'],
+              healthRestrictions: [HEALTH_RESTRICTION_PRESETS.PROTECT_KNEES],
+            });
+            const res = await generateWorkoutProgram({
+              goal: 'Сила',
+              daysPerWeek: 2,
+              duration: 60,
+              experience: 'Средний',
+              preferredDays: ['Пн', 'Чт'],
+            });
+            const names = res.program.workouts.flatMap((w) => w.exercises.map((e) => e.name));
+            if (names.includes('Приседания со штангой')) {
+              throw new Error('PROTECT_KNEES должен блокировать Приседания со штангой в AI-программе');
+            }
+            if (names.includes('Жим штанги лёжа')) {
+              throw new Error('excludedExercises должен блокировать Жим штанги лёжа в AI-программе');
+            }
+            const safety = checkWorkoutLaunchSafety(res.program.workouts.flatMap((w) => w.exercises));
+            if (!safety.allowed) {
+              throw new Error(`Итоговая AI-программа не прошла Safety Guard: ${safety.vetoReasons.join('; ')}`);
+            }
+          }
+        );
+
+        // Б) AI вернул только недопустимые упражнения без альтернатив (jump_rope + AVOID_SHARP_JUMPS) -> явная ошибка
+        await withMockEnv(
+          async () => ({
+            ok: true,
+            json: async () => ({
+              success: true,
+              program: {
+                name: 'AI Empty Fail',
+                workouts: [
+                  {
+                    dayName: 'День 1',
+                    targetMuscleGroups: ['calves'],
+                    exercises: [{ name: 'Прыжки на скакалке', targetMuscle: 'calves', sets: 3, reps: 50 }],
+                  },
+                ],
+              },
+            }),
+          }),
+          async () => {
+            StorageService.updateProfile({ age: 30, weightKg: 80 });
+            setSelectedEquipment(['jump_rope']);
+            StorageService.saveUserParameters({
+              ...StorageService.getUserParameters(),
+              healthRestrictions: [HEALTH_RESTRICTION_PRESETS.AVOID_SHARP_JUMPS],
+            });
+            let failedCleanly = false;
+            try {
+              await generateWorkoutProgram({
+                goal: 'Выносливость',
+                daysPerWeek: 2,
+                duration: 45,
+                experience: 'Средний',
+                preferredDays: ['Пн', 'Чт'],
+              });
+            } catch (err: any) {
+              failedCleanly = String(err?.message || '').includes('Не удалось составить программу');
+            }
+            if (!failedCleanly) {
+              throw new Error('AI-путь при отсутствии безопасных альтернатив должен выбросить понятную ошибку, а не вернуть пустую программу');
+            }
+          }
+        );
+
+        // В) Пустой инвентарь при фолбэке на локальный генератор -> явная ошибка, без подстановки bodyweight
+        await withMockEnv(
+          async () => ({
+            ok: true,
+            json: async () => ({ success: false, fallback: true }),
+          }),
+          async () => {
+            StorageService.updateProfile({ age: 30, weightKg: 80 });
+            setSelectedEquipment([]);
+            let failedNoEquip = false;
+            try {
+              await generateWorkoutProgram({
+                goal: 'Сила',
+                daysPerWeek: 3,
+                duration: 60,
+                experience: 'Средний',
+                preferredDays: ['Пн', 'Ср', 'Пт'],
+              });
+            } catch (err: any) {
+              failedNoEquip = String(err?.message || '').includes('инвентарь');
+            }
+            if (!failedNoEquip) {
+              throw new Error('generateWorkoutProgram с пустым инвентарём обязан возвращать ошибку выбора оборудования');
+            }
+          }
+        );
+
+        return 'Safety Guard и отказ при отсутствии альтернатив/инвентаря в AI-пути подтверждены';
+      }
+    )
+  );
+
+  // 5. Согласованность (паритет) правил AI-пути и локального пути
+  results.push(
+    await runCase(
+      'Единый конвейер обеспечивает паритет каталога, оборудования и Safety Guard между AI и локальным путём',
+      async () => {
+        await withMockEnv(
+          async () => ({
+            ok: true,
+            json: async () => ({
+              success: true,
+              program: {
+                name: 'AI Parity',
+                workouts: [
+                  {
+                    dayName: 'День 1',
+                    targetMuscleGroups: ['lats', 'quads', 'chest'],
+                    exercises: [
+                      { name: 'Тяга гантели одной рукой', targetMuscle: 'lats', sets: 3, reps: 10 },
+                      { name: 'Подтягивания широким хватом', targetMuscle: 'lats', sets: 3, reps: 8 },
+                      { name: 'Жим штанги лёжа', targetMuscle: 'chest', sets: 3, reps: 8 },
+                      { name: 'Приседания с гантелями', targetMuscle: 'quads', sets: 3, reps: 10 },
+                      { name: 'Выдуманное упражнение', targetMuscle: 'chest', sets: 3, reps: 10 },
+                    ],
+                  },
+                ],
+              },
+            }),
+          }),
+          async () => {
+            StorageService.updateProfile({ age: 32, weightKg: 82 });
+            const allowedEq = ['dumbbells_adjustable', 'pullup_bar'];
+            setSelectedEquipment(allowedEq);
+            StorageService.saveUserParameters({
+              ...StorageService.getUserParameters(),
+              excludedExercises: ['Подтягивания широким хватом'],
+              healthRestrictions: [HEALTH_RESTRICTION_PRESETS.PROTECT_KNEES],
+            });
+
+            const params = {
+              goal: 'Развитие мышц',
+              daysPerWeek: 3,
+              duration: 60,
+              experience: 'Средний',
+              preferredDays: ['Пн', 'Ср', 'Пт'],
+            };
+
+            const aiResult = await generateWorkoutProgram(params);
+            const localResult = generateLocalTemplateProgram(params);
+
+            const catalogIds = new Set(getUnifiedCatalog([]).map((e) => e.id));
+            for (const [label, prog] of [
+              ['AI', aiResult.program],
+              ['Local', localResult],
+            ] as const) {
+              const allEx = prog.workouts.flatMap((w) => w.exercises);
+              if (allEx.length === 0) {
+                throw new Error(`${label}: программа не должна быть пустой`);
+              }
+              for (const ex of allEx) {
+                if (!ex.exerciseId || !catalogIds.has(ex.exerciseId)) {
+                  throw new Error(`${label}: ${ex.name} не из каталога`);
+                }
+                if (!allowedEq.includes(ex.requiredEquipment || '')) {
+                  throw new Error(`${label}: ${ex.name} использует недоступное оборудование ${ex.requiredEquipment}`);
+                }
+                if (ex.name === 'Подтягивания широким хватом' || ex.name === 'Приседания с гантелями') {
+                  throw new Error(`${label}: запрещённое упражнение ${ex.name} прошло фильтр`);
+                }
+              }
+              const safety = checkWorkoutLaunchSafety(allEx);
+              if (!safety.allowed) {
+                throw new Error(`${label}: не пройдена итоговая проверка Safety Guard: ${safety.vetoReasons.join('; ')}`);
+              }
+            }
+
+            // Валидное упражнение 'Тяга гантели одной рукой' не должно быть ложно заблокировано ни в одном из путей
+            const aiNames = aiResult.program.workouts.flatMap((w) => w.exercises.map((e) => e.name));
+            if (!aiNames.includes('Тяга гантели одной рукой')) {
+              throw new Error('AI-путь ложно заблокировал валидное упражнение Тяга гантели одной рукой');
+            }
+          }
+        );
+        return 'Оба пути соблюдают идентичные правила без ложных блокировок';
+      }
+    )
+  );
+
+  return results;
+}
+
+export async function runActiveWorkoutAutosaveTests(): Promise<TestCaseResult[]> {
+  const group = 'ActiveWorkoutModal Autosave';
+  const results: TestCaseResult[] = [];
+
+  const originalConsoleError = console.error;
+  let prevSkipAnimations: boolean | undefined;
+
+  try {
+    console.error = () => {};
+    const envInit = setupReactDomTestEnv();
+    let ActiveWorkoutModal: any;
+    let AUTOSAVE_DEBOUNCE_MS = 300;
+    let createRootFn: any;
+    let flushSyncFn: any;
+
+    try {
+      const [{ createRoot, flushSync }, fm, mod] = await Promise.all([
+        getReactDomHelpers(),
+        import('framer-motion'),
+        import('../../components/ActiveWorkoutModal'),
+      ]);
+      createRootFn = createRoot;
+      flushSyncFn = flushSync;
+      prevSkipAnimations = fm.MotionGlobalConfig.skipAnimations;
+      fm.MotionGlobalConfig.skipAnimations = true;
+      ActiveWorkoutModal = mod.ActiveWorkoutModal;
+      AUTOSAVE_DEBOUNCE_MS = mod.AUTOSAVE_DEBOUNCE_MS ?? 300;
+    } finally {
+      await new Promise((r) => setTimeout(r, 20));
+      envInit.cleanup();
+    }
+
+    const { formatLocalIsoDate } = await import('../dateUtils');
+
+    const createTestSession = () => ({
+      id: `sess_autosave_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: 'Жимовой день',
+      date: formatLocalIsoDate(new Date()),
+      startTime: '12:00',
+      durationMinutes: 0,
+      totalVolumeKg: 0,
+      completedSets: 0,
+      status: 'in_progress' as const,
+      exercises: [
+        {
+          id: 'ex_as_1',
+          exerciseId: 'barbell_bench_press_flat',
+          name: 'Жим штанги лёжа',
+          targetMuscle: 'chest' as const,
+          isBodyweight: false,
+          requiredEquipment: 'barbell' as const,
+          restSeconds: 90,
+          sets: [
+            { setNumber: 1, weightKg: 80, reps: 10, completed: false },
+            { setNumber: 2, weightKg: 80, reps: 10, completed: false },
+          ],
+        },
+      ],
+    });
+
+    const getControls = (doc: Document, rootEl: HTMLElement) => {
+      const allBtns = Array.from(rootEl.querySelectorAll('button')) as HTMLButtonElement[];
+      const statusEl = rootEl.querySelector('[data-testid="autosave-status"]');
+      const weightPlusBtn = allBtns.find(
+        (b) =>
+          (b.textContent || '').trim() === '+' &&
+          (b.parentElement?.textContent || '').includes('Вес:')
+      );
+      const repsPlusBtn = allBtns.find(
+        (b) =>
+          (b.textContent || '').trim() === '+' &&
+          (b.parentElement?.textContent || '').includes('Повт:')
+      );
+      const set1Btn = rootEl.querySelector(
+        'button[aria-label="Подход 1"]'
+      ) as HTMLButtonElement | null;
+      const closeBtn = rootEl.querySelector(
+        'button[aria-label="Прервать тренировку"]'
+      ) as HTMLButtonElement | null;
+      const finishBtn = allBtns.find((b) => (b.textContent || '').trim() === 'Готово');
+      const findBodyButton = (label: string) =>
+        Array.from(doc.body.querySelectorAll('button')).find((b) =>
+          (b.textContent || '').includes(label)
+        ) as HTMLButtonElement | undefined;
+
+      return {
+        statusEl,
+        statusText: () => (statusEl?.textContent || '').trim(),
+        weightPlusBtn,
+        repsPlusBtn,
+        set1Btn,
+        closeBtn,
+        finishBtn,
+        findBodyButton,
+      };
+    };
+
+    const runScenario = async (name: string, fn: () => Promise<string>) => {
+      try {
+        const details = await fn();
+        results.push({ group, name, passed: true, details });
+      } catch (err: any) {
+        results.push({
+          group,
+          name,
+          passed: false,
+          details: err?.message || String(err),
+        });
+      }
+    };
+
+    // 1. Debounce 300 мс и переходы статусов «Сохранение…» -> «Сохранено»
+    await runScenario(
+      'Debounce 300 мс объединяет частые правки и корректно переключает статусы «Сохранение…» -> «Сохранено»',
+      async () => {
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+        const origSaveDraft = StorageService.saveActiveDraft.bind(StorageService);
+        const tracker: { saveCallsAfterMount: number } = { saveCallsAfterMount: 0 };
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+          StorageService.updateProfile({ age: 30, weightKg: 80 });
+          const session = createTestSession();
+
+          flushSyncFn(() => {
+            root.render(
+              React.createElement(ActiveWorkoutModal, {
+                session,
+                onSave: () => ({ ok: true, error: null }),
+                onCancel: () => {},
+              })
+            );
+          });
+          await new Promise((r) => setTimeout(r, 25));
+
+          const controls = getControls(ctx.dom.window.document, container);
+          if (controls.statusText() !== 'Сохранено') {
+            throw new Error(
+              `После начальной синхронизации ожидался статус «Сохранено», получено: «${controls.statusText()}»`
+            );
+          }
+
+          StorageService.saveActiveDraft = (draft: any) => {
+            tracker.saveCallsAfterMount += 1;
+            return origSaveDraft(draft);
+          };
+
+          if (!controls.weightPlusBtn || !controls.repsPlusBtn || !controls.set1Btn) {
+            throw new Error('Не найдены элементы управления весом/повторениями/подходом');
+          }
+
+          // Серия из 4 быстрых изменений в пределах <50 мс
+          flushSyncFn(() => controls.weightPlusBtn!.click()); // 80 -> 82.5
+          flushSyncFn(() => controls.weightPlusBtn!.click()); // 82.5 -> 85
+          flushSyncFn(() => controls.repsPlusBtn!.click()); // 10 -> 11
+          flushSyncFn(() => controls.set1Btn!.click()); // set 1 completed = true
+
+          if (!controls.statusText().includes('Сохранение…')) {
+            throw new Error(
+              `Во время debounce ожидался статус «Сохранение…», получено: «${controls.statusText()}»`
+            );
+          }
+          if (Number(tracker.saveCallsAfterMount) !== 0) {
+            throw new Error(
+              `До истечения ${AUTOSAVE_DEBOUNCE_MS} мс не должно быть немедленной записи (вызовов: ${tracker.saveCallsAfterMount})`
+            );
+          }
+
+          // Проверяем на середине окна (140 мс < 300 мс)
+          await new Promise((r) => setTimeout(r, 140));
+          if (Number(tracker.saveCallsAfterMount) !== 0 || !controls.statusText().includes('Сохранение…')) {
+            throw new Error('На 140 мс debounce ещё не должен срабатывать');
+          }
+
+          // Ждём завершения debounce (+запас на таймер)
+          await new Promise((r) => setTimeout(r, AUTOSAVE_DEBOUNCE_MS + 80));
+          if (Number(tracker.saveCallsAfterMount) !== 1) {
+            throw new Error(
+              `Серия из 4 быстрых правок должна объединяться в 1 запись, фактически: ${tracker.saveCallsAfterMount}`
+            );
+          }
+          if (controls.statusText() !== 'Сохранено') {
+            throw new Error(
+              `После завершения автосохранения ожидался статус «Сохранено», получено: «${controls.statusText()}»`
+            );
+          }
+
+          const draft = StorageService.getActiveDraft();
+          const savedSet = draft?.exercises?.[0]?.sets?.[0];
+          if (!savedSet || savedSet.weightKg !== 85 || savedSet.reps !== 11 || !savedSet.completed) {
+            throw new Error(
+              `Ожидались итоговые значения (85 кг × 11, completed=true), получено: ${JSON.stringify(savedSet)}`
+            );
+          }
+
+          return `4 правки объединены в 1 запись после ${AUTOSAVE_DEBOUNCE_MS} мс`;
+        } finally {
+          StorageService.saveActiveDraft = origSaveDraft;
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 30));
+          ctx.cleanup();
+        }
+      }
+    );
+
+    // 2. Закрытие модального окна и размонтирование до истечения 300 мс не теряют последние правки
+    await runScenario(
+      'Закрытие модального окна («Прервать тренировку») и unmount сбрасывают pending-правки без потери данных',
+      async () => {
+        // 2А: закрытие через подтверждение «Прервать тренировку»
+        {
+          const ctx = setupReactDomTestEnv();
+          const container = ctx.dom.window.document.getElementById('root')!;
+          const root = createRootFn(container);
+          let draftSeenInsideOnCancel: any = null;
+
+          try {
+            ctx.store.set('form_schema_version_v1', '11');
+            StorageService.updateProfile({ age: 30, weightKg: 80 });
+            const session = createTestSession();
+
+            flushSyncFn(() => {
+              root.render(
+                React.createElement(ActiveWorkoutModal, {
+                  session,
+                  onSave: () => ({ ok: true, error: null }),
+                  onCancel: () => {
+                    draftSeenInsideOnCancel = StorageService.getActiveDraft();
+                  },
+                })
+              );
+            });
+            await new Promise((r) => setTimeout(r, 25));
+
+            const controls = getControls(ctx.dom.window.document, container);
+            flushSyncFn(() => controls.weightPlusBtn!.click()); // 80 -> 82.5
+            flushSyncFn(() => controls.repsPlusBtn!.click()); // 10 -> 11
+
+            if (!controls.statusText().includes('Сохранение…')) {
+              throw new Error('Перед закрытием должен быть активен статус «Сохранение…»');
+            }
+
+            // Мгновенно закрываем окно до истечения 300 мс
+            flushSyncFn(() => controls.closeBtn!.click());
+            const confirmAbortBtn = Array.from(
+              ctx.dom.window.document.body.querySelectorAll('button')
+            ).find((b) => (b.textContent || '').trim() === 'Прервать тренировку') as
+              | HTMLButtonElement
+              | undefined;
+            if (!confirmAbortBtn) {
+              throw new Error('Кнопка подтверждения «Прервать тренировку» не найдена');
+            }
+            flushSyncFn(() => confirmAbortBtn.click());
+
+            const savedSet = draftSeenInsideOnCancel?.exercises?.[0]?.sets?.[0];
+            if (!savedSet || savedSet.weightKg !== 82.5 || savedSet.reps !== 11) {
+              throw new Error(
+                `При мгновенном закрытии потеряны последние правки: ${JSON.stringify(savedSet)}`
+              );
+            }
+          } finally {
+            try {
+              flushSyncFn(() => root.unmount());
+            } catch {
+              // ignore
+            }
+            await new Promise((r) => setTimeout(r, 30));
+            ctx.cleanup();
+          }
+        }
+
+        // 2Б: прямое размонтирование компонента (unmount) до истечения 300 мс
+        {
+          const ctx = setupReactDomTestEnv();
+          const container = ctx.dom.window.document.getElementById('root')!;
+          const root = createRootFn(container);
+
+          try {
+            ctx.store.set('form_schema_version_v1', '11');
+            StorageService.updateProfile({ age: 30, weightKg: 80 });
+            const session = createTestSession();
+
+            flushSyncFn(() => {
+              root.render(
+                React.createElement(ActiveWorkoutModal, {
+                  session,
+                  onSave: () => ({ ok: true, error: null }),
+                  onCancel: () => {},
+                })
+              );
+            });
+            await new Promise((r) => setTimeout(r, 25));
+
+            const controls = getControls(ctx.dom.window.document, container);
+            flushSyncFn(() => controls.weightPlusBtn!.click()); // 80 -> 82.5
+            flushSyncFn(() => controls.set1Btn!.click()); // completed = true
+
+            // Размонтируем до истечения 300 мс
+            flushSyncFn(() => root.unmount());
+
+            const draftAfterUnmount = StorageService.getActiveDraft();
+            const savedSet = draftAfterUnmount?.exercises?.[0]?.sets?.[0];
+            if (!savedSet || savedSet.weightKg !== 82.5 || !savedSet.completed) {
+              throw new Error(
+                `При unmount до 300 мс потеряны изменения: ${JSON.stringify(savedSet)}`
+              );
+            }
+          } finally {
+            await new Promise((r) => setTimeout(r, AUTOSAVE_DEBOUNCE_MS + 60));
+            ctx.cleanup();
+          }
+        }
+
+        return 'Закрытие через подтверждение и unmount синхронно дозаписывают актуальный черновик';
+      }
+    );
+
+    // 3. Завершение тренировки во время pending debounce сохраняет свежие данные и не воскрешает черновик
+    await runScenario(
+      'Завершение тренировки до 300 мс отменяет таймер, сохраняет актуальные правки в историю и не воскрешает черновик',
+      async () => {
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+          StorageService.updateProfile({ age: 30, weightKg: 80 });
+          const session = createTestSession();
+
+          flushSyncFn(() => {
+            root.render(
+              React.createElement(ActiveWorkoutModal, {
+                session,
+                onSave: (completed: any) => StorageService.saveWorkoutSession(completed),
+                onCancel: () => {},
+              })
+            );
+          });
+          await new Promise((r) => setTimeout(r, 25));
+
+          const controls = getControls(ctx.dom.window.document, container);
+          flushSyncFn(() => controls.weightPlusBtn!.click()); // 80 -> 82.5
+          flushSyncFn(() => controls.set1Btn!.click()); // set 1 completed
+
+          if (!controls.statusText().includes('Сохранение…')) {
+            throw new Error('Перед завершением должен быть pending-таймер («Сохранение…»)');
+          }
+
+          flushSyncFn(() => controls.finishBtn!.click());
+          const confirmFinishBtn = controls.findBodyButton('Подтвердить и сохранить в историю');
+          if (!confirmFinishBtn) {
+            throw new Error('Кнопка «Подтвердить и сохранить в историю» не найдена');
+          }
+          flushSyncFn(() => confirmFinishBtn.click());
+
+          const savedSessions = StorageService.getWorkoutSessions();
+          const completed = savedSessions.find((s) => s.id === session.id);
+          const completedSet = completed?.exercises?.[0]?.sets?.[0];
+          if (!completedSet || completedSet.weightKg !== 82.5 || !completedSet.completed) {
+            throw new Error(
+              `Завершённая сессия не содержит последние pending-правки: ${JSON.stringify(completedSet)}`
+            );
+          }
+
+          if (StorageService.getActiveDraft() !== null) {
+            throw new Error('После сохранения завершённой тренировки черновик должен быть очищен');
+          }
+
+          // Ждём дольше 300 мс и убеждаемся, что старый таймер был отменён и не воскресил черновик
+          await new Promise((r) => setTimeout(r, AUTOSAVE_DEBOUNCE_MS + 90));
+          if (StorageService.getActiveDraft() !== null) {
+            throw new Error('Отложенный таймер автосохранения воскресил черновик после завершения тренировки!');
+          }
+
+          return 'Таймер отменён, история получила правки, черновик не воскрешён после 390 мс';
+        } finally {
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 30));
+          ctx.cleanup();
+        }
+      }
+    );
+
+    // 4. Ошибка сохранения: статус «Ошибка сохранения», alert и восстановление при повторе
+    await runScenario(
+      'При сбое saveActiveDraft отображается статус «Ошибка сохранения» с возможностью восстановления',
+      async () => {
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+        const origSaveDraft = StorageService.saveActiveDraft.bind(StorageService);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+          StorageService.updateProfile({ age: 30, weightKg: 80 });
+          const session = createTestSession();
+
+          flushSyncFn(() => {
+            root.render(
+              React.createElement(ActiveWorkoutModal, {
+                session,
+                onSave: () => ({ ok: true, error: null }),
+                onCancel: () => {},
+              })
+            );
+          });
+          await new Promise((r) => setTimeout(r, 25));
+
+          const controls = getControls(ctx.dom.window.document, container);
+
+          // Имитируем ошибку квоты памяти на следующее сохранение
+          StorageService.saveActiveDraft = () => ({
+            ok: false,
+            error: 'Память устройства переполнена (тест ошибки).',
+          });
+
+          flushSyncFn(() => controls.repsPlusBtn!.click()); // 10 -> 11
+          await new Promise((r) => setTimeout(r, AUTOSAVE_DEBOUNCE_MS + 80));
+
+          if (!controls.statusText().includes('Ошибка сохранения')) {
+            throw new Error(
+              `При сбое сохранения ожидался статус «Ошибка сохранения», получено: «${controls.statusText()}»`
+            );
+          }
+          const alertText = container.querySelector('[role="alert"]')?.textContent || '';
+          if (!alertText.includes('Память устройства переполнена')) {
+            throw new Error(`Ожидалось сообщение об ошибке в alert, получено: «${alertText}»`);
+          }
+
+          // Восстанавливаем запись и нажимаем на кнопку повтора «Ошибка сохранения»
+          StorageService.saveActiveDraft = origSaveDraft;
+          const retryBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+            (b.textContent || '').includes('Ошибка сохранения')
+          ) as HTMLButtonElement | undefined;
+          if (!retryBtn) {
+            throw new Error('Кнопка повтора «Ошибка сохранения» не найдена');
+          }
+          flushSyncFn(() => retryBtn.click());
+
+          if (controls.statusText() !== 'Сохранено') {
+            throw new Error(
+              `После успешного повтора ожидался статус «Сохранено», получено: «${controls.statusText()}»`
+            );
+          }
+          if (StorageService.getActiveDraft()?.exercises?.[0]?.sets?.[0]?.reps !== 11) {
+            throw new Error('После повторного сохранения актуальное значение reps=11 должно записаться');
+          }
+
+          return 'Ошибка сохранения корректно отображена и восстановлена в «Сохранено»';
+        } finally {
+          StorageService.saveActiveDraft = origSaveDraft;
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 30));
+          ctx.cleanup();
+        }
+      }
+    );
+
+    // 5. Защита от гонок: новая правка во время записи ревизии 1 не позволяет статусу 1 затереть «Сохранение…»
+    await runScenario(
+      'Гонка записи: правка во время сохранения более старой ревизии не приводит к ложному статусу «Сохранено» и потере нового значения',
+      async () => {
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+        const origSaveDraft = StorageService.saveActiveDraft.bind(StorageService);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+          StorageService.updateProfile({ age: 30, weightKg: 80 });
+          const session = createTestSession();
+
+          flushSyncFn(() => {
+            root.render(
+              React.createElement(ActiveWorkoutModal, {
+                session,
+                onSave: () => ({ ok: true, error: null }),
+                onCancel: () => {},
+              })
+            );
+          });
+          await new Promise((r) => setTimeout(r, 25));
+
+          const controls = getControls(ctx.dom.window.document, container);
+          const raceState = { interceptedFirstWrite: false };
+          const savedSnapshots: Array<{ weightKg: number; reps: number }> = [];
+
+          StorageService.saveActiveDraft = (draft: any) => {
+            const set0 = draft?.exercises?.[0]?.sets?.[0];
+            savedSnapshots.push({ weightKg: set0?.weightKg, reps: set0?.reps });
+            if (!raceState.interceptedFirstWrite) {
+              raceState.interceptedFirstWrite = true;
+              // Имитируем поступление более свежей правки пока завершается запись ревизии 1
+              controls.repsPlusBtn!.click(); // 10 -> 11 (rev 2)
+            }
+            return origSaveDraft(draft);
+          };
+
+          flushSyncFn(() => controls.weightPlusBtn!.click()); // 80 -> 82.5 (rev 1)
+
+          // Ждём срабатывания таймера ревизии 1, но до срабатывания таймера ревизии 2
+          await new Promise((r) => setTimeout(r, AUTOSAVE_DEBOUNCE_MS + 60));
+
+          if (!raceState.interceptedFirstWrite) {
+            throw new Error('Ожидалась запись ревизии 1');
+          }
+          if (!controls.statusText().includes('Сохранение…')) {
+            throw new Error(
+              `Пока ревизия 2 не сохранена, старая запись не имеет права ставить «Сохранено» (получено: «${controls.statusText()}»)`
+            );
+          }
+
+          // Ждём завершения debounce ревизии 2
+          await new Promise((r) => setTimeout(r, AUTOSAVE_DEBOUNCE_MS + 80));
+
+          if (controls.statusText() !== 'Сохранено') {
+            throw new Error(
+              `После записи ревизии 2 ожидался статус «Сохранено», получено: «${controls.statusText()}»`
+            );
+          }
+
+          const finalSet = StorageService.getActiveDraft()?.exercises?.[0]?.sets?.[0];
+          if (!finalSet || finalSet.weightKg !== 82.5 || finalSet.reps !== 11) {
+            throw new Error(
+              `Финальный черновик должен содержать оба обновления (82.5 кг × 11), получено: ${JSON.stringify(finalSet)}`
+            );
+          }
+
+          return `Перехвачена гонка rev1->rev2: финально сохранено ${finalSet.weightKg} кг × ${finalSet.reps}`;
+        } finally {
+          StorageService.saveActiveDraft = origSaveDraft;
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 30));
+          ctx.cleanup();
+        }
+      }
+    );
+  } finally {
+    if (prevSkipAnimations !== undefined) {
+      const { MotionGlobalConfig } = await import('framer-motion');
+      MotionGlobalConfig.skipAnimations = prevSkipAnimations;
+    }
+    console.error = originalConsoleError;
+  }
+
+  return results;
+}
+
+export async function runWorkoutsTabUxTests(): Promise<TestCaseResult[]> {
+  const group = 'WorkoutsTab UX';
+  const results: TestCaseResult[] = [];
+
+  const originalConsoleError = console.error;
+  let prevSkipAnimations: boolean | undefined;
+
+  try {
+    console.error = () => {};
+    const envInit = setupReactDomTestEnv();
+    let WorkoutsTab: any;
+    let createRootFn: any;
+    let flushSyncFn: any;
+
+    try {
+      const [{ createRoot, flushSync }, fm, mod] = await Promise.all([
+        getReactDomHelpers(),
+        import('framer-motion'),
+        import('../../components/WorkoutsTab'),
+      ]);
+      createRootFn = createRoot;
+      flushSyncFn = flushSync;
+      prevSkipAnimations = fm.MotionGlobalConfig.skipAnimations;
+      fm.MotionGlobalConfig.skipAnimations = true;
+      WorkoutsTab = mod.WorkoutsTab;
+    } finally {
+      await new Promise((r) => setTimeout(r, 20));
+      envInit.cleanup();
+    }
+
+    const noop = () => {};
+    const makeProgram = (id: string, name: string, status: 'active' | 'paused' | 'archived' | 'completed') => ({
+      id,
+      name,
+      description: 'Тестовая программа',
+      goal: 'Сила',
+      daysPerWeek: 3,
+      status,
+      direction: 'programs' as const,
+      createdAt: '2026-11-01',
+      workouts: [
+        {
+          id: `${id}_day_1`,
+          dayName: 'День 1: Грудь и спина',
+          targetMuscleGroups: ['chest', 'lats'] as any,
+          estimatedDuration: 45,
+          exercises: [
+            {
+              exerciseId: 'barbell_bench_press_flat',
+              name: 'Жим штанги лёжа',
+              targetMuscle: 'chest' as const,
+              isBodyweight: false,
+              sets: 4,
+              reps: 8,
+              targetWeight: 80,
+              restSeconds: 90,
+            },
+          ],
+        },
+      ],
+    });
+
+    const runScenario = async (name: string, fn: () => Promise<string>) => {
+      try {
+        const details = await fn();
+        results.push({ group, name, passed: true, details });
+      } catch (err: any) {
+        results.push({
+          group,
+          name,
+          passed: false,
+          details: err?.message || String(err),
+        });
+      }
+    };
+
+    // 1. При наличии активной программы вкладка «Программы» сразу открывает «Мои программы» с расписанием и без дублирующих CTA
+    await runScenario(
+      'Активная программа сразу открывает «Мои программы» с расписанием и единым основным CTA',
+      async () => {
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+          StorageService.updateProfile({ age: 30, weightKg: 80 });
+          const activeProg = makeProgram('prog_active_1', 'Силовой базовый цикл', 'active');
+
+          flushSyncFn(() => {
+            root.render(
+              React.createElement(WorkoutsTab, {
+                programs: [activeProg],
+                sessions: [],
+                onStartProgramWorkout: noop,
+                onStartCustomQuickWorkout: noop,
+                onCreateProgram: noop,
+                onGenerateProgram: noop,
+                onEditProgram: noop,
+                onDuplicateProgram: noop,
+                onDeleteProgram: noop,
+                onDeleteSession: noop,
+              })
+            );
+          });
+          await new Promise((r) => setTimeout(r, 20));
+
+          const text = container.textContent || '';
+          if (text.includes('Два вектора подготовки')) {
+            throw new Error('При наличии активной программы не должен открываться экран выбора направлений');
+          }
+          if (
+            !text.includes('Следующая тренировка') ||
+            !text.includes('День 1: Грудь и спина') ||
+            !text.includes('Дни тренировок (1)')
+          ) {
+            throw new Error('При наличии активной программы должно сразу отображаться расписание в «Мои программы»');
+          }
+
+          const buttons = Array.from(container.querySelectorAll('button'));
+          const overviewBtn = buttons.find((b) => (b.textContent || '').trim() === 'Обзор');
+          const startBtn = buttons.find((b) => (b.textContent || '').trim() === 'Начать тренировку');
+          if (overviewBtn) {
+            throw new Error('Дублирующая кнопка «Обзор» рядом с «Начать» должна быть удалена');
+          }
+          if (!startBtn) {
+            throw new Error('Ожидалась единственная основная кнопка «Начать тренировку»');
+          }
+
+          // При переходе на экран выбора направлений («Сменить») остаётся только одна точка возврата и один «Быстрый старт»
+          const switchBtn = buttons.find((b) => (b.textContent || '').trim() === 'Сменить');
+          if (!switchBtn) {
+            throw new Error('Кнопка «Сменить» направление не найдена');
+          }
+          flushSyncFn(() => switchBtn.click());
+
+          const dirText = container.textContent || '';
+          if (!dirText.includes('Два вектора подготовки') || !dirText.includes('К тренировке')) {
+            throw new Error('Экран выбора направлений должен показывать единый путь возврата «К тренировке»');
+          }
+          const dirButtons = Array.from(container.querySelectorAll('button'));
+          const quickStartBtns = dirButtons.filter((b) => (b.textContent || '').includes('Быстрый старт'));
+          if (quickStartBtns.length !== 1) {
+            throw new Error(`На экране ожидалась 1 кнопка «Быстрый старт», найдено: ${quickStartBtns.length}`);
+          }
+          const dupMyProgramsBtns = dirButtons.filter((b) =>
+            (b.textContent || '').includes('Мои программы (1)')
+          );
+          if (dupMyProgramsBtns.length !== 0) {
+            throw new Error('При активном баннере «К тренировке» дублирующая кнопка «Мои программы» должна быть скрыта');
+          }
+
+          return 'Экран «Мои программы» с расписанием открыт сразу, дублирующие CTA устранены';
+        } finally {
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 20));
+          ctx.cleanup();
+        }
+      }
+    );
+
+    // 2. Без активной программы остаётся экран направлений, теги сворачиваются через «Показать ещё»
+    await runScenario(
+      'Без активной программы открывается экран направлений с «Показать ещё» и без ложных активных баннеров',
+      async () => {
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+          const pausedProg = makeProgram('prog_paused_only', 'Старая пауза', 'paused');
+
+          flushSyncFn(() => {
+            root.render(
+              React.createElement(WorkoutsTab, {
+                programs: [pausedProg],
+                sessions: [],
+                onStartProgramWorkout: noop,
+                onStartCustomQuickWorkout: noop,
+                onCreateProgram: noop,
+                onGenerateProgram: noop,
+                onEditProgram: noop,
+                onDuplicateProgram: noop,
+                onDeleteProgram: noop,
+                onDeleteSession: noop,
+              })
+            );
+          });
+          await new Promise((r) => setTimeout(r, 20));
+
+          const text = container.textContent || '';
+          if (!text.includes('Два вектора подготовки')) {
+            throw new Error('При отсутствии активной программы должен сохраняться экран выбора направлений');
+          }
+          if (text.includes('Текущая программа')) {
+            throw new Error('При отсутствии активных программ не должно показываться «Текущая программа» для paused');
+          }
+          if (text.includes('Общая физическая подготовка') || text.includes('Общая мобильность')) {
+            throw new Error('Второстепенные теги направлений должны быть скрыты по умолчанию');
+          }
+
+          const showMoreBtns = Array.from(container.querySelectorAll('button')).filter((b) =>
+            (b.textContent || '').includes('Показать ещё')
+          );
+          if (showMoreBtns.length !== 2) {
+            throw new Error(`Ожидались 2 кнопки «Показать ещё», найдено: ${showMoreBtns.length}`);
+          }
+
+          // Клик по «Показать ещё» раскрывает теги и не перебрасывает в каталог
+          flushSyncFn(() => showMoreBtns[0].click());
+          const afterExpandText = container.textContent || '';
+          if (!afterExpandText.includes('Общая физическая подготовка')) {
+            throw new Error('После нажатия «Показать ещё» должны появиться скрытые теги');
+          }
+          if (!afterExpandText.includes('Два вектора подготовки')) {
+            throw new Error('Клик по «Показать ещё» не должен открывать каталог направления');
+          }
+
+          return 'Экран направлений сохранён; теги раскрываются по «Показать ещё» без перехода';
+        } finally {
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 20));
+          ctx.cleanup();
+        }
+      }
+    );
+
+    // 3. Пустой фильтр программ: при пустом filteredPrograms программа из общего списка не подставляется
+    await runScenario(
+      'Пустой фильтр статуса («Архив (0)») не выбирает программу из общего списка и корректно показывает пустое состояние',
+      async () => {
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+          const activeProg = makeProgram('prog_filter_1', 'Единственная активная', 'active');
+
+          flushSyncFn(() => {
+            root.render(
+              React.createElement(WorkoutsTab, {
+                programs: [activeProg],
+                sessions: [],
+                onStartProgramWorkout: noop,
+                onStartCustomQuickWorkout: noop,
+                onCreateProgram: noop,
+                onGenerateProgram: noop,
+                onEditProgram: noop,
+                onDuplicateProgram: noop,
+                onDeleteProgram: noop,
+                onDeleteSession: noop,
+              })
+            );
+          });
+          await new Promise((r) => setTimeout(r, 20));
+
+          const archiveFilterBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+            (b.textContent || '').includes('Архив')
+          );
+          if (!archiveFilterBtn) {
+            throw new Error('Кнопка фильтра «Архив» не найдена');
+          }
+
+          flushSyncFn(() => archiveFilterBtn.click());
+
+          const textAfterFilter = container.textContent || '';
+          if (!textAfterFilter.includes('Нет программ со статусом «В архиве»')) {
+            throw new Error('При пустом фильтре должно отображаться сообщение пустого состояния');
+          }
+          const manageBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+            (b.textContent || '').trim() === 'Управление'
+          );
+          if (manageBtn || textAfterFilter.includes('Дни тренировок (1)')) {
+            throw new Error('При пустом filteredPrograms не должна отображаться выбранная программа из общего списка');
+          }
+
+          // Проверяем, что направление в верхнем переключателе не упало и возврат фильтра работает
+          const resetFilterBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+            (b.textContent || '').includes('Показать все (1)')
+          );
+          if (!resetFilterBtn) {
+            throw new Error('Кнопка «Показать все (1)» не найдена');
+          }
+          flushSyncFn(() => resetFilterBtn.click());
+
+          const restoredText = container.textContent || '';
+          if (!restoredText.includes('Дни тренировок (1)') || !restoredText.includes('Единственная активная')) {
+            throw new Error('После сброса фильтра программа из списка должна восстановиться');
+          }
+
+          return 'Пустой фильтр скрывает карточку программы и восстанавливает выбор при «Показать все»';
+        } finally {
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 20));
+          ctx.cleanup();
+        }
+      }
+    );
+  } finally {
+    if (prevSkipAnimations !== undefined) {
+      const { MotionGlobalConfig } = await import('framer-motion');
+      MotionGlobalConfig.skipAnimations = prevSkipAnimations;
+    }
+    console.error = originalConsoleError;
+  }
+
+  return results;
+}
+
+
+

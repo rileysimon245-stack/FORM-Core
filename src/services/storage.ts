@@ -2253,11 +2253,54 @@ export const StorageService = {
 
   saveWellbeingCheckin(checkin: WellbeingCheckin): SafeWriteResult {
     const list = this.getWellbeingCheckins();
-    const idx = list.findIndex((c) => c.id === checkin.id || c.date === checkin.date);
-    if (idx >= 0) {
-      list[idx] = checkin;
+    const idIdx = list.findIndex((c) => c.id === checkin.id);
+    if (idIdx >= 0) {
+      // Явное редактирование существующей записи по id сохраняет прежнее поведение
+      list[idIdx] = checkin;
     } else {
-      list.unshift(checkin);
+      const dateIdx = list.findIndex((c) => c.date === checkin.date);
+      if (dateIdx >= 0) {
+        // Частичное подтверждение за тот же день с новым id: позонное слияние без затирания других зон
+        const prev = list[dateIdx];
+        const merged: WellbeingCheckin = { ...prev };
+        for (const [k, v] of Object.entries(checkin) as [keyof WellbeingCheckin, unknown][]) {
+          if (v === undefined || k === 'painByMuscle') continue;
+          (merged as unknown as Record<string, unknown>)[k] = v;
+        }
+        merged.createdAt = Math.max(prev.createdAt || 0, checkin.createdAt || 0);
+        if (prev.painByMuscle || checkin.painByMuscle) {
+          const nextPain: Partial<Record<MuscleGroup, number>> = { ...(prev.painByMuscle || {}) };
+          if (checkin.painByMuscle && typeof checkin.painByMuscle === 'object') {
+            for (const [zone, val] of Object.entries(checkin.painByMuscle)) {
+              if (val === undefined) continue;
+              const normZone = normalizeMuscleKeyPure(zone);
+              if (normZone) {
+                for (const existingKey of Object.keys(nextPain)) {
+                  if (normalizeMuscleKeyPure(existingKey) === normZone && existingKey !== zone) {
+                    delete (nextPain as Record<string, number>)[existingKey];
+                  }
+                }
+              } else {
+                const token = zone.trim().toLowerCase();
+                for (const existingKey of Object.keys(nextPain)) {
+                  if (
+                    normalizeMuscleKeyPure(existingKey) === null &&
+                    existingKey.trim().toLowerCase() === token &&
+                    existingKey !== zone
+                  ) {
+                    delete (nextPain as Record<string, number>)[existingKey];
+                  }
+                }
+              }
+              (nextPain as Record<string, number>)[zone] = val;
+            }
+          }
+          merged.painByMuscle = nextPain;
+        }
+        list[dateIdx] = merged;
+      } else {
+        list.unshift(checkin);
+      }
     }
     const res = safeSetItem(STORAGE_KEYS.WELLBEING_CHECKINS, JSON.stringify(list));
     notifyListeners();

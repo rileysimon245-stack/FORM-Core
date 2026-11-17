@@ -50,6 +50,7 @@ export const TRAINING_ENGINE_CONFIG = {
   safety: {
     adultMinAge: 18,
     minPainToVetoIncrease: 1, // Любая отмеченная боль >= 1 блокирует рост нагрузки на затронутую зону
+    painCheckinFreshnessDays: 2, // Срок свежести отметки боли в днях (после — статус 'stale' и запрос подтверждения)
     plateauWeeksThreshold: 4,
     minSessionsForTrend: 2,
     minSessionsForEvidence: 3,

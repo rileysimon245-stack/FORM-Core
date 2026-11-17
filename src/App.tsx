@@ -10,7 +10,12 @@ import { SafeWriteResult, StartupRecoveryResolution } from './services/migration
 import { findExerciseInUnifiedCatalog } from './training-core/catalog';
 import { normalizeMuscleKeyPure, normalizeMuscleListPure } from './training-core/muscles';
 import { formatLocalIsoDate } from './training-core/dateUtils';
-import { checkWorkoutLaunchSafety } from './services/safetyContext';
+import {
+  checkWorkoutLaunchSafety,
+  confirmWellbeingPainArea,
+  StalePainArea,
+} from './services/safetyContext';
+import type { ExerciseSafetyCandidate } from './training-core/safetyGuard';
 import { Modal } from './components/common/Modal';
 import { ShieldAlert, AlertTriangle } from 'lucide-react';
 import {
@@ -20,6 +25,7 @@ import {
   ProgramWorkoutDay,
   ProgramSnapshot,
   MuscleGroup,
+  MUSCLE_DEFINITIONS,
   WeeklyScheduleDay,
   SportSession,
 } from './types/workout';
@@ -192,6 +198,9 @@ function MainAppContent() {
     blockedExercises: Array<{ name: string; reasons: string[] }>;
     safeExercisesCount: number;
     canContinueSafeOnly: boolean;
+    requiresWellbeingUpdate?: boolean;
+    stalePainAreas?: StalePainArea[];
+    onConfirmPainArea?: (area: StalePainArea, nextLevel: number) => void;
     onProceedSafeOnly?: () => void;
   } | null>(null);
 
@@ -331,6 +340,87 @@ function MainAppContent() {
     setActiveWorkoutSession(newSession);
   };
 
+  const formatStaleAreaLabel = (area: StalePainArea): string => {
+    if (area.areaType === 'general') return 'Суставы и связки';
+    const muscleDef = MUSCLE_DEFINITIONS[area.zoneKey as MuscleGroup];
+    if (muscleDef?.nameRu) return muscleDef.nameRu;
+    return area.rawKey || area.zoneKey;
+  };
+
+  const openOrRecheckSafetyBlockModal = (
+    title: string,
+    exercisesForSafety: ExerciseSafetyCandidate[],
+    buildProceed: (blockedIndices: Set<number>) => {
+      safeCount: number;
+      proceedAll: () => void;
+      proceedSafeOnly: () => void;
+    },
+    autoProceedIfAllowed: boolean
+  ): boolean => {
+    const safetyEval = checkWorkoutLaunchSafety(exercisesForSafety);
+    const isCompletelySafe =
+      safetyEval.allowed &&
+      safetyEval.blockedExercises.length === 0 &&
+      safetyEval.vetoReasons.length === 0;
+
+    if (isCompletelySafe) {
+      setSafetyBlockModal(null);
+      if (autoProceedIfAllowed) {
+        const { proceedAll } = buildProceed(new Set());
+        proceedAll();
+      }
+      return true;
+    }
+
+    const blockedIndices = new Set(safetyEval.blockedExercises.map((b) => b.index));
+    const { safeCount, proceedSafeOnly } = buildProceed(blockedIndices);
+    const hasGlobalBlock = safetyEval.blockedExercises.some(
+      (b) => b.decision.blockedByAge || b.decision.blockedByPain
+    );
+    const canContinueSafeOnly =
+      safeCount > 0 &&
+      !hasGlobalBlock &&
+      checkWorkoutLaunchSafety(
+        exercisesForSafety.filter((_, idx) => !blockedIndices.has(idx))
+      ).allowed;
+
+    setSafetyBlockModal({
+      title,
+      vetoReasons: safetyEval.vetoReasons,
+      blockedExercises: safetyEval.blockedExercises.map((b) => ({
+        name: b.exercise.name,
+        reasons: b.decision.vetoReasons,
+      })),
+      safeExercisesCount: safeCount,
+      canContinueSafeOnly,
+      requiresWellbeingUpdate: Boolean(safetyEval.requiresWellbeingUpdate),
+      stalePainAreas: safetyEval.stalePainAreas || [],
+      onConfirmPainArea: (area, nextLevel) => {
+        const { writeResult } = confirmWellbeingPainArea(area, nextLevel);
+        if (!writeResult.ok) {
+          setStorageErrorNotice(
+            writeResult.error || 'Не удалось сохранить отметку самочувствия в память устройства.'
+          );
+          return;
+        }
+        reloadData();
+        // Повторно проверяем Safety Guard; не запускаем автоматически, если остаются любые ограничения
+        openOrRecheckSafetyBlockModal(title, exercisesForSafety, buildProceed, true);
+      },
+      onProceedSafeOnly: canContinueSafeOnly
+        ? () => {
+            const recheck = checkWorkoutLaunchSafety(
+              exercisesForSafety.filter((_, idx) => !blockedIndices.has(idx))
+            );
+            if (!recheck.allowed) return;
+            setSafetyBlockModal(null);
+            proceedSafeOnly();
+          }
+        : undefined,
+    });
+    return false;
+  };
+
   // Handle launching workout from a program day (with mandatory Safety Guard check)
   const handleStartProgramWorkout = (
     day: ProgramWorkoutDay,
@@ -358,81 +448,68 @@ function MainAppContent() {
       };
     });
 
-    const safetyEval = checkWorkoutLaunchSafety(enrichedCandidates);
-    if (!safetyEval.allowed) {
-      const blockedIndices = new Set(safetyEval.blockedExercises.map((b) => b.index));
-      const safeOriginalExercises = (day.exercises || []).filter((_, idx) => !blockedIndices.has(idx));
-      const hasGlobalBlock = safetyEval.blockedExercises.some(
-        (b) => b.decision.blockedByAge || b.decision.blockedByPain
-      );
-      const canContinueSafeOnly =
-        safeOriginalExercises.length > 0 &&
-        !hasGlobalBlock &&
-        checkWorkoutLaunchSafety(
-          enrichedCandidates.filter((_, idx) => !blockedIndices.has(idx))
-        ).allowed;
-
-      setSafetyBlockModal({
-        title: `Запуск «${day.dayName}» заблокирован`,
-        vetoReasons: safetyEval.vetoReasons,
-        blockedExercises: safetyEval.blockedExercises.map((b) => ({
-          name: b.exercise.name,
-          reasons: b.decision.vetoReasons,
-        })),
-        safeExercisesCount: safeOriginalExercises.length,
-        canContinueSafeOnly,
-        onProceedSafeOnly: canContinueSafeOnly
-          ? () => {
-              const filteredDay: ProgramWorkoutDay = {
-                ...day,
-                exercises: safeOriginalExercises,
-              };
-              const recheck = checkWorkoutLaunchSafety(
-                enrichedCandidates.filter((_, idx) => !blockedIndices.has(idx))
-              );
-              if (!recheck.allowed) return;
-              setSafetyBlockModal(null);
-              launchProgramWorkoutSession(filteredDay, programName, programId, overrideDate);
-            }
-          : undefined,
-      });
-      return;
-    }
+    const allowed = openOrRecheckSafetyBlockModal(
+      `Запуск «${day.dayName}» заблокирован`,
+      enrichedCandidates,
+      (blockedIndices) => {
+        const safeOriginalExercises = (day.exercises || []).filter(
+          (_, idx) => !blockedIndices.has(idx)
+        );
+        return {
+          safeCount: safeOriginalExercises.length,
+          proceedAll: () =>
+            launchProgramWorkoutSession(day, programName, programId, overrideDate),
+          proceedSafeOnly: () => {
+            const filteredDay: ProgramWorkoutDay = {
+              ...day,
+              exercises: safeOriginalExercises,
+            };
+            launchProgramWorkoutSession(filteredDay, programName, programId, overrideDate);
+          },
+        };
+      },
+      false
+    );
+    if (!allowed) return;
 
     launchProgramWorkoutSession(day, programName, programId, overrideDate);
   };
 
   // Quick start blank workout (with Safety Guard age / pain check)
   const handleStartCustomQuickWorkout = (overrideDate?: string) => {
-    const safetyEval = checkWorkoutLaunchSafety([]);
-    if (!safetyEval.allowed) {
-      setSafetyBlockModal({
-        title: 'Свободная тренировка заблокирована',
-        vetoReasons: safetyEval.vetoReasons,
-        blockedExercises: [],
-        safeExercisesCount: 0,
-        canContinueSafeOnly: false,
-      });
-      return;
-    }
+    const launchCustomQuick = () => {
+      const now = new Date();
+      const todayStr = overrideDate || formatLocalIsoDate(now);
+      const quickSession: WorkoutSession = {
+        id: `session_${Date.now()}`,
+        name: 'Свободная тренировка',
+        programName: 'По выбору',
+        date: todayStr,
+        startTime: now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
+        durationMinutes: 0,
+        totalVolumeKg: 0,
+        completedSets: 0,
+        status: 'in_progress',
+        exercises: [],
+      };
 
-    const now = new Date();
-    const todayStr = overrideDate || formatLocalIsoDate(now);
-    const quickSession: WorkoutSession = {
-      id: `session_${Date.now()}`,
-      name: 'Свободная тренировка',
-      programName: 'По выбору',
-      date: todayStr,
-      startTime: now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }),
-      durationMinutes: 0,
-      totalVolumeKg: 0,
-      completedSets: 0,
-      status: 'in_progress',
-      exercises: [],
+      setIsResumedDraft(false);
+      setActiveWorkoutSession(quickSession);
     };
 
-    setIsResumedDraft(false);
-    setActiveWorkoutSession(quickSession);
+    const allowed = openOrRecheckSafetyBlockModal(
+      'Свободная тренировка заблокирована',
+      [],
+      () => ({
+        safeCount: 0,
+        proceedAll: launchCustomQuick,
+        proceedSafeOnly: () => {},
+      }),
+      false
+    );
+    if (!allowed) return;
+
+    launchCustomQuick();
   };
 
   // Complete and save active workout
@@ -475,47 +552,32 @@ function MainAppContent() {
       };
     });
 
-    const safetyEval = checkWorkoutLaunchSafety(enrichedCandidates);
-    if (!safetyEval.allowed) {
-      const blockedIndices = new Set(safetyEval.blockedExercises.map((b) => b.index));
-      const safeDraftExercises = (draft.exercises || []).filter((_, idx) => !blockedIndices.has(idx));
-      const hasGlobalBlock = safetyEval.blockedExercises.some(
-        (b) => b.decision.blockedByAge || b.decision.blockedByPain
-      );
-      const canContinueSafeOnly =
-        safeDraftExercises.length > 0 &&
-        !hasGlobalBlock &&
-        checkWorkoutLaunchSafety(
-          enrichedCandidates.filter((_, idx) => !blockedIndices.has(idx))
-        ).allowed;
-
-      setSafetyBlockModal({
-        title: 'Продолжение черновика ограничено Safety Guard',
-        vetoReasons: safetyEval.vetoReasons,
-        blockedExercises: safetyEval.blockedExercises.map((b) => ({
-          name: b.exercise.name,
-          reasons: b.decision.vetoReasons,
-        })),
-        safeExercisesCount: safeDraftExercises.length,
-        canContinueSafeOnly,
-        onProceedSafeOnly: canContinueSafeOnly
-          ? () => {
-              const filteredDraft: WorkoutSession = {
-                ...draft,
-                exercises: safeDraftExercises,
-              };
-              const recheck = checkWorkoutLaunchSafety(
-                enrichedCandidates.filter((_, idx) => !blockedIndices.has(idx))
-              );
-              if (!recheck.allowed) return;
-              setSafetyBlockModal(null);
-              setIsResumedDraft(true);
-              setActiveWorkoutSession(filteredDraft);
-            }
-          : undefined,
-      });
-      return;
-    }
+    const allowed = openOrRecheckSafetyBlockModal(
+      'Продолжение черновика ограничено Safety Guard',
+      enrichedCandidates,
+      (blockedIndices) => {
+        const safeDraftExercises = (draft.exercises || []).filter(
+          (_, idx) => !blockedIndices.has(idx)
+        );
+        return {
+          safeCount: safeDraftExercises.length,
+          proceedAll: () => {
+            setIsResumedDraft(true);
+            setActiveWorkoutSession(draft);
+          },
+          proceedSafeOnly: () => {
+            const filteredDraft: WorkoutSession = {
+              ...draft,
+              exercises: safeDraftExercises,
+            };
+            setIsResumedDraft(true);
+            setActiveWorkoutSession(filteredDraft);
+          },
+        };
+      },
+      false
+    );
+    if (!allowed) return;
 
     setIsResumedDraft(true);
     setActiveWorkoutSession(draft);
@@ -974,6 +1036,59 @@ function MainAppContent() {
                     ))}
                   </ul>
                 </div>
+
+                {safetyBlockModal.requiresWellbeingUpdate &&
+                  safetyBlockModal.stalePainAreas &&
+                  safetyBlockModal.stalePainAreas.length > 0 &&
+                  safetyBlockModal.onConfirmPainArea && (
+                    <div className="p-3 rounded-2xl bg-[#1F1A10] border border-[#4A3B18] text-xs space-y-2.5">
+                      <div className="font-bold text-[#FCD34D]">
+                        Устаревшая отметка о боли — подтвердите текущее состояние:
+                      </div>
+                      <div className="space-y-2">
+                        {safetyBlockModal.stalePainAreas.map((area) => (
+                          <div
+                            key={`${area.areaType}:${area.zoneKey}`}
+                            className="p-2.5 rounded-xl bg-[#121A1E] border border-[#2C2416] space-y-2"
+                          >
+                            <div className="flex items-center justify-between gap-2 text-[#E8E9E7]">
+                              <span className="font-bold">{formatStaleAreaLabel(area)}</span>
+                              <span className="text-[11px] text-[#FCD34D]">
+                                {area.level}/10 ({area.daysAgo} дн. назад)
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  safetyBlockModal.onConfirmPainArea?.(area, area.level)
+                                }
+                                className="px-2.5 py-1.5 rounded-xl bg-[#2B1414] hover:bg-[#3A1C1C] border border-[#5C2626] text-[#FCA5A5] text-[11px] font-bold cursor-pointer transition-all"
+                              >
+                                Боль сохраняется
+                              </button>
+                              {area.level >= 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => safetyBlockModal.onConfirmPainArea?.(area, 1)}
+                                  className="px-2.5 py-1.5 rounded-xl bg-[#2B2412] hover:bg-[#3B3018] border border-[#5C491C] text-[#FCD34D] text-[11px] font-bold cursor-pointer transition-all"
+                                >
+                                  Стала слабее (1/10)
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => safetyBlockModal.onConfirmPainArea?.(area, 0)}
+                                className="px-2.5 py-1.5 rounded-xl bg-[#152E24] hover:bg-[#1C3D30] border border-[#2B5946] text-[#58C995] text-[11px] font-bold cursor-pointer transition-all"
+                              >
+                                Боль прошла (0)
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                 {safetyBlockModal.blockedExercises.length > 0 && (
                   <div className="space-y-1.5">

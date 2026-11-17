@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   WorkoutProgram,
   WorkoutSession,
@@ -11,7 +11,11 @@ import { StorageService } from '../services/storage';
 import { isIsoDateInCurrentWeek } from '../training-core/dateUtils';
 import { findExerciseInUnifiedCatalog } from '../training-core/catalog';
 import { normalizeMuscleKeyPure } from '../training-core/muscles';
-import { checkWorkoutLaunchSafety } from '../services/safetyContext';
+import {
+  checkWorkoutLaunchSafety,
+  confirmWellbeingPainArea,
+  StalePainArea,
+} from '../services/safetyContext';
 import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { WorkoutAnalyticsView } from './WorkoutAnalyticsView';
 import { Modal, ConfirmModal } from './common/Modal';
@@ -91,17 +95,43 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
   onResumeDraft,
   onDiscardDraft,
 }) => {
+  const hasActiveProgram = useMemo(
+    () => programs.some((p) => (p.status || 'active') === 'active'),
+    [programs]
+  );
+
   const [activeSubTab, setActiveSubTab] = useState<'programs' | 'analytics' | 'history' | 'library'>('programs');
-  const [selectedProgramId, setSelectedProgramId] = useState<string>(programs[0]?.id || '');
+  const [selectedProgramId, setSelectedProgramId] = useState<string>(
+    () => (programs.find((p) => (p.status || 'active') === 'active') || programs[0])?.id || ''
+  );
   const [expandedDayId, setExpandedDayId] = useState<string | null>(null);
 
   // Direction View State:
-  // 'directions': Starts on the 2 big direction cards (КАРТОЧКА №1: ПРОГРАММЫ, КАРТОЧКА №2: КОРРЕКЦИЯ И МОБИЛЬНОСТЬ)
+  // 'my_programs': Active workout dashboard when user already has an active program
+  // 'directions': Initial onboarding screen (2 direction cards) when no active program exists
   // 'direction_catalog': Catalog of the chosen direction with programs list
-  // 'my_programs': The active workout dashboard with "Сменить направление"
-  const [workoutScreenView, setWorkoutScreenView] = useState<'directions' | 'direction_catalog' | 'my_programs'>('directions');
+  const [workoutScreenView, setWorkoutScreenView] = useState<'directions' | 'direction_catalog' | 'my_programs'>(() =>
+    programs.some((p) => (p.status || 'active') === 'active') ? 'my_programs' : 'directions'
+  );
   const [currentDirection, setCurrentDirection] = useState<'programs' | 'mobility'>('programs');
   const [expandedCatalogProgramId, setExpandedCatalogProgramId] = useState<string | null>(null);
+  const [expandedDirectionTags, setExpandedDirectionTags] = useState<{
+    programs: boolean;
+    mobility: boolean;
+  }>({ programs: false, mobility: false });
+
+  // Transition automatically to 'my_programs' only when active program state changes from false -> true
+  const prevHasActiveProgramRef = useRef<boolean>(hasActiveProgram);
+  useEffect(() => {
+    if (!prevHasActiveProgramRef.current && hasActiveProgram) {
+      const firstActive = programs.find((p) => (p.status || 'active') === 'active');
+      if (firstActive) {
+        setSelectedProgramId(firstActive.id);
+      }
+      setWorkoutScreenView('my_programs');
+    }
+    prevHasActiveProgramRef.current = hasActiveProgram;
+  }, [hasActiveProgram, programs]);
 
   // Status Filter for "Мои программы"
   const [programFilter, setProgramFilter] = useState<'all' | 'active' | 'paused' | 'completed' | 'archived'>('all');
@@ -123,6 +153,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
     programName: string;
     programId: string;
   } | null>(null);
+  const [wellbeingVersion, setWellbeingVersion] = useState<number>(0);
 
   // Confirmation Modals State
   const [deleteProgramConfirm, setDeleteProgramConfirm] = useState<{ id: string; name: string } | null>(null);
@@ -147,13 +178,13 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
     return programs.filter((p) => (p.status || 'active') === programFilter);
   }, [programs, programFilter]);
 
-  // Selected program (fallback gracefully if filtered out)
+  // Selected program strictly from filteredPrograms (null when filteredPrograms is empty)
   const selectedProgram = useMemo(() => {
+    if (filteredPrograms.length === 0) return null;
     const foundInFiltered = filteredPrograms.find((p) => p.id === selectedProgramId);
     if (foundInFiltered) return foundInFiltered;
-    if (filteredPrograms.length > 0) return filteredPrograms[0];
-    return programs.find((p) => p.id === selectedProgramId) || programs[0] || null;
-  }, [filteredPrograms, programs, selectedProgramId]);
+    return filteredPrograms[0];
+  }, [filteredPrograms, selectedProgramId]);
 
   // Selected program calculated stats
   const selectedProgramStats = useMemo(() => {
@@ -181,9 +212,9 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
     return completedSessions.filter((s) => isIsoDateInCurrentWeek(s.date, now)).length;
   }, [completedSessions]);
 
-  // First active program for hero next workout card
+  // First truly active program for hero next workout card
   const activeProgram = useMemo(() => {
-    return programs.find((p) => (p.status || 'active') === 'active') || programs[0] || null;
+    return programs.find((p) => (p.status || 'active') === 'active') || null;
   }, [programs]);
 
   const nextWorkoutDay =
@@ -319,8 +350,8 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
         <button
           type="button"
           onClick={() => {
-            if (activeSubTab === 'programs' && workoutScreenView !== 'directions') {
-              setWorkoutScreenView('directions');
+            if (activeSubTab === 'programs' && workoutScreenView === 'direction_catalog') {
+              setWorkoutScreenView(hasActiveProgram ? 'my_programs' : 'directions');
             } else {
               setActiveSubTab('programs');
             }
@@ -452,8 +483,8 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                   <span className="uppercase tracking-[0.1em] text-xs font-bold text-[#6F8A7F] block">
                     ВКЛЮЧАЕТ 8 ПРОГРАММ:
                   </span>
-                  <div className="flex flex-wrap gap-2">
-                    {[
+                  {(() => {
+                    const strengthTags = [
                       'Подтягивания',
                       'Отжимания',
                       'Приседания',
@@ -462,15 +493,37 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                       'Сильный корпус',
                       'Выносливость',
                       'Общая физическая подготовка',
-                    ].map((tag) => (
-                      <span
-                        key={tag}
-                        className="inline-flex items-center px-4 py-2 bg-[#12251E] border border-[#1F3A30] rounded-full text-xs sm:text-sm font-medium text-[#E2ECE7] whitespace-nowrap"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
+                    ];
+                    const isExpanded = expandedDirectionTags.programs;
+                    const visibleTags = isExpanded ? strengthTags : strengthTags.slice(0, 3);
+                    const hiddenCount = strengthTags.length - visibleTags.length;
+
+                    return (
+                      <div className="flex flex-wrap gap-2">
+                        {visibleTags.map((tag) => (
+                          <span
+                            key={tag}
+                            className="inline-flex items-center px-3.5 py-1.5 bg-[#12251E] border border-[#1F3A30] rounded-full text-xs sm:text-sm font-medium text-[#E2ECE7] whitespace-nowrap"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedDirectionTags((prev) => ({
+                              ...prev,
+                              programs: !prev.programs,
+                            }));
+                          }}
+                          className="inline-flex items-center px-3.5 py-1.5 bg-[#162D24] hover:bg-[#1C382D] border border-[#2B5242] rounded-full text-xs font-bold text-[#56CC97] whitespace-nowrap cursor-pointer transition-colors"
+                        >
+                          {isExpanded ? 'Скрыть' : `Показать ещё (+${hiddenCount})`}
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <button
@@ -518,8 +571,8 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                   <span className="uppercase tracking-[0.1em] text-xs font-bold text-[#6F8A7F] block">
                     ВКЛЮЧАЕТ 7 КОМПЛЕКСОВ:
                   </span>
-                  <div className="flex flex-wrap gap-2">
-                    {[
+                  {(() => {
+                    const mobilityTags = [
                       'Контроль положения лопаток',
                       'Мобильность плеч',
                       'Подвижность грудного отдела',
@@ -527,15 +580,37 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                       'Мобильность тазобедренных суставов',
                       'Мобильность голеностопа',
                       'Общая мобильность',
-                    ].map((tag) => (
-                      <span
-                        key={tag}
-                        className="inline-flex items-center px-4 py-2 bg-[#12251E] border border-[#1F3A30] rounded-full text-xs sm:text-sm font-medium text-[#E2ECE7] whitespace-nowrap"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
+                    ];
+                    const isExpanded = expandedDirectionTags.mobility;
+                    const visibleTags = isExpanded ? mobilityTags : mobilityTags.slice(0, 3);
+                    const hiddenCount = mobilityTags.length - visibleTags.length;
+
+                    return (
+                      <div className="flex flex-wrap gap-2">
+                        {visibleTags.map((tag) => (
+                          <span
+                            key={tag}
+                            className="inline-flex items-center px-3.5 py-1.5 bg-[#12251E] border border-[#1F3A30] rounded-full text-xs sm:text-sm font-medium text-[#E2ECE7] whitespace-nowrap"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedDirectionTags((prev) => ({
+                              ...prev,
+                              mobility: !prev.mobility,
+                            }));
+                          }}
+                          className="inline-flex items-center px-3.5 py-1.5 bg-[#162D24] hover:bg-[#1C382D] border border-[#2B5242] rounded-full text-xs font-bold text-[#56CC97] whitespace-nowrap cursor-pointer transition-colors"
+                        >
+                          {isExpanded ? 'Скрыть' : `Показать ещё (+${hiddenCount})`}
+                        </button>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <button
@@ -547,25 +622,17 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                 </button>
               </div>
 
-              {/* Quick Bar below direction cards */}
-              <div className="grid grid-cols-2 gap-2 pt-1">
+              {/* Single secondary button for non-active saved programs when no active banner is shown */}
+              {!activeProgram && programs.length > 0 && (
                 <button
                   type="button"
                   onClick={() => setWorkoutScreenView('my_programs')}
-                  className="py-3.5 px-4 bg-[#13171B] hover:bg-[#1C232B] border border-[#1F2730] rounded-2xl flex items-center justify-center gap-2 text-xs font-bold text-[#E8E9E7] cursor-pointer active:scale-95 transition-all"
+                  className="w-full py-3.5 px-4 bg-[#13171B] hover:bg-[#1C232B] border border-[#1F2730] rounded-2xl flex items-center justify-center gap-2 text-xs font-bold text-[#E8E9E7] cursor-pointer active:scale-95 transition-all"
                 >
                   <BookOpen className="w-4 h-4 text-[#58C995]" />
                   <span>Мои программы ({programs.length})</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={onStartCustomQuickWorkout}
-                  className="py-3.5 px-4 bg-[#13171B] hover:bg-[#1C232B] border border-[#1F2730] rounded-2xl flex items-center justify-center gap-2 text-xs font-bold text-[#E8E9E7] cursor-pointer active:scale-95 transition-all"
-                >
-                  <Zap className="w-4 h-4 text-[#58C995]" />
-                  <span>Быстрый старт</span>
-                </button>
-              </div>
+              )}
             </div>
           )}
 
@@ -777,7 +844,7 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                       Направление
                     </span>
                     <span className="text-xs font-bold text-white truncate block">
-                      {selectedProgram?.direction === 'mobility'
+                      {(selectedProgram || activeProgram)?.direction === 'mobility'
                         ? 'Коррекция и мобильность'
                         : 'Программы (Сила и ОФП)'}
                     </span>
@@ -925,23 +992,15 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                   <ChevronRight className="w-4 h-4 text-[#8E9CA3]" />
                 </div>
 
-                {/* CTAs */}
-                <div className="grid grid-cols-2 gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenPreview(nextWorkoutDay, activeProgram.name, activeProgram.id)}
-                    className="w-full py-3.5 bg-[#1C232B] hover:bg-[#252F3A] border border-[#27323D] text-[#E8E9E7] font-bold text-xs rounded-2xl flex items-center justify-center gap-2 cursor-pointer transition-colors active:scale-95"
-                  >
-                    <span>Обзор</span>
-                  </button>
-
+                {/* Primary CTA */}
+                <div className="pt-1">
                   <button
                     type="button"
                     onClick={() => handleOpenPreview(nextWorkoutDay, activeProgram.name, activeProgram.id)}
                     className="w-full py-3.5 bg-[#58C995] hover:bg-[#68d7a4] text-[#0A0D0F] font-black text-xs uppercase tracking-wider rounded-2xl flex items-center justify-center gap-2 shadow-[0_4px_24px_rgba(88,201,149,0.35)] cursor-pointer transition-all active:scale-95"
                   >
                     <Play className="w-4 h-4 fill-[#0A0D0F]" />
-                    <span>Начать</span>
+                    <span>Начать тренировку</span>
                   </button>
                 </div>
               </div>
@@ -1559,9 +1618,10 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
               };
             })
           : [];
-        const previewSafety = previewWorkoutData
-          ? checkWorkoutLaunchSafety(enrichedPreviewExercises)
-          : null;
+        const previewSafety =
+          previewWorkoutData && wellbeingVersion >= 0
+            ? checkWorkoutLaunchSafety(enrichedPreviewExercises)
+            : null;
         const blockedIndexSet = new Set(
           (previewSafety?.blockedExercises || []).map((b) => b.index)
         );
@@ -1574,6 +1634,11 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
         const canStartSafeOnly = Boolean(
           previewSafety && !previewSafety.allowed && safeCount > 0 && !hasGlobalBlock
         );
+        const formatStaleZoneRu = (area: StalePainArea): string => {
+          if (area.areaType === 'general') return 'Суставы и связки';
+          const def = MUSCLE_DEFINITIONS[area.zoneKey as MuscleGroup];
+          return def?.nameRu || area.rawKey || area.zoneKey;
+        };
 
         return (
           <Modal
@@ -1658,6 +1723,67 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
                     ))}
                   </div>
                 )}
+
+                {previewSafety &&
+                  !previewSafety.allowed &&
+                  previewSafety.requiresWellbeingUpdate &&
+                  previewSafety.stalePainAreas &&
+                  previewSafety.stalePainAreas.length > 0 && (
+                    <div className="p-3 rounded-2xl bg-[#1F1A10] border border-[#4A3B18] text-xs space-y-2.5">
+                      <div className="font-bold text-[#FCD34D]">
+                        Устаревшая отметка о боли — подтвердите текущее состояние:
+                      </div>
+                      <div className="space-y-2">
+                        {previewSafety.stalePainAreas.map((area) => (
+                          <div
+                            key={`${area.areaType}:${area.zoneKey}`}
+                            className="p-2.5 rounded-xl bg-[#121A1E] border border-[#2C2416] space-y-2"
+                          >
+                            <div className="flex items-center justify-between gap-2 text-[#E8E9E7]">
+                              <span className="font-bold">{formatStaleZoneRu(area)}</span>
+                              <span className="text-[11px] text-[#FCD34D]">
+                                {area.level}/10 ({area.daysAgo} дн. назад)
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  confirmWellbeingPainArea(area, area.level);
+                                  setWellbeingVersion((v) => v + 1);
+                                }}
+                                className="px-2.5 py-1.5 rounded-xl bg-[#2B1414] hover:bg-[#3A1C1C] border border-[#5C2626] text-[#FCA5A5] text-[11px] font-bold cursor-pointer transition-all"
+                              >
+                                Боль сохраняется
+                              </button>
+                              {area.level >= 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    confirmWellbeingPainArea(area, 1);
+                                    setWellbeingVersion((v) => v + 1);
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-xl bg-[#2B2412] hover:bg-[#3B3018] border border-[#5C491C] text-[#FCD34D] text-[11px] font-bold cursor-pointer transition-all"
+                                >
+                                  Стала слабее (1/10)
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  confirmWellbeingPainArea(area, 0);
+                                  setWellbeingVersion((v) => v + 1);
+                                }}
+                                className="px-2.5 py-1.5 rounded-xl bg-[#152E24] hover:bg-[#1C3D30] border border-[#2B5946] text-[#58C995] text-[11px] font-bold cursor-pointer transition-all"
+                              >
+                                Боль прошла (0)
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                 {/* Workout Key Metrics Row */}
                 <div className="grid grid-cols-3 gap-2">

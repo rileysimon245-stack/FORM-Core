@@ -1,10 +1,14 @@
 import { StorageService } from './storage';
+import { formatLocalIsoDate } from '../training-core/dateUtils';
+import type { MuscleGroup, WellbeingCheckin } from '../types/workout';
 import {
   ExerciseSafetyCandidate,
   ExerciseSafetyDecision,
   ExerciseWeightCheckResult,
   SafetyStorageSnapshot,
   SafetyUserContext,
+  StalePainArea,
+  WellbeingFreshnessStatus,
   WorkoutLaunchSafetyEvaluation,
   buildSafetyContextFromData,
   evaluateExerciseSafety,
@@ -12,7 +16,7 @@ import {
   evaluateWorkoutLaunchSafetyWithData,
 } from '../training-core/safetyGuard';
 
-export type { ExerciseWeightCheckResult };
+export type { ExerciseWeightCheckResult, StalePainArea, WellbeingFreshnessStatus };
 
 function getCurrentSafetyStorageSnapshot(): SafetyStorageSnapshot {
   return {
@@ -62,4 +66,33 @@ export function checkWeightIncreaseSafety(
     getCurrentSafetyStorageSnapshot(),
     now
   );
+}
+
+export function confirmWellbeingPainArea(
+  area: StalePainArea,
+  nextLevel: number,
+  now: Date = new Date()
+) {
+  const safeLevel =
+    typeof nextLevel === 'number' && Number.isFinite(nextLevel) && nextLevel >= 0
+      ? nextLevel
+      : area.level;
+  const todayIso = formatLocalIsoDate(now);
+  const checkin: WellbeingCheckin = {
+    id: `wb_confirm_${now.getTime()}_${Math.random().toString(36).slice(2, 7)}`,
+    date: todayIso,
+    createdAt: now.getTime(),
+    ...(area.areaType === 'general'
+      ? { jointPain: safeLevel }
+      : {
+          painByMuscle: {
+            [area.rawKey]: safeLevel,
+          } as Partial<Record<MuscleGroup, number>>,
+        }),
+  };
+  const writeResult = StorageService.saveWellbeingCheckin(checkin);
+  return {
+    writeResult,
+    context: getCurrentSafetyContext(now),
+  };
 }
