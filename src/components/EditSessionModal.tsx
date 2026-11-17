@@ -6,10 +6,12 @@ import {
   MuscleGroup,
 } from '../types/workout';
 import { StorageService, resolveSessionBodyWeightKg } from '../services/storage';
-import { getUnifiedCatalog } from '../training-core/catalog';
 import { calculateWorkoutMetrics } from '../training-core/coreMath';
-import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { ConfirmModal } from './common/Modal';
+
+const LazyExerciseLibraryView = React.lazy(() =>
+  import('./ExerciseLibraryView').then((m) => ({ default: m.ExerciseLibraryView }))
+);
 import {
   X,
   Plus,
@@ -43,7 +45,6 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
   );
 
   const [showAddPicker, setShowAddPicker] = useState(false);
-  const [search, setSearch] = useState('');
   const [deleteExIdx, setDeleteExIdx] = useState<number | null>(null);
   const [nameError, setNameError] = useState<string>('');
 
@@ -158,10 +159,6 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
 
     onSave(updated);
   };
-
-  const filteredCatalog = getUnifiedCatalog(StorageService.getCustomExercises()).filter((item) =>
-    item.name.toLowerCase().includes(search.toLowerCase())
-  );
 
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3.5 sm:p-5 select-none font-sans animate-in fade-in">
@@ -436,11 +433,13 @@ export const EditSessionModal: React.FC<EditSessionModalProps> = ({
         {showAddPicker && (
           <div className="fixed inset-0 z-60 bg-black/90 backdrop-blur-sm flex items-center justify-center p-3 animate-in fade-in">
             <div className="w-full max-w-lg bg-[#080D0E] border border-[#252D2F] rounded-2xl max-h-[85vh] flex flex-col overflow-y-auto p-3 shadow-2xl">
-              <ExerciseLibraryView
-                selectionMode={true}
-                onSelectExercise={(item) => handleAddExerciseFromCatalog(item)}
-                onClose={() => setShowAddPicker(false)}
-              />
+              <React.Suspense fallback={<div className="py-10 text-center text-xs text-[#92999A]">Загрузка каталога упражнений...</div>}>
+                <LazyExerciseLibraryView
+                  selectionMode={true}
+                  onSelectExercise={(item) => handleAddExerciseFromCatalog(item)}
+                  onClose={() => setShowAddPicker(false)}
+                />
+              </React.Suspense>
             </div>
           </div>
         )}

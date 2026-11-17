@@ -30,11 +30,12 @@ import {
   StorageHealthReport,
 } from '../types/workout';
 import { FullExerciseItem } from '../data/exerciseTypes';
-import { COMPREHENSIVE_FULL_CATALOG } from '../data/fullExerciseCatalog';
 import { normalizeMuscleKeyPure } from '../training-core/muscles';
 import {
   findExerciseInUnifiedCatalog,
   resolveExerciseInUnifiedCatalog,
+  loadFullExerciseCatalog,
+  getCachedFullExerciseCatalog,
 } from '../training-core/catalog';
 import {
   isSetCompletedPure,
@@ -2237,10 +2238,17 @@ export const StorageService = {
     return res;
   },
 
-  // Returns all exercises: 181 built-in exercises + any user-created custom exercises
+  // Returns all exercises: cached built-in full catalog (when loaded) + any user-created custom exercises
   getAllExercises(): FullExerciseItem[] {
     const custom = this.getCustomExercises();
-    return [...COMPREHENSIVE_FULL_CATALOG, ...custom];
+    const builtIn = getCachedFullExerciseCatalog() || [];
+    return [...builtIn, ...custom];
+  },
+
+  async loadAllExercises(): Promise<FullExerciseItem[]> {
+    const builtIn = await loadFullExerciseCatalog();
+    const custom = this.getCustomExercises();
+    return [...builtIn, ...custom];
   },
 
   // WELLBEING CHECKINS (сон, усталость, болезненность, боль)

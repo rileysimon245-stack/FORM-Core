@@ -17,8 +17,11 @@ import {
   checkWeightIncreaseSafety,
   getCurrentSafetyContext,
 } from '../services/safetyContext';
-import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { Modal, ConfirmModal, PromptModal } from './common/Modal';
+
+const LazyExerciseLibraryView = React.lazy(() =>
+  import('./ExerciseLibraryView').then((m) => ({ default: m.ExerciseLibraryView }))
+);
 import {
   X,
   Plus,
@@ -1809,16 +1812,18 @@ export const ActiveWorkoutModal: React.FC<ActiveWorkoutModalProps> = ({
                   </button>
                 </div>
               )}
-              <ExerciseLibraryView
-                selectionMode={true}
-                onSelectExercise={(selected) => {
-                  handleAddFromCatalog(selected);
-                }}
-                onClose={() => {
-                  setSafetyVetoNotice(null);
-                  setShowAddExercisePicker(false);
-                }}
-              />
+              <React.Suspense fallback={<div className="py-10 text-center text-xs text-[#92999A]">Загрузка каталога упражнений...</div>}>
+                <LazyExerciseLibraryView
+                  selectionMode={true}
+                  onSelectExercise={(selected) => {
+                    handleAddFromCatalog(selected);
+                  }}
+                  onClose={() => {
+                    setSafetyVetoNotice(null);
+                    setShowAddExercisePicker(false);
+                  }}
+                />
+              </React.Suspense>
             </div>
           </div>
         )}

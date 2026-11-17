@@ -1,6 +1,7 @@
 /**
  * Запуск тестов тренировочного ядра из терминала: npx tsx src/training-core/__tests__/runTests.ts
  */
+import { loadFullExerciseCatalog } from '../catalog';
 import { runTrainingCoreTestSuite } from './suite';
 import {
   runGatewayRegressionCheck,
@@ -10,9 +11,11 @@ import {
   runProgramGeneratorIntegrationTests,
   runActiveWorkoutAutosaveTests,
   runWorkoutsTabUxTests,
+  runFullCatalogCodeSplittingTests,
 } from './integrationChecks';
 
 async function main() {
+  await loadFullExerciseCatalog();
   const coreSummary = runTrainingCoreTestSuite();
   const gatewayCheck = runGatewayRegressionCheck();
   const gatewayBypassCheck = runGatewayBypassDetectionTest();
@@ -21,6 +24,7 @@ async function main() {
   const generatorIntegrationChecks = await runProgramGeneratorIntegrationTests();
   const activeWorkoutAutosaveChecks = await runActiveWorkoutAutosaveTests();
   const workoutsTabUxChecks = await runWorkoutsTabUxTests();
+  const catalogCodeSplittingChecks = await runFullCatalogCodeSplittingTests();
 
   const allResults = [
     ...coreSummary.results,
@@ -31,6 +35,7 @@ async function main() {
     ...generatorIntegrationChecks,
     ...activeWorkoutAutosaveChecks,
     ...workoutsTabUxChecks,
+    ...catalogCodeSplittingChecks,
   ];
   const passed = allResults.filter((r) => r.passed).length;
   const failed = allResults.length - passed;

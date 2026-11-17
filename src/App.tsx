@@ -38,8 +38,11 @@ import { AnatomyTab } from './components/AnatomyTab';
 import { ProfileTab } from './components/ProfileTab';
 import { ActiveWorkoutModal } from './components/ActiveWorkoutModal';
 import { ProgramEditorModal } from './components/ProgramEditorModal';
-import { ProgramGeneratorModal } from './components/ProgramGeneratorModal';
 import { DayDetailsModal } from './components/DayDetailsModal';
+
+const LazyProgramGeneratorModal = React.lazy(() =>
+  import('./components/ProgramGeneratorModal').then((m) => ({ default: m.ProgramGeneratorModal }))
+);
 import { SettingsModal } from './components/SettingsModal';
 import { EquipmentModal } from './components/EquipmentModal';
 import { UserParametersModal } from './components/UserParametersModal';
@@ -881,27 +884,29 @@ function MainAppContent() {
 
             {/* Program Generator Modal (Option B: AI & algorithmic) */}
             {showProgramGenerator && (
-              <ProgramGeneratorModal
-                key="modal-program-generator"
-                onProgramGenerated={(generatedProgram) => {
-                  const res = StorageService.saveProgram(generatedProgram);
-                  if (!res.ok) {
-                    setStorageErrorNotice(res.error || 'Не удалось сохранить программу.');
-                    return;
-                  }
-                  setStorageErrorNotice(null);
-                  setShowProgramGenerator(false);
-                }}
-                onClose={() => setShowProgramGenerator(false)}
-                onOpenEquipment={() => {
-                  setShowProgramGenerator(false);
-                  setShowEquipmentModal(true);
-                }}
-                onOpenParameters={() => {
-                  setShowProgramGenerator(false);
-                  setShowUserParamsModal(true);
-                }}
-              />
+              <React.Suspense fallback={null}>
+                <LazyProgramGeneratorModal
+                  key="modal-program-generator"
+                  onProgramGenerated={(generatedProgram) => {
+                    const res = StorageService.saveProgram(generatedProgram);
+                    if (!res.ok) {
+                      setStorageErrorNotice(res.error || 'Не удалось сохранить программу.');
+                      return;
+                    }
+                    setStorageErrorNotice(null);
+                    setShowProgramGenerator(false);
+                  }}
+                  onClose={() => setShowProgramGenerator(false)}
+                  onOpenEquipment={() => {
+                    setShowProgramGenerator(false);
+                    setShowEquipmentModal(true);
+                  }}
+                  onOpenParameters={() => {
+                    setShowProgramGenerator(false);
+                    setShowUserParamsModal(true);
+                  }}
+                />
+              </React.Suspense>
             )}
 
             {/* My Equipment Modal */}

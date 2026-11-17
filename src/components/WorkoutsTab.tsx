@@ -16,8 +16,11 @@ import {
   confirmWellbeingPainArea,
   StalePainArea,
 } from '../services/safetyContext';
-import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { WorkoutAnalyticsView } from './WorkoutAnalyticsView';
+
+const LazyExerciseLibraryView = React.lazy(() =>
+  import('./ExerciseLibraryView').then((m) => ({ default: m.ExerciseLibraryView }))
+);
 import { Modal, ConfirmModal } from './common/Modal';
 import {
   Plus,
@@ -1463,7 +1466,9 @@ export const WorkoutsTab: React.FC<WorkoutsTabProps> = ({
       {/* SUB-TAB 3: EXERCISE CATALOG */}
       {activeSubTab === 'library' && (
         <div className="bg-[#11171A] border border-[#1E282B] rounded-3xl p-4 shadow-md">
-          <ExerciseLibraryView />
+          <React.Suspense fallback={<div className="py-10 text-center text-xs text-[#92999A]">Загрузка каталога упражнений...</div>}>
+            <LazyExerciseLibraryView />
+          </React.Suspense>
         </div>
       )}
 

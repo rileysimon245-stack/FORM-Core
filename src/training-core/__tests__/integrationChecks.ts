@@ -3657,5 +3657,371 @@ export async function runWorkoutsTabUxTests(): Promise<TestCaseResult[]> {
   return results;
 }
 
+export async function runFullCatalogCodeSplittingTests(): Promise<TestCaseResult[]> {
+  const group = 'Catalog Code Splitting';
+  const results: TestCaseResult[] = [];
+  const originalConsoleError = console.error;
+
+  const {
+    createFullExerciseCatalogLoader,
+    loadFullExerciseCatalog,
+    isFullExerciseCatalogLoaded,
+    getCachedFullExerciseCatalog,
+    resetFullExerciseCatalogCacheForTests,
+    UNIFIED_BUILTIN_CATALOG,
+  } = await import('../catalog');
+
+  const runScenario = async (name: string, fn: () => Promise<string>) => {
+    try {
+      const details = await fn();
+      results.push({ group, name, passed: true, details });
+    } catch (err: any) {
+      results.push({
+        group,
+        name,
+        passed: false,
+        details: err?.message || String(err),
+      });
+    }
+  };
+
+  try {
+    console.error = () => {};
+
+    // 1. Успешная динамическая загрузка, регистрация в едином каталоге и поиск/фильтрация в ExerciseLibraryView
+    await runScenario(
+      'Успешная динамическая загрузка полного каталога, регистрация и сохранение поиска/фильтрации в UI',
+      async () => {
+        resetFullExerciseCatalogCacheForTests();
+        if (isFullExerciseCatalogLoaded() || getCachedFullExerciseCatalog() !== null) {
+          throw new Error('После сброса кэша полный каталог не должен считаться загруженным');
+        }
+
+        const envInit = setupReactDomTestEnv();
+        let ExerciseLibraryView: any;
+        let createRootFn: any;
+        let flushSyncFn: any;
+
+        try {
+          const [{ createRoot, flushSync }, mod] = await Promise.all([
+            getReactDomHelpers(),
+            import('../../components/ExerciseLibraryView'),
+          ]);
+          createRootFn = createRoot;
+          flushSyncFn = flushSync;
+          ExerciseLibraryView = mod.ExerciseLibraryView;
+        } finally {
+          await new Promise((r) => setTimeout(r, 15));
+          envInit.cleanup();
+        }
+
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+
+          flushSyncFn(() => {
+            root.render(React.createElement(ExerciseLibraryView, {}));
+          });
+
+          // Ждём завершения асинхронного dynamic import полного каталога
+          await new Promise((r) => setTimeout(r, 40));
+
+          if (!isFullExerciseCatalogLoaded()) {
+            throw new Error('После открытия ExerciseLibraryView полный каталог должен быть загружен');
+          }
+          if (UNIFIED_BUILTIN_CATALOG.length < 198) {
+            throw new Error(
+              `Единый каталог после догрузки должен содержать >= 198 упр., сейчас: ${UNIFIED_BUILTIN_CATALOG.length}`
+            );
+          }
+
+          const searchInput = container.querySelector('input[type="text"]') as HTMLInputElement | null;
+          if (!searchInput) {
+            throw new Error('Поле поиска в ExerciseLibraryView не найдено');
+          }
+          const setNativeVal = Object.getOwnPropertyDescriptor(
+            ctx.dom.window.HTMLInputElement.prototype,
+            'value'
+          )!.set!;
+          setNativeVal.call(searchInput, 'Приседания со штангой');
+          flushSyncFn(() => {
+            searchInput.dispatchEvent(new ctx.dom.window.Event('input', { bubbles: true }));
+          });
+
+          const text = container.textContent || '';
+          if (!text.includes('Приседания со штангой')) {
+            throw new Error('Поиск по динамически загруженному каталогу не находит «Приседания со штангой»');
+          }
+
+          return `Загружено ${UNIFIED_BUILTIN_CATALOG.length} упражнений; поиск и фильтрация работают корректно`;
+        } finally {
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 15));
+          ctx.cleanup();
+        }
+      }
+    );
+
+    // 2. Повторное использование загруженного каталога без повторных dynamic import() вызовов
+    await runScenario(
+      'Повторное использование загруженного каталога: кэш, дедупликация и отсутствие повторной загрузки UI',
+      async () => {
+        let importCalls = 0;
+        const mockSample = [
+          {
+            id: 'test_ex_cache_1',
+            name: 'Тестовый жим',
+            nameEn: 'Test Press',
+            categoryKey: 'chest' as const,
+            categoryNameRu: 'Грудь',
+            subCategory: 'База',
+            primaryMuscle: 'chest' as const,
+            secondaryMuscles: [],
+            isBodyweight: false,
+            requiredEquipment: 'barbell' as const,
+            equipmentNameRu: 'Штанга',
+            location: 'gym' as const,
+            difficulty: 'Средний' as const,
+            type: 'Силовое' as const,
+            homeFriendly: false,
+            defaultSets: 3,
+            defaultReps: 10,
+            defaultWeight: 60,
+            defaultRestSeconds: 90,
+            technique: 'Техника',
+            alternatives: [],
+          },
+        ];
+
+        const loader = createFullExerciseCatalogLoader(async () => {
+          importCalls += 1;
+          await new Promise((r) => setTimeout(r, 10));
+          return mockSample;
+        });
+
+        // Два параллельных вызова + третий последовательный -> ровно 1 импорт
+        const [res1, res2] = await Promise.all([loader.load(), loader.load()]);
+        const res3 = await loader.load();
+
+        if (importCalls !== 1) {
+          throw new Error(`Ожидался ровно 1 вызов импорта, выполнено: ${importCalls}`);
+        }
+        if (res1 !== res2 || res2 !== res3 || res1.length !== 1) {
+          throw new Error('Кэшированный каталог должен возвращать один и тот же массив упражнений');
+        }
+
+        // Проверяем повторное открытие ExerciseLibraryView без повторного вызова StorageService.loadAllExercises
+        await loadFullExerciseCatalog();
+        let uiLoadCalls = 0;
+        const origLoadAll = StorageService.loadAllExercises.bind(StorageService);
+        (StorageService as any).loadAllExercises = async () => {
+          uiLoadCalls += 1;
+          return origLoadAll();
+        };
+
+        const envInit = setupReactDomTestEnv();
+        let ExerciseLibraryView: any;
+        let createRootFn: any;
+        let flushSyncFn: any;
+        try {
+          const [{ createRoot, flushSync }, mod] = await Promise.all([
+            getReactDomHelpers(),
+            import('../../components/ExerciseLibraryView'),
+          ]);
+          createRootFn = createRoot;
+          flushSyncFn = flushSync;
+          ExerciseLibraryView = mod.ExerciseLibraryView;
+        } finally {
+          await new Promise((r) => setTimeout(r, 15));
+          envInit.cleanup();
+        }
+
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        let activeRoot = createRootFn(container);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+
+          flushSyncFn(() => {
+            activeRoot.render(React.createElement(ExerciseLibraryView, {}));
+          });
+          flushSyncFn(() => activeRoot.unmount());
+
+          activeRoot = createRootFn(container);
+          flushSyncFn(() => {
+            activeRoot.render(React.createElement(ExerciseLibraryView, {}));
+          });
+
+          if (uiLoadCalls !== 0) {
+            throw new Error(
+              `При повторном открытии ExerciseLibraryView не должен вызывать loadAllExercises (${uiLoadCalls})`
+            );
+          }
+          const text = container.textContent || '';
+          if (text.includes('Загрузка полного каталога') || !text.includes('Жим штанги')) {
+            throw new Error('При повторном открытии каталог должен сразу отображаться из кэша');
+          }
+
+          return 'Параллельные и повторные открытия переиспользуют кэш без лишнего импорта';
+        } finally {
+          (StorageService as any).loadAllExercises = origLoadAll;
+          try {
+            flushSyncFn(() => activeRoot.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 15));
+          ctx.cleanup();
+        }
+      }
+    );
+
+    // 3. Обработка ошибки импорта и восстановление при повторной попытке
+    await runScenario(
+      'Обработка ошибки динамического импорта: корректный alert в UI и восстановление по «Повторить»',
+      async () => {
+        let shouldFail = true;
+        let attempts = 0;
+        const loader = createFullExerciseCatalogLoader(async () => {
+          attempts += 1;
+          if (shouldFail) {
+            throw new Error('Сетевой сбой загрузки чанка каталога');
+          }
+          return [
+            {
+              id: 'retry_ok_1',
+              name: 'Отжимания',
+              nameEn: 'Pushups',
+              categoryKey: 'chest' as const,
+              categoryNameRu: 'Грудь',
+              subCategory: 'База',
+              primaryMuscle: 'chest' as const,
+              secondaryMuscles: [],
+              isBodyweight: true,
+              requiredEquipment: 'bodyweight' as const,
+              equipmentNameRu: 'Свой вес',
+              location: 'both' as const,
+              difficulty: 'Начинающий' as const,
+              type: 'С собственным весом' as const,
+              homeFriendly: true,
+              defaultSets: 3,
+              defaultReps: 12,
+              defaultWeight: 0,
+              defaultRestSeconds: 60,
+              technique: 'Ровный корпус',
+              alternatives: [],
+            },
+          ];
+        });
+
+        let caughtMsg = '';
+        try {
+          await loader.load();
+        } catch (err: any) {
+          caughtMsg = err?.message || '';
+        }
+        if (!caughtMsg.includes('Сетевой сбой') || loader.isLoaded()) {
+          throw new Error('Ошибка импорта должна пробрасываться без кэширования невалидного состояния');
+        }
+
+        shouldFail = false;
+        const recovered = await loader.load();
+        if (attempts !== 2 || !loader.isLoaded() || recovered.length !== 1) {
+          throw new Error('Повторный вызов load() после ошибки обязан успешно загрузить каталог');
+        }
+
+        // Проверяем UI-сценарий ошибки и восстановления по кнопке «Повторить»
+        resetFullExerciseCatalogCacheForTests();
+        const origLoadAll = StorageService.loadAllExercises.bind(StorageService);
+        let uiFail = true;
+        (StorageService as any).loadAllExercises = async () => {
+          if (uiFail) {
+            throw new Error('Ошибка загрузки чанка каталога');
+          }
+          return origLoadAll();
+        };
+
+        const envInit = setupReactDomTestEnv();
+        let ExerciseLibraryView: any;
+        let createRootFn: any;
+        let flushSyncFn: any;
+        try {
+          const [{ createRoot, flushSync }, mod] = await Promise.all([
+            getReactDomHelpers(),
+            import('../../components/ExerciseLibraryView'),
+          ]);
+          createRootFn = createRoot;
+          flushSyncFn = flushSync;
+          ExerciseLibraryView = mod.ExerciseLibraryView;
+        } finally {
+          await new Promise((r) => setTimeout(r, 15));
+          envInit.cleanup();
+        }
+
+        const ctx = setupReactDomTestEnv();
+        const container = ctx.dom.window.document.getElementById('root')!;
+        const root = createRootFn(container);
+
+        try {
+          ctx.store.set('form_schema_version_v1', '11');
+
+          flushSyncFn(() => {
+            root.render(React.createElement(ExerciseLibraryView, {}));
+          });
+          await new Promise((r) => setTimeout(r, 25));
+
+          const alertEl = container.querySelector('[role="alert"]');
+          if (!alertEl || !(alertEl.textContent || '').includes('Ошибка загрузки чанка каталога')) {
+            throw new Error('При ошибке импорта в UI должен отображаться role="alert" с текстом ошибки');
+          }
+
+          const retryBtn = Array.from(container.querySelectorAll('button')).find((b) =>
+            (b.textContent || '').trim() === 'Повторить'
+          );
+          if (!retryBtn) {
+            throw new Error('При ошибке импорта в UI должна отображаться кнопка «Повторить»');
+          }
+
+          uiFail = false;
+          flushSyncFn(() => retryBtn.click());
+          await new Promise((r) => setTimeout(r, 40));
+
+          if (container.querySelector('[role="alert"]')) {
+            throw new Error('После успешной повторной загрузки alert ошибки должен исчезнуть');
+          }
+          if (!(container.textContent || '').includes('Жим штанги')) {
+            throw new Error('После восстановления каталог упражнений должен отобразиться в UI');
+          }
+
+          return 'Ошибка импорта перехвачена в лоадере и UI, повторная загрузка успешно восстановила каталог';
+        } finally {
+          (StorageService as any).loadAllExercises = origLoadAll;
+          try {
+            flushSyncFn(() => root.unmount());
+          } catch {
+            // ignore
+          }
+          await new Promise((r) => setTimeout(r, 15));
+          ctx.cleanup();
+        }
+      }
+    );
+  } finally {
+    await loadFullExerciseCatalog().catch(() => undefined);
+    console.error = originalConsoleError;
+  }
+
+  return results;
+}
+
+
 
 

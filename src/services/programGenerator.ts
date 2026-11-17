@@ -17,6 +17,7 @@ import {
 import {
   UnifiedExerciseEntry,
   getUnifiedCatalog,
+  loadFullExerciseCatalog,
   resolveExerciseInUnifiedCatalog,
 } from '../training-core/catalog';
 import {
@@ -490,6 +491,7 @@ export async function generateWorkoutProgram(
     .map((e) => e.id);
   const availableEquipmentSet = buildAvailableEquipmentSet(availableEquipmentIds);
 
+  await loadFullExerciseCatalog();
   const userParams = StorageService.getUserParameters();
   const profile = StorageService.getProfile();
   const customExercises = StorageService.getCustomExercises();

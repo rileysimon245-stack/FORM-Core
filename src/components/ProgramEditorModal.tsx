@@ -7,8 +7,11 @@ import {
   MUSCLE_DEFINITIONS,
   ExerciseLibraryItem,
 } from '../types/workout';
-import { ExerciseLibraryView } from './ExerciseLibraryView';
 import { FormSelect } from './common/FormSelect';
+
+const LazyExerciseLibraryView = React.lazy(() =>
+  import('./ExerciseLibraryView').then((m) => ({ default: m.ExerciseLibraryView }))
+);
 import { X, Plus, Trash2, ArrowRightLeft, ChevronDown, ChevronUp, BookOpen, Copy, ShieldAlert } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { modalBackdropVariants, modalDialogVariants } from '../utils/animations';
@@ -707,20 +710,22 @@ export const ProgramEditorModal: React.FC<ProgramEditorModalProps> = ({
                 </button>
               </div>
             )}
-            <ExerciseLibraryView
-              selectionMode={true}
-              onSelectExercise={(selected) => {
-                if (replacingTarget !== null) {
-                  handleSelectReplacement(selected);
-                } else {
-                  handleAddFromLibrary(selected);
-                }
-              }}
-              onClose={() => {
-                setReplacingTarget(null);
-                setShowAddLibraryPicker(null);
-              }}
-            />
+            <React.Suspense fallback={<div className="py-10 text-center text-xs text-[#92999A]">Загрузка каталога упражнений...</div>}>
+              <LazyExerciseLibraryView
+                selectionMode={true}
+                onSelectExercise={(selected) => {
+                  if (replacingTarget !== null) {
+                    handleSelectReplacement(selected);
+                  } else {
+                    handleAddFromLibrary(selected);
+                  }
+                }}
+                onClose={() => {
+                  setReplacingTarget(null);
+                  setShowAddLibraryPicker(null);
+                }}
+              />
+            </React.Suspense>
           </div>
         </div>
       )}

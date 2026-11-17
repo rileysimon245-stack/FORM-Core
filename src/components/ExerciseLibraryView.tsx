@@ -15,6 +15,7 @@ import {
 } from '../data/exerciseTypes';
 import { StorageService } from '../services/storage';
 import { checkAddExerciseSafety } from '../services/safetyContext';
+import { isFullExerciseCatalogLoaded } from '../training-core/catalog';
 import {
   Search,
   Star,
@@ -35,6 +36,7 @@ import {
   SlidersHorizontal,
   TrendingUp,
   ShieldAlert,
+  Loader2,
 } from 'lucide-react';
 import { ExerciseProgressModal } from './ExerciseProgressModal';
 
@@ -53,10 +55,14 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
   filterRequiredEquipment,
   onClose,
 }) => {
-  // State for all exercises (181 built-in + user-created custom)
+  // State for all exercises (cached full built-in catalog + user-created custom)
   const [allExercises, setAllExercises] = useState<FullExerciseItem[]>(() =>
     StorageService.getAllExercises()
   );
+  const [isCatalogLoading, setIsCatalogLoading] = useState<boolean>(
+    () => !isFullExerciseCatalogLoaded()
+  );
+  const [catalogLoadError, setCatalogLoadError] = useState<string | null>(null);
 
   // Search input: matches both Russian & English names, plus subcategory & technique
   const [search, setSearch] = useState('');
@@ -104,6 +110,56 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
 
   // Safety Guard feedback banner if blocked exercise selection is attempted
   const [selectionBlockNotice, setSelectionBlockNotice] = useState<string | null>(null);
+
+  const mountedRef = React.useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const loadFullCatalog = React.useCallback(async () => {
+    if (isFullExerciseCatalogLoaded()) {
+      if (mountedRef.current) {
+        setAllExercises(StorageService.getAllExercises());
+        setCatalogLoadError(null);
+        setIsCatalogLoading(false);
+      }
+      return;
+    }
+
+    if (mountedRef.current) {
+      setIsCatalogLoading(true);
+      setCatalogLoadError(null);
+    }
+
+    try {
+      const items = await StorageService.loadAllExercises();
+      if (mountedRef.current) {
+        setAllExercises(items);
+        setCatalogLoadError(null);
+      }
+    } catch (err) {
+      if (mountedRef.current) {
+        setCatalogLoadError(
+          err instanceof Error && err.message
+            ? err.message
+            : 'Не удалось загрузить полный каталог упражнений. Попробуйте ещё раз.'
+        );
+      }
+    } finally {
+      if (mountedRef.current) {
+        setIsCatalogLoading(false);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isFullExerciseCatalogLoaded()) {
+      void loadFullCatalog();
+    }
+  }, [loadFullCatalog]);
 
   // Listen to StorageService updates
   useEffect(() => {
@@ -618,9 +674,30 @@ export const ExerciseLibraryView: React.FC<ExerciseLibraryViewProps> = ({
         )}
       </div>
 
+      {catalogLoadError && (
+        <div
+          role="alert"
+          className="px-3.5 py-3 rounded-2xl bg-[#2B1414] border border-[#5C2626] text-xs text-[#FCA5A5] flex items-center justify-between gap-3"
+        >
+          <span className="min-w-0 flex-1">{catalogLoadError}</span>
+          <button
+            type="button"
+            onClick={() => void loadFullCatalog()}
+            className="px-3 py-1.5 rounded-xl bg-[#3B1D1D] hover:bg-[#4D2626] border border-[#7F3939] text-white text-xs font-semibold shrink-0 cursor-pointer transition-colors"
+          >
+            Повторить
+          </button>
+        </div>
+      )}
+
       {/* Exercise Cards Feed */}
       <div className="space-y-2.5 pt-0.5">
-        {filteredExercises.length === 0 ? (
+        {isCatalogLoading && filteredExercises.length === 0 ? (
+          <div className="p-8 text-center bg-[#101719] rounded-2xl border border-[#252D2F] flex flex-col items-center justify-center gap-2">
+            <Loader2 className="w-5 h-5 text-[#58C995] animate-spin" />
+            <p className="text-xs text-[#92999A]">Загрузка полного каталога упражнений...</p>
+          </div>
+        ) : filteredExercises.length === 0 && !catalogLoadError ? (
           <div className="p-8 text-center bg-[#101719] rounded-2xl border border-[#252D2F] space-y-2">
             <p className="text-xs text-[#92999A]">
               По заданным параметрам ничего не найдено.

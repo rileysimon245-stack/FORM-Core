@@ -7,8 +7,7 @@
  * упражнения. Все ключи мышц приведены к каноническому формату.
  */
 
-import { COMPREHENSIVE_FULL_CATALOG } from '../data/fullExerciseCatalog';
-import { FullExerciseItem } from '../data/exerciseTypes';
+import type { FullExerciseItem } from '../data/exerciseTypes';
 import { EXERCISE_CATALOG, ExerciseLibraryItem, MuscleGroup } from '../types/workout';
 import { normalizeMuscleKeyPure, normalizeMuscleListPure } from './muscles';
 
@@ -106,26 +105,112 @@ function addEntryToNameMap(rawName: string | undefined, entry: UnifiedExerciseEn
   }
 }
 
-for (const item of COMPREHENSIVE_FULL_CATALOG) {
-  const entry = normalizeFullItem(item);
-  builtInList.push(entry);
-  byIdMap.set(entry.id, entry);
-  addEntryToNameMap(entry.name, entry);
-  addEntryToNameMap(entry.nameEn, entry);
-}
+function rebuildBuiltInCatalog(fullItems: readonly FullExerciseItem[]): void {
+  builtInList.length = 0;
+  byIdMap.clear();
+  byNameMap.clear();
 
-for (const legacy of EXERCISE_CATALOG) {
-  const nameKey = normalizeNameKey(legacy.name);
-  if (!byIdMap.has(legacy.id) && !byNameMap.has(nameKey)) {
-    const entry = normalizeLegacyItem(legacy);
-    builtInList.push(entry);
-    byIdMap.set(entry.id, entry);
-    addEntryToNameMap(entry.name, entry);
-    addEntryToNameMap(entry.nameEn, entry);
+  for (const item of fullItems) {
+    const entry = normalizeFullItem(item);
+    if (!byIdMap.has(entry.id)) {
+      builtInList.push(entry);
+      byIdMap.set(entry.id, entry);
+      addEntryToNameMap(entry.name, entry);
+      addEntryToNameMap(entry.nameEn, entry);
+    }
+  }
+
+  for (const legacy of EXERCISE_CATALOG) {
+    const nameKey = normalizeNameKey(legacy.name);
+    if (!byIdMap.has(legacy.id) && !byNameMap.has(nameKey)) {
+      const entry = normalizeLegacyItem(legacy);
+      builtInList.push(entry);
+      byIdMap.set(entry.id, entry);
+      addEntryToNameMap(entry.name, entry);
+      addEntryToNameMap(entry.nameEn, entry);
+    }
   }
 }
 
+// Начальная лёгкая инициализация базовым EXERCISE_CATALOG (полный каталог догружается динамически по требованию)
+rebuildBuiltInCatalog([]);
+
 export const UNIFIED_BUILTIN_CATALOG: readonly UnifiedExerciseEntry[] = builtInList;
+
+export interface FullCatalogLoader {
+  load: () => Promise<FullExerciseItem[]>;
+  isLoaded: () => boolean;
+  getCached: () => FullExerciseItem[] | null;
+  reset: () => void;
+}
+
+export function createFullExerciseCatalogLoader(
+  importer: () => Promise<readonly FullExerciseItem[]>,
+  onLoaded?: (items: FullExerciseItem[]) => void
+): FullCatalogLoader {
+  let cached: FullExerciseItem[] | null = null;
+  let inFlight: Promise<FullExerciseItem[]> | null = null;
+
+  return {
+    load: async (): Promise<FullExerciseItem[]> => {
+      if (cached !== null) {
+        return cached;
+      }
+      if (inFlight !== null) {
+        return inFlight;
+      }
+
+      inFlight = (async () => {
+        try {
+          const loaded = await importer();
+          if (!Array.isArray(loaded) || loaded.length === 0) {
+            throw new Error('Загруженный каталог упражнений пуст или повреждён.');
+          }
+          const copy = [...loaded];
+          cached = copy;
+          if (onLoaded) {
+            onLoaded(copy);
+          }
+          return copy;
+        } finally {
+          inFlight = null;
+        }
+      })();
+
+      return inFlight;
+    },
+    isLoaded: () => cached !== null,
+    getCached: () => cached,
+    reset: () => {
+      cached = null;
+      inFlight = null;
+    },
+  };
+}
+
+const defaultFullCatalogLoader = createFullExerciseCatalogLoader(
+  () => import('../data/fullExerciseCatalog').then((mod) => mod.COMPREHENSIVE_FULL_CATALOG),
+  (items) => {
+    rebuildBuiltInCatalog(items);
+  }
+);
+
+export function loadFullExerciseCatalog(): Promise<FullExerciseItem[]> {
+  return defaultFullCatalogLoader.load();
+}
+
+export function isFullExerciseCatalogLoaded(): boolean {
+  return defaultFullCatalogLoader.isLoaded();
+}
+
+export function getCachedFullExerciseCatalog(): FullExerciseItem[] | null {
+  return defaultFullCatalogLoader.getCached();
+}
+
+export function resetFullExerciseCatalogCacheForTests(): void {
+  defaultFullCatalogLoader.reset();
+  rebuildBuiltInCatalog([]);
+}
 
 export function getUnifiedCatalog(customExercises: FullExerciseItem[] = []): UnifiedExerciseEntry[] {
   const customEntries = customExercises.map(normalizeFullItem);
